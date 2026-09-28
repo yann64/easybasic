@@ -150,6 +150,21 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
         stmt->loc = advance().loc;
         return stmt;
     }
+    if (check(TokenKind::KwProcedure)) {
+        return parseProcedureDecl();
+    }
+    if (check(TokenKind::KwProcedureReturn)) {
+        return parseProcedureReturn();
+    }
+    if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::LParen) {
+        // `Name(args)` as a whole statement - a call, not an assignment
+        // (PB requires parens for a call; an assignment never starts this
+        // way, so a single token of lookahead disambiguates cleanly).
+        auto stmt = std::make_unique<ast::ExprStmt>();
+        stmt->loc = peek().loc;
+        stmt->expr = parsePrimary();
+        return stmt;
+    }
     if (check(TokenKind::Identifier) || check(TokenKind::Hash)) {
         return parseAssignmentOrConstDecl();
     }
@@ -329,6 +344,47 @@ std::unique_ptr<ast::Stmt> Parser::parseEnumeration() {
     }
 
     expect(TokenKind::KwEndEnumeration, "to close 'Enumeration'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseProcedureDecl() {
+    auto stmt = std::make_unique<ast::ProcedureDeclStmt>();
+    stmt->loc = peek().loc;
+    const Token& procTok = advance(); // 'Procedure[.suffix|$]'
+    stmt->returnSuffix = procTok.suffix;
+
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'Procedure'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+
+    expect(TokenKind::LParen, "after procedure name");
+    if (!check(TokenKind::RParen)) {
+        do {
+            const Token& paramTok = expect(TokenKind::Identifier, "in parameter list");
+            ast::ProcedureDeclStmt::Param param;
+            param.spelling = paramTok.text;
+            param.name = toLower(paramTok.text);
+            param.suffix = paramTok.suffix;
+            if (match(TokenKind::Equal)) {
+                param.defaultValue = parseExpr();
+            }
+            stmt->params.push_back(std::move(param));
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RParen, "to close parameter list");
+
+    stmt->body = parseBlockUntil({TokenKind::KwEndProcedure});
+    expect(TokenKind::KwEndProcedure, "to close 'Procedure'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseProcedureReturn() {
+    auto stmt = std::make_unique<ast::ProcedureReturnStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'ProcedureReturn'
+    if (!isAtStatementEnd()) {
+        stmt->value = parseExpr();
+    }
     return stmt;
 }
 
@@ -529,6 +585,23 @@ std::unique_ptr<ast::Expr> Parser::parsePrimary() {
         }
         case TokenKind::Identifier: {
             advance();
+            if (check(TokenKind::LParen)) {
+                // `Name(args)` as a value - a call expression, not a
+                // variable reference (PB requires parens for a call, so
+                // this single token of lookahead is unambiguous).
+                advance(); // '('
+                auto call = std::make_unique<ast::CallExpr>();
+                call->loc = tok.loc;
+                call->spelling = tok.text;
+                call->name = toLower(tok.text);
+                if (!check(TokenKind::RParen)) {
+                    do {
+                        call->args.push_back(parseExpr());
+                    } while (match(TokenKind::Comma));
+                }
+                expect(TokenKind::RParen, "to close call arguments");
+                return call;
+            }
             auto ref = std::make_unique<ast::VarRefExpr>();
             ref->loc = tok.loc;
             ref->spelling = tok.text;

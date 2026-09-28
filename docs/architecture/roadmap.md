@@ -26,8 +26,8 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 |---|---|---|
 | **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | Done (see M0 notes below) |
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
-| **M2** | `Procedure`/`ProcedureReturn`, `Protected`/`Global`/`Shared`, parameter passing, recursion, static `Dim` arrays | Not started |
-| **M3** | `Structure`, pointers, `NewList`/`NewMap` families | Not started |
+| **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deliberately deferred to M3 |
+| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Not started |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
@@ -184,4 +184,79 @@ destination, not independently oracle-verified (every realistic PB program alrea
 them on integers, so this is a reasonable assumption, not a confirmed fact); `Next`'s
 optional trailing loop-variable name (`Next x`) is parsed but not cross-checked against
 the actual loop variable.
+
+## M2 Implementation Notes
+
+**Scope landed**: `Procedure`/`ProcedureReturn` (including `.s`/`$` typed-return forms),
+by-value parameters with default values, recursion, a call used either as a value
+(`Debug Add(3,4)`) or as a whole statement (`DoSomething(1,2)`), and - the headline
+finding - genuinely isolated per-procedure local scope.
+
+**Two oracle-verified facts shaped the whole design**:
+
+- **Parameters are by-value for every type, including String** - simpler than
+  FreeBASIC's rule (which eBasic's own roadmap documents as "byval by default except
+  String, which defaults byref"). Verified directly: a procedure mutating its own `.i`
+  and `.s` parameters left the caller's variables of both types completely unchanged.
+  This is the only parameter-passing mode M2 implements; by-reference access is what
+  pointers (`*param`, M3) are for in PB, not a `ByRef` keyword (PB has none).
+- **Procedures get a completely isolated local scope by default - they cannot see outer
+  variables at all**, not even to read them. `Procedure ReadOuter() : Debug outer :
+  EndProcedure` reading a same-named `outer.i = 99` declared at module scope printed
+  `0`, not `99` - the procedure's `outer` is a brand-new, unrelated local. This is a
+  stronger form of isolation than "shadowing" (there's no fallback to the outer scope at
+  all) and made the Sema implementation simpler than initially expected: processing a
+  procedure body is just a save-current-scope / swap-in-an-empty-one / restore-afterward
+  operation (`Sema::visitStmt`'s `ProcedureDecl` case) - not a scope *stack*, since PB
+  procedures never nest. `Global`/`Shared` (PB's explicit opt-*in* to cross-scope access)
+  and `Protected` are deliberately deferred to M3 rather than guessed at, since a quick
+  probe already turned up a real ordering constraint (`Shared g` inside a procedure
+  textually *before* that name's `Global g.i = ...` declaration is a compile error) that
+  deserves its own proper investigation rather than a rushed implementation.
+
+**PB requires a procedure to be fully defined before any call to it - no forward
+declarations or hoisting at all.** Oracle-verified: calling a procedure declared later in
+the same file is a compile error ("`Later() is not a function, array, list, map or
+macro`"), even though a procedure calling *itself* (recursion) works fine, since by the
+time its own body is being compiled, its own signature is already known. This is
+actually good news for the implementation: `Sema` registers a procedure's signature the
+moment it's encountered (before visiting its body, so self-recursion resolves) and
+`Codegen::genProcedures` emits each one as a real, complete C++ function in source
+order - which, given PB's own restriction, automatically satisfies C++'s identical
+"declared before use" requirement with no separate prototype-emission pass needed.
+Mutual recursion (which *would* need forward declarations, via PB's `Declare` keyword)
+is not yet supported - not independently verified to even need special handling beyond
+what a future `Declare` implementation would provide.
+
+**Falling off the end of a procedure without an explicit `ProcedureReturn` returns the
+declared return type's zero value** (oracle-verified: `0` for an Integer-returning
+procedure). This is undefined behavior for a non-`void` C++ function if left as-is, so
+`Codegen::genProcedureDecl` always appends a trailing `return <zero-value>;` after a
+procedure's body - mirroring eBasic's own identical, previously-battle-tested pattern
+for exactly this hazard - regardless of whether every control-flow path already hit an
+explicit `ProcedureReturn`.
+
+**Default parameter values are real C++ default arguments** (`int64_t f_add(int64_t a,
+int64_t b = 100)`), not filled in at every call site - the C++ compiler's own default-
+argument mechanism does the work, so `Codegen`'s call-site logic needs no special case
+for an omitted trailing argument at all.
+
+**A real gap the switch-based dispatch design nearly hid**: before this milestone added
+`-Wall -Wextra` to the top-level `CMakeLists.txt`, `Codegen::genStmt`/`genExpr`'s
+switches over `ast::StmtKind`/`ExprKind` had no case at all for several of M2's new
+node kinds for a short window during development, and the build **still succeeded with
+zero warnings** - an unmatched `case` with no `default:` is well-defined C++ (control
+just falls through to after the switch), not an error, so nothing short of `-Wswitch`
+(bundled in `-Wall`) would have caught it. Worth remembering for every future milestone
+that adds new AST node kinds: the switch-based dispatch pattern this project relies on
+(see `docs/developer/architecture.md`) is only as safe as the warning flags checking it.
+
+**Deliberately deferred past M2**: `Global`/`Shared`/`Protected` (see above); static
+`Dim` arrays; mutual recursion / `Declare` forward declarations; any real type-checking
+of call arguments beyond arity (a `String` passed where an `Integer` parameter is
+declared is not yet flagged as its own diagnostic - `checkAssignable`-style validation
+for call arguments is a follow-up); a constant or procedure declared *inside* an
+If/For/While/Repeat body is unsupported by `Codegen` (same top-level-only limitation as
+constants, see M1's notes) and is additionally not even fully specified by PB itself,
+since procedures can't nest in the first place.
 

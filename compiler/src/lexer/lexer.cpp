@@ -68,6 +68,9 @@ const std::unordered_map<std::string, TokenKind>& keywordTable() {
         {"enableexplicit", TokenKind::KwEnableExplicit},
         {"enumeration", TokenKind::KwEnumeration},
         {"endenumeration", TokenKind::KwEndEnumeration},
+        {"procedure", TokenKind::KwProcedure},
+        {"procedurereturn", TokenKind::KwProcedureReturn},
+        {"endprocedure", TokenKind::KwEndProcedure},
         {"and", TokenKind::KwAnd},
         {"or", TokenKind::KwOr},
         {"not", TokenKind::KwNot},
@@ -111,6 +114,9 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwEnableExplicit: return "'EnableExplicit'";
         case TokenKind::KwEnumeration: return "'Enumeration'";
         case TokenKind::KwEndEnumeration: return "'EndEnumeration'";
+        case TokenKind::KwProcedure: return "'Procedure'";
+        case TokenKind::KwProcedureReturn: return "'ProcedureReturn'";
+        case TokenKind::KwEndProcedure: return "'EndProcedure'";
         case TokenKind::KwAnd: return "'And'";
         case TokenKind::KwOr: return "'Or'";
         case TokenKind::KwNot: return "'Not'";
@@ -330,6 +336,12 @@ Token Lexer::lexIdentifierOrKeyword() {
             advance(); // suffix letter
             suffix = candidate;
         }
+    } else if (peek() == '$') {
+        // `$` is a general alternative String-suffix sigil, usable on any
+        // identifier (oracle-verified: `name$ = "hi"` lowers to the same
+        // string-typed variable as `name.s`), not just on `Procedure`.
+        advance();
+        suffix = TypeSuffix::String;
     }
 
     std::string lower = toLower(text);
@@ -338,7 +350,11 @@ Token Lexer::lexIdentifierOrKeyword() {
     tok.loc = loc;
     tok.text = text;
     tok.suffix = suffix;
-    if (it != keywordTable().end() && suffix == TypeSuffix::None) {
+    if (it != keywordTable().end()) {
+        // Unlike every other keyword, `Procedure` legitimately carries a
+        // type suffix (`Procedure.i`/`Procedure$ Name(...)`) - the suffix
+        // still rides along on the token either way (harmless for keywords
+        // that don't expect one; the parser simply never reads it there).
         tok.kind = it->second;
     } else {
         tok.kind = TokenKind::Identifier;

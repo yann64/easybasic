@@ -138,3 +138,53 @@ TEST_CASE("Sema flags logical XOr as unsupported", "[sema][xor]") {
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+TEST_CASE("Sema resolves a procedure's return type and param count", "[sema][procedure]") {
+    DiagnosticEngine diags;
+    auto module = parse("Procedure.i Add(a.i, b.i)\nProcedureReturn a + b\nEndProcedure", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    const auto* info = sema.procedureInfo("add");
+    REQUIRE(info != nullptr);
+    CHECK(info->returnSuffix == TypeSuffix::Integer);
+    CHECK(info->paramSuffixes.size() == 2);
+    CHECK(info->requiredParamCount == 2);
+}
+
+TEST_CASE("Sema rejects calling an undeclared procedure", "[sema][procedure]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug Nope(1)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a call with the wrong argument count", "[sema][procedure]") {
+    DiagnosticEngine diags;
+    auto module = parse("Procedure.i Add(a.i, b.i)\nProcedureReturn a + b\nEndProcedure\nDebug Add(1)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts a call omitting a defaulted trailing argument", "[sema][procedure]") {
+    DiagnosticEngine diags;
+    auto module =
+        parse("Procedure.i Add(a.i, b.i = 100)\nProcedureReturn a + b\nEndProcedure\nDebug Add(1)", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema gives a procedure body its own isolated scope", "[sema][procedure]") {
+    // Oracle-verified: a procedure reading a same-named outer variable gets
+    // a fresh local defaulting to Integer/0, not the outer variable's type
+    // or value - see ast::ProcedureDeclStmt's own doc comment.
+    DiagnosticEngine diags;
+    auto module = parse("Define outer.s = \"hi\"\nProcedure ReadOuter()\nDebug outer\nEndProcedure", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    // The outer `outer` keeps its own String type - unaffected by the
+    // procedure body's unrelated, isolated local of the same name.
+    CHECK(sema.typeOf("outer") == TypeSuffix::String);
+}

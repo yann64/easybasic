@@ -77,6 +77,24 @@ public:
         return constOrder_;
     }
 
+    /// A declared procedure's resolved signature, for Codegen to emit a
+    /// matching C++ function and to convert call-site arguments/return
+    /// values with the same banker's-rounding rules as everything else.
+    struct ProcedureInfo {
+        TypeSuffix returnSuffix = TypeSuffix::Integer;
+        std::vector<TypeSuffix> paramSuffixes;
+        std::size_t requiredParamCount = 0; ///< Params before the first one with a default.
+        /// Every local (parameters first, in declaration order, then any
+        /// body-internal `Define`/implicit-declare) - Codegen skips the
+        /// first `paramSuffixes.size()` entries when emitting a function's
+        /// *non-parameter* locals, since those are already real C++
+        /// parameters.
+        std::vector<std::pair<std::string, TypeSuffix>> locals;
+    };
+
+    /// Returns nullptr if `lowerName` was never declared as a procedure.
+    const ProcedureInfo* procedureInfo(const std::string& lowerName) const;
+
 private:
     void visitStmt(ast::Stmt& stmt);
     void visitBlock(ast::Block& block);
@@ -105,6 +123,11 @@ private:
     /// `XOr` - see BinaryOp::LogicalXOr's own doc comment for why it's not
     /// yet trusted - and resolving/declaring any variables it references.
     void visitCondition(ast::Expr& expr);
+    /// Validates a call's argument count against the callee's signature and
+    /// visits each argument expression; reports an "undeclared procedure"
+    /// error (with a recovery fallback so later statements still resolve
+    /// sensibly) if `name` was never declared.
+    void visitCall(ast::CallExpr& call);
 
     DiagnosticEngine& diagnostics_;
     std::unordered_map<std::string, TypeSuffix> symbols_;
@@ -112,6 +135,13 @@ private:
     std::unordered_map<std::string, TypeSuffix> constants_;
     std::vector<std::pair<std::string, TypeSuffix>> constOrder_;
     bool explicitEnabled_ = false;
+    std::unordered_map<std::string, ProcedureInfo> procedures_;
+    /// The return suffix of the procedure whose body is currently being
+    /// visited, used by a nested `ProcedureReturn`'s own type checking; only
+    /// meaningful while `insideProcedure_` is true (PB procedures don't
+    /// nest, so a single flag - not a stack - is enough).
+    TypeSuffix currentProcedureReturnSuffix_ = TypeSuffix::Integer;
+    bool insideProcedure_ = false;
 };
 
 } // namespace easybasic

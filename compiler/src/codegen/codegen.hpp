@@ -30,6 +30,17 @@ private:
     /// declares constants at module scope, so this hasn't blocked anything
     /// yet, but it's a real gap worth fixing before it does).
     void genGlobalConstants();
+    /// Emits every top-level `Procedure` as a standalone C++ function,
+    /// before `main()`. PB requires a procedure to be fully defined before
+    /// any call to it (oracle-verified: no forward declarations/hoisting -
+    /// see ast::ProcedureDeclStmt's own doc comment), so emitting each one
+    /// in source order - exactly like this walk does - already satisfies
+    /// C++'s own "declared before use" rule for free, without a separate
+    /// prototype-emission pass. Same top-level-only limitation as
+    /// genGlobalConstants (PB doesn't nest procedures anyway, so this
+    /// hasn't been a real gap in practice).
+    void genProcedures();
+    void genProcedureDecl(const ast::ProcedureDeclStmt& proc);
     void genStmt(const ast::Stmt& stmt);
     void genBlock(const ast::Block& block);
     /// `floatContext` mirrors Sema::classify's own parameter: true exactly
@@ -57,10 +68,24 @@ private:
     bool debugMode_;
     std::string out_;
     int tempCounter_ = 0; ///< Disambiguates generated temporaries (For bounds, Select's subject).
+    /// The return type of the procedure whose body is currently being
+    /// emitted - used by a nested `ProcedureReturn`'s own conversion, and by
+    /// the fallthrough safety net `genProcedureDecl` appends after the
+    /// body. Only meaningful while emitting inside a procedure (PB
+    /// procedures don't nest, so a single field - not a stack - is enough).
+    TypeSuffix currentProcReturnSuffix_ = TypeSuffix::Integer;
 };
 
 /// The C++ type easybasic uses to represent each PB type-suffix. Exposed for
 /// tests/tooling as well as Codegen itself.
 const char* cppTypeFor(TypeSuffix suffix);
+
+/// The C++ literal representing PB's "zero value" for `suffix` - `0`/`0.0`
+/// for numeric types, an empty `PBString` for `.s`. Used both for a
+/// procedure's fallthrough-returns-zero-value semantics (oracle-verified:
+/// falling off the end of a procedure body returns the declared return
+/// type's zero value, not undefined behavior) and for default-initializing
+/// a global/local variable's own C++ declaration.
+std::string defaultValueLiteral(TypeSuffix suffix);
 
 } // namespace easybasic

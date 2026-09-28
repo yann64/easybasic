@@ -171,6 +171,85 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             }
             break;
         }
+        case ast::StmtKind::ProcedureDecl: {
+            auto& proc = static_cast<ast::ProcedureDeclStmt&>(stmt);
+            TypeSuffix returnSuffix = proc.returnSuffix == TypeSuffix::None ? TypeSuffix::Integer : proc.returnSuffix;
+
+            if (procedures_.contains(proc.name)) {
+                diagnostics_.error(proc.loc, "'" + proc.spelling + "' is already declared as a procedure");
+            }
+
+            ProcedureInfo info;
+            info.returnSuffix = returnSuffix;
+            bool sawDefault = false;
+            for (auto& param : proc.params) {
+                TypeSuffix paramSuffix = param.suffix == TypeSuffix::None ? TypeSuffix::Integer : param.suffix;
+                info.paramSuffixes.push_back(paramSuffix);
+                if (param.defaultValue) {
+                    sawDefault = true;
+                } else if (sawDefault) {
+                    diagnostics_.error(proc.loc,
+                                        "'" + param.spelling + "': a required parameter cannot follow one with a default value");
+                } else {
+                    ++info.requiredParamCount;
+                }
+            }
+            // Registered BEFORE the body is visited - oracle-verified PB
+            // requires this for self-recursion to resolve at all (see the
+            // struct's own doc comment), so this mirrors real PB exactly.
+            procedures_[proc.name] = info;
+
+            // Default values are evaluated in the OUTER scope, not against
+            // the procedure's own (not-yet-entered) locals.
+            for (auto& param : proc.params) {
+                if (param.defaultValue) {
+                    visitExpr(*param.defaultValue);
+                }
+            }
+
+            // Swap to a fresh, ISOLATED local scope - oracle-verified: a
+            // procedure body cannot see outer variables at all by default
+            // (see ast::ProcedureDeclStmt's own doc comment). PB procedures
+            // never nest, so a simple save/restore is enough, not a stack.
+            auto savedSymbols = std::move(symbols_);
+            auto savedOrder = std::move(order_);
+            symbols_ = {};
+            order_ = {};
+
+            for (auto& param : proc.params) {
+                TypeSuffix paramSuffix = param.suffix == TypeSuffix::None ? TypeSuffix::Integer : param.suffix;
+                declare(param.name, param.spelling, paramSuffix, proc.loc);
+            }
+
+            bool savedInside = insideProcedure_;
+            TypeSuffix savedReturnSuffix = currentProcedureReturnSuffix_;
+            insideProcedure_ = true;
+            currentProcedureReturnSuffix_ = returnSuffix;
+
+            visitBlock(proc.body);
+
+            insideProcedure_ = savedInside;
+            currentProcedureReturnSuffix_ = savedReturnSuffix;
+
+            procedures_[proc.name].locals = order_; // params first, then any body-internal locals
+
+            symbols_ = std::move(savedSymbols);
+            order_ = std::move(savedOrder);
+            break;
+        }
+        case ast::StmtKind::ProcedureReturn: {
+            auto& ret = static_cast<ast::ProcedureReturnStmt&>(stmt);
+            if (ret.value) {
+                visitExpr(*ret.value);
+                checkAssignable("return value", currentProcedureReturnSuffix_, *ret.value, ret.loc);
+            }
+            break;
+        }
+        case ast::StmtKind::ExprStmt: {
+            auto& exprStmt = static_cast<ast::ExprStmt&>(stmt);
+            visitExpr(*exprStmt.expr);
+            break;
+        }
     }
 }
 
@@ -204,10 +283,33 @@ void Sema::visitExpr(ast::Expr& expr) {
             visitExpr(*un.operand);
             break;
         }
+        case ast::ExprKind::Call: {
+            auto& call = static_cast<ast::CallExpr&>(expr);
+            visitCall(call);
+            break;
+        }
         case ast::ExprKind::IntLiteral:
         case ast::ExprKind::FloatLiteral:
         case ast::ExprKind::StringLiteral:
             break;
+    }
+}
+
+void Sema::visitCall(ast::CallExpr& call) {
+    auto it = procedures_.find(call.name);
+    if (it == procedures_.end()) {
+        diagnostics_.error(call.loc, "'" + call.spelling + "' is not a declared procedure");
+        for (auto& arg : call.args) {
+            visitExpr(*arg);
+        }
+        return;
+    }
+    const ProcedureInfo& info = it->second;
+    if (call.args.size() < info.requiredParamCount || call.args.size() > info.paramSuffixes.size()) {
+        diagnostics_.error(call.loc, "'" + call.spelling + "' called with the wrong number of arguments");
+    }
+    for (auto& arg : call.args) {
+        visitExpr(*arg);
     }
 }
 
@@ -299,6 +401,15 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
             }
             return floatContext ? ValueKind::FloatFamily : natural;
         }
+        case ast::ExprKind::Call: {
+            const auto& call = static_cast<const ast::CallExpr&>(expr);
+            const ProcedureInfo* info = procedureInfo(call.name);
+            ValueKind natural = info != nullptr ? familyOf(info->returnSuffix) : ValueKind::IntegerFamily;
+            if (natural == ValueKind::StringFamily) {
+                return ValueKind::StringFamily;
+            }
+            return floatContext ? ValueKind::FloatFamily : natural;
+        }
         case ast::ExprKind::Unary: {
             const auto& un = static_cast<const ast::UnaryExpr&>(expr);
             return classify(*un.operand, floatContext);
@@ -359,6 +470,11 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
 TypeSuffix Sema::constTypeOf(const std::string& lowerName) const {
     auto it = constants_.find(lowerName);
     return it == constants_.end() ? TypeSuffix::Integer : it->second;
+}
+
+const Sema::ProcedureInfo* Sema::procedureInfo(const std::string& lowerName) const {
+    auto it = procedures_.find(lowerName);
+    return it == procedures_.end() ? nullptr : &it->second;
 }
 
 } // namespace easybasic

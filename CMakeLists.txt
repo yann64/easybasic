@@ -28,6 +28,15 @@ configure_file(
     @ONLY
 )
 
+# -Wswitch (part of -Wall) is what would have caught a real M2 bug during
+# development: Codegen's genStmt/genExpr switches silently did nothing for
+# newly-added ast::StmtKind/ExprKind values before -Wall was added here,
+# because an unmatched case with no `default:` is well-defined C++ (falls
+# through to after the switch), not a compile error - only a warning flags
+# it. Kept as a plain warning (not -Werror): CI's own clang-tidy/cppcheck
+# jobs are the hard gates; this is a fast, always-on local safety net.
+add_compile_options(-Wall -Wextra)
+
 option(EASYBASIC_SANITIZE "Build with -fsanitize=address,undefined" OFF)
 if(EASYBASIC_SANITIZE)
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)

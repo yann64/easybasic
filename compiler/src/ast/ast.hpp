@@ -35,7 +35,7 @@ enum class UnaryOp { Negate, BitNot, LogicalNot };
 /// the target toolchain builds with RTTI enabled (Haiku's GCC does by
 /// default, but there's no reason to depend on it for a simple closed set
 /// of node types known entirely at compile time).
-enum class ExprKind { IntLiteral, FloatLiteral, StringLiteral, VarRef, ConstRef, Binary, Unary };
+enum class ExprKind { IntLiteral, FloatLiteral, StringLiteral, VarRef, ConstRef, Binary, Unary, Call };
 
 /// Base of every expression node. Untyped: Sema annotates/validates types in
 /// place over this same tree rather than building a second, typed tree - the
@@ -99,10 +99,19 @@ struct UnaryExpr : Expr {
     std::unique_ptr<Expr> operand;
 };
 
+/// `Name(arg1, arg2, ...)` - a procedure call used as a value.
+struct CallExpr : Expr {
+    CallExpr() : Expr(ExprKind::Call) {}
+    std::string name;
+    std::string spelling;
+    std::vector<std::unique_ptr<Expr>> args;
+};
+
 enum class StmtKind {
     Define, Assign, Debug,
     If, Select, For, While, Repeat,
     Break, Continue, EnableExplicit, ConstDecl, Enumeration,
+    ProcedureDecl, ProcedureReturn, ExprStmt,
 };
 
 /// Base of every statement node.
@@ -241,6 +250,47 @@ struct EnumerationStmt : Stmt {
         std::unique_ptr<Expr> explicitValue; ///< Null means auto-increment.
     };
     std::vector<Member> members;
+};
+
+/// `Procedure[.suffix|$] Name(param1[.suffix][ = default], ...) ... EndProcedure`.
+/// PB requires procedures to be fully defined before any call to them
+/// (oracle-verified: calling one declared later in the file is a compile
+/// error - no forward declarations/hoisting) and gives each one its own,
+/// completely isolated local scope (oracle-verified: a procedure body
+/// reading a same-named outer variable gets a fresh local defaulting to 0,
+/// not the outer value) - see Sema's own notes for how this is modeled.
+struct ProcedureDeclStmt : Stmt {
+    ProcedureDeclStmt() : Stmt(StmtKind::ProcedureDecl) {}
+    std::string name;
+    std::string spelling;
+    TypeSuffix returnSuffix = TypeSuffix::None; ///< None defaults to Integer, like everywhere else.
+    struct Param {
+        std::string name;
+        std::string spelling;
+        TypeSuffix suffix = TypeSuffix::None;
+        std::unique_ptr<Expr> defaultValue; ///< Null means required.
+    };
+    std::vector<Param> params;
+    Block body;
+};
+
+/// `ProcedureReturn [expr]` - `value` is null for a bare return with no
+/// value (a Sub-like procedure). Falling off the end of a procedure body
+/// without ever executing one behaves like `ProcedureReturn` with no value
+/// (oracle-verified: returns the declared return type's zero value) -
+/// Codegen's fallthrough safety net (mirroring eBasic's own identical
+/// pattern) reproduces this rather than relying on C++'s undefined
+/// behavior for falling off the end of a non-void function.
+struct ProcedureReturnStmt : Stmt {
+    ProcedureReturnStmt() : Stmt(StmtKind::ProcedureReturn) {}
+    std::unique_ptr<Expr> value;
+};
+
+/// A call used as a whole statement (its return value, if any, discarded) -
+/// e.g. `DoSomething(1, 2)` on its own line.
+struct ExprStmt : Stmt {
+    ExprStmt() : Stmt(StmtKind::ExprStmt) {}
+    std::unique_ptr<Expr> expr;
 };
 
 /// A whole compiled translation unit.

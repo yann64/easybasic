@@ -5,12 +5,13 @@ compiles the generated C++ with a real backend compiler (g++/clang++).
 
 ## Status
 
-`M0`/`M1` done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
+`M0`-`M2` done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
 operator/precedence table (arithmetic, bitwise, comparisons, logical), `If`/`Select`/
-`For`/`While`/`Repeat`, `EnableExplicit`, and `#Name`/`Enumeration` constants - all
-cross-checked against PureBasic's own compiler, including two real bugs (target-typed
-`/`, and a two-tier vs. one-tier bitwise precedence mix-up) the differential test suite
-caught before they shipped. See
+`For`/`While`/`Repeat`, `EnableExplicit`, `#Name`/`Enumeration` constants, and
+`Procedure`/`ProcedureReturn` with recursion and genuinely isolated per-procedure
+scope - all cross-checked against PureBasic's own compiler, including real bugs (a
+target-typed `/`, a two-tier vs. one-tier bitwise precedence mix-up) the differential
+test suite caught before they shipped. See
 [`docs/architecture/roadmap.md`](docs/architecture/roadmap.md) for the full milestone
 plan and the per-milestone implementation notes.
 

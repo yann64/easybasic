@@ -53,6 +53,13 @@ std::string formatFloatLiteral(double value) {
 
 } // namespace
 
+std::string defaultValueLiteral(TypeSuffix suffix) {
+    if (familyOf(suffix) == ValueKind::StringFamily) {
+        return "easybasic::runtime::PBString()";
+    }
+    return std::string("static_cast<") + cppTypeFor(suffix) + ">(0)";
+}
+
 Codegen::Codegen(const ast::Module& module, const Sema& sema, bool debugMode)
     : module_(module), sema_(sema), debugMode_(debugMode) {}
 
@@ -95,6 +102,28 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
         case ast::ExprKind::ConstRef: {
             const auto& ref = static_cast<const ast::ConstRefExpr&>(expr);
             return "k_" + ref.name;
+        }
+        case ast::ExprKind::Call: {
+            const auto& call = static_cast<const ast::CallExpr&>(expr);
+            const Sema::ProcedureInfo* info = sema_.procedureInfo(call.name);
+            std::string code = "f_" + call.name + "(";
+            for (std::size_t i = 0; i < call.args.size(); ++i) {
+                if (i != 0) {
+                    code += ", ";
+                }
+                // Each argument is converted to its parameter's declared
+                // type at the call site, mirroring Define/Assign's own
+                // target-typed conversion (same banker's-rounding rule
+                // applies: passing a Float where an Integer parameter is
+                // declared rounds, it doesn't truncate).
+                TypeSuffix paramSuffix =
+                    (info != nullptr && i < info->paramSuffixes.size()) ? info->paramSuffixes[i] : TypeSuffix::Integer;
+                bool paramFloatCtx = familyOf(paramSuffix) == ValueKind::FloatFamily;
+                code += convert(genExpr(*call.args[i], paramFloatCtx), sema_.classify(*call.args[i], paramFloatCtx),
+                                 paramSuffix);
+            }
+            code += ")";
+            return code;
         }
         case ast::ExprKind::Unary: {
             const auto& un = static_cast<const ast::UnaryExpr&>(expr);
@@ -242,6 +271,60 @@ void Codegen::genGlobalConstants() {
             }
         }
     }
+}
+
+void Codegen::genProcedures() {
+    for (const auto& stmt : module_.statements) {
+        if (stmt->kind == ast::StmtKind::ProcedureDecl) {
+            genProcedureDecl(static_cast<const ast::ProcedureDeclStmt&>(*stmt));
+        }
+    }
+}
+
+void Codegen::genProcedureDecl(const ast::ProcedureDeclStmt& proc) {
+    const Sema::ProcedureInfo* info = sema_.procedureInfo(proc.name);
+    TypeSuffix returnSuffix = info != nullptr ? info->returnSuffix : TypeSuffix::Integer;
+
+    out_ += std::string(cppTypeFor(returnSuffix)) + " f_" + proc.name + "(";
+    for (std::size_t i = 0; i < proc.params.size(); ++i) {
+        if (i != 0) {
+            out_ += ", ";
+        }
+        const auto& param = proc.params[i];
+        TypeSuffix paramSuffix = info != nullptr && i < info->paramSuffixes.size() ? info->paramSuffixes[i] : TypeSuffix::Integer;
+        out_ += std::string(cppTypeFor(paramSuffix)) + " v_" + param.name;
+        if (param.defaultValue) {
+            // A real C++ default parameter - the callee's own declaration
+            // supplies it natively, so a call site omitting the argument
+            // needs no special handling at all (see genExpr's Call case).
+            bool floatCtx = familyOf(paramSuffix) == ValueKind::FloatFamily;
+            out_ += " = " + convert(genExpr(*param.defaultValue, floatCtx),
+                                     sema_.classify(*param.defaultValue, floatCtx), paramSuffix);
+        }
+    }
+    out_ += ") {\n";
+
+    // Non-parameter locals (params are already real C++ parameters, so
+    // they're skipped here - see Sema::ProcedureInfo::locals's own comment).
+    if (info != nullptr) {
+        for (std::size_t i = info->paramSuffixes.size(); i < info->locals.size(); ++i) {
+            const auto& [name, suffix] = info->locals[i];
+            out_ += std::string("    ") + cppTypeFor(suffix) + " v_" + name + "{};\n";
+        }
+    }
+
+    TypeSuffix savedReturnSuffix = currentProcReturnSuffix_;
+    currentProcReturnSuffix_ = returnSuffix;
+    genBlock(proc.body);
+    currentProcReturnSuffix_ = savedReturnSuffix;
+
+    // Fallthrough safety net (mirrors eBasic's own identical pattern):
+    // oracle-verified that falling off the end of a PB procedure returns
+    // the declared return type's zero value, which is undefined behavior
+    // for a non-void C++ function without this - never rely on every
+    // control-flow path having hit an explicit ProcedureReturn.
+    out_ += "    return " + defaultValueLiteral(returnSuffix) + ";\n";
+    out_ += "}\n\n";
 }
 
 void Codegen::genBlock(const ast::Block& block) {
@@ -404,7 +487,25 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             break;
         case ast::StmtKind::ConstDecl:
         case ast::StmtKind::Enumeration:
-            break; // Already emitted as global `static const`s by genGlobalConstants().
+        case ast::StmtKind::ProcedureDecl: // NOLINT(bugprone-branch-clone) - already emitted by genProcedures().
+            break; // Already emitted as globals/functions by genGlobalConstants()/genProcedures().
+        case ast::StmtKind::ProcedureReturn: {
+            const auto& ret = static_cast<const ast::ProcedureReturnStmt&>(stmt);
+            if (ret.value) {
+                bool floatCtx = familyOf(currentProcReturnSuffix_) == ValueKind::FloatFamily;
+                std::string code = convert(genExpr(*ret.value, floatCtx), sema_.classify(*ret.value, floatCtx),
+                                            currentProcReturnSuffix_);
+                out_ += "    return " + code + ";\n";
+            } else {
+                out_ += "    return " + defaultValueLiteral(currentProcReturnSuffix_) + ";\n";
+            }
+            break;
+        }
+        case ast::StmtKind::ExprStmt: {
+            const auto& exprStmt = static_cast<const ast::ExprStmt&>(stmt);
+            out_ += "    " + genExpr(*exprStmt.expr, false) + ";\n";
+            break;
+        }
     }
 }
 
@@ -417,6 +518,8 @@ std::string Codegen::generate() {
     out_ += "#include <easybasic/runtime/runtime.hpp>\n\n";
 
     genGlobalConstants();
+    out_ += "\n";
+    genProcedures();
     for (const auto& [name, suffix] : sema_.declarationOrder()) {
         out_ += std::string("static ") + cppTypeFor(suffix) + " v_" + name + "{};\n";
     }
