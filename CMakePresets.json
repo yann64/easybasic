@@ -1,0 +1,71 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "linux-gcc",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/linux-gcc",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-clang",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/linux-clang",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-clang-sanitize",
+      "description": "linux-clang plus -fsanitize=address,undefined for the required CI sanitizer job.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/linux-clang-sanitize",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "EASYBASIC_SANITIZE": "ON"
+      }
+    },
+    {
+      "name": "windows-mingw",
+      "description": "MinGW port - run inside an MSYS2 (mingw64) shell where g++/gcc/Unix Makefiles are provided natively, not a cross-compilation setup.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/windows-mingw",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "haiku",
+      "description": "Haiku's system compiler is GCC, same shape as linux-gcc. CMAKE_INSTALL_DATADIR overrides GNUInstallDirs's generic 'share' default: Haiku's real data directory is 'data'.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/haiku",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_INSTALL_DATADIR": "data"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-gcc", "configurePreset": "linux-gcc" },
+    { "name": "linux-clang", "configurePreset": "linux-clang" },
+    { "name": "linux-clang-sanitize", "configurePreset": "linux-clang-sanitize" },
+    { "name": "windows-mingw", "configurePreset": "windows-mingw" },
+    { "name": "haiku", "configurePreset": "haiku" }
+  ],
+  "testPresets": [
+    { "name": "linux-gcc", "configurePreset": "linux-gcc", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang", "configurePreset": "linux-clang", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang-sanitize", "configurePreset": "linux-clang-sanitize", "output": { "outputOnFailure": true }, "environment": { "ASAN_OPTIONS": "detect_leaks=1" } },
+    { "name": "windows-mingw", "configurePreset": "windows-mingw", "output": { "outputOnFailure": true } },
+    { "name": "haiku", "configurePreset": "haiku", "output": { "outputOnFailure": true } }
+  ]
+}

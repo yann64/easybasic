@@ -1,0 +1,43 @@
+# Disabled checks, with reasons (tuned empirically against real warnings,
+# per docs/architecture/roadmap.md's testing-strategy notes):
+#   - avoid-magic-numbers / magic-numbers: far too noisy for compiler-
+#     internals code full of small, self-explanatory integer constants.
+#   - pro-bounds-pointer-arithmetic: the driver's process.cpp needs raw
+#     argv-style pointer arithmetic for execvp/_spawnvp.
+#   - use-trailing-return-type: stylistic preference, not adopted.
+#   - identifier-length: flags conventional short names (op, it, c) used
+#     throughout parser/codegen; not a real readability problem here.
+#   - enum-size: premature micro-optimization for every internal enum.
+#   - avoid-const-or-ref-data-members: DiagnosticEngine& members are a
+#     deliberate, correct pattern (a live reference shared across the whole
+#     pipeline), not a lifetime bug.
+#   - avoid-do-while: parser.cpp's comma-separated-declarator loop is a
+#     legitimate do-while (runs at least once by construction).
+#   - pro-type-static-cast-downcast: the AST (ast.hpp) deliberately uses a
+#     cheap enum tag (ExprKind/StmtKind) instead of RTTI for dispatch, so
+#     every downcast here is tag-checked immediately beforehand via a
+#     switch - dynamic_cast would require RTTI the target toolchain isn't
+#     guaranteed to have enabled, for no added safety over the tag check.
+#   - use-designated-initializers: the small aggregate structs
+#     (SourceLoc/Diagnostic/ProcessResult) are consistently positional-
+#     brace-initialized throughout; not worth churning for style alone.
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -readability-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -performance-enum-size,
+  -cppcoreguidelines-avoid-const-or-ref-data-members,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-pro-type-static-cast-downcast,
+  -modernize-use-designated-initializers
+WarningsAsErrors: ''
+HeaderFilterRegex: '(compiler|runtime)/.*'
+FormatStyle: none

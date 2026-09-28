@@ -1,0 +1,25 @@
+# Minimal Doxygen config for easybasic's API docs. Unset options fall back
+# to Doxygen's own built-in defaults. INPUT/OUTPUT_DIRECTORY are supplied at
+# build time via environment variables (see the top-level CMakeLists.txt's
+# `docs` target: `cmake --build <preset> --target docs`).
+
+PROJECT_NAME           = "easybasic"
+PROJECT_BRIEF          = "A PureBasic-to-C++ transpiler"
+
+INPUT                  = $(EASYBASIC_DOXYGEN_INPUT)
+OUTPUT_DIRECTORY       = $(EASYBASIC_DOXYGEN_OUTPUT)
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp *.cpp
+
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = NO
+
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_NO_PARAMDOC       = NO
+
+JAVADOC_AUTOBRIEF      = YES

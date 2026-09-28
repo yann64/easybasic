@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-gcc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset linux-gcc
+      - name: Build
+        run: cmake --build --preset linux-gcc
+      - name: Test
+        run: ctest --preset linux-gcc
+
+  linux-clang:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Configure
+        run: cmake --preset linux-clang
+      - name: Build
+        run: cmake --build --preset linux-clang
+      - name: Test
+        run: ctest --preset linux-clang
+      - name: Test (clang++ as the generated-code backend too)
+        run: CXX=clang++ ctest --preset linux-clang
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Configure
+        run: cmake --preset linux-clang-sanitize
+      - name: Build
+        run: cmake --build --preset linux-clang-sanitize
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+        run: ctest --preset linux-clang-sanitize
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-tidy and cppcheck
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy cppcheck
+      - name: Configure (for compile_commands.json)
+        run: cmake --preset linux-clang -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: clang-tidy
+        run: |
+          run-clang-tidy -p build/linux-clang \
+            $(find compiler/src runtime/include -name '*.cpp' -o -name '*.hpp')
+      - name: cppcheck
+        run: |
+          cppcheck --enable=all --inconclusive --error-exitcode=1 --suppress=missingIncludeSystem \
+            compiler/src runtime/include
+
+  windows-mingw:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            make
+            diffutils
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+      - name: Configure
+        run: cmake --preset windows-mingw
+      - name: Build
+        run: cmake --build --preset windows-mingw
+      - name: Test
+        run: ctest --preset windows-mingw
+
+  # Haiku is not part of this matrix - no GitHub-hosted Haiku image exists.
+  # The real path to Haiku CI is registering an SSH-reachable qemu VM as a
+  # self-hosted runner (M6) - see docs/architecture/roadmap.md's M6 notes.
