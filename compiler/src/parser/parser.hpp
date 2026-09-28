@@ -1,5 +1,6 @@
 #pragma once
 
+#include <initializer_list>
 #include <memory>
 #include <vector>
 
@@ -24,16 +25,36 @@ private:
     std::unique_ptr<ast::Stmt> parseStatement();
     std::unique_ptr<ast::Stmt> parseDefine();
     std::unique_ptr<ast::Stmt> parseDebug();
-    std::unique_ptr<ast::Stmt> parseAssignment();
+    std::unique_ptr<ast::Stmt> parseAssignmentOrConstDecl();
+    std::unique_ptr<ast::Stmt> parseIf();
+    std::unique_ptr<ast::Stmt> parseSelect();
+    std::unique_ptr<ast::Stmt> parseFor();
+    std::unique_ptr<ast::Stmt> parseWhile();
+    std::unique_ptr<ast::Stmt> parseRepeat();
+    std::unique_ptr<ast::Stmt> parseEnumeration();
+    ast::Block parseBlockUntil(std::initializer_list<TokenKind> terminators);
     void skipStatementSeparators();
 
-    // --- expressions, precedence climbing; see ast.hpp / codegen for the
-    // oracle-verified precedence rationale (`%` binds tighter than `*`/`/`,
-    // there is no `^` operator at all) ---
-    std::unique_ptr<ast::Expr> parseExpr();      // + -
-    std::unique_ptr<ast::Expr> parseMul();       // * /
-    std::unique_ptr<ast::Expr> parseMod();       // %
-    std::unique_ptr<ast::Expr> parseUnary();     // unary -
+    // --- expressions, precedence climbing; see ast.hpp / docs/architecture/
+    // roadmap.md's M1 notes for the oracle-verified precedence rationale
+    // (no `^` operator; `%`/`&`/`|`/`!`/`<<`/`>>` are one flat left-to-right
+    // tier tighter than `*`/`/`, which is tighter than binary `+`/`-`;
+    // `And`/`Or` are likewise one flat left-to-right tier, not nested).
+    //
+    // parseCondition() is the entry point for If/While/Until conditions,
+    // where bare comparisons and And/Or/Not/XOr are legal; parseExpr() (the
+    // general arithmetic grammar used everywhere else - Define/Assign/
+    // Debug/operands of a comparison) does NOT accept them at all, mirroring
+    // PB's own restriction (oracle-verified: a bare comparison outside a
+    // conditional is a compile error in real PB).
+    std::unique_ptr<ast::Expr> parseCondition();     // And/Or/XOr (flat)
+    std::unique_ptr<ast::Expr> parseLogicalNot();    // prefix Not
+    std::unique_ptr<ast::Expr> parseComparison();    // = <> < > <= >=
+    std::unique_ptr<ast::Expr> parseExpr();          // + -
+    std::unique_ptr<ast::Expr> parseMul();           // * /
+    std::unique_ptr<ast::Expr> parseBitwiseOrAnd();  // & | (flat, its own tier - looser than parseBitwiseTight)
+    std::unique_ptr<ast::Expr> parseBitwiseTight();  // % ! << >> (flat, tighter than & |)
+    std::unique_ptr<ast::Expr> parseUnary();         // unary - ~
     std::unique_ptr<ast::Expr> parsePrimary();
 
     // --- token stream plumbing ---

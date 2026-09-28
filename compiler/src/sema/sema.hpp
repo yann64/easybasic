@@ -65,19 +65,53 @@ public:
         return order_;
     }
 
+    /// The resolved type for a declared `#Name` constant, or
+    /// TypeSuffix::Integer if never seen.
+    TypeSuffix constTypeOf(const std::string& lowerName) const;
+
+    /// Every declared constant (`#Name = expr` or an `Enumeration` member),
+    /// in first-seen order, for Codegen to emit as C++ globals. Constants
+    /// live in their own namespace from variables (`#Foo` and `Foo` never
+    /// collide), mirrored here by a separate table from `declarationOrder`.
+    const std::vector<std::pair<std::string, TypeSuffix>>& constDeclarationOrder() const {
+        return constOrder_;
+    }
+
 private:
     void visitStmt(ast::Stmt& stmt);
+    void visitBlock(ast::Block& block);
     void declare(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
                  SourceLoc loc);
+    /// Like declare(), but for a name reached through PB's implicit-
+    /// declaration behavior (a bare assignment, a For-loop variable, or
+    /// reading a never-assigned name) rather than an explicit `Define`.
+    /// Errors under `EnableExplicit` instead of silently declaring, exactly
+    /// like real PB (oracle-verified error text: "With 'EnableExplicit',
+    /// variables have to be declared: <name>.") - but still declares
+    /// afterwards regardless, purely so Codegen never sees a symbol with no
+    /// recorded type (the pipeline already stops before Codegen runs once
+    /// any error is recorded, so this is a defensive fallback, not a way to
+    /// let EnableExplicit violations silently through).
+    void declareImplicit(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
+                          SourceLoc loc);
+    void declareConst(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
+                       SourceLoc loc);
     void visitExpr(ast::Expr& expr);
     /// Rejects String<->numeric assignments, which real PB also rejects
     /// without an explicit Str()/Val() conversion (not modeled yet - M4).
     void checkAssignable(const std::string& targetSpelling, TypeSuffix targetSuffix,
                           const ast::Expr& value, SourceLoc loc);
+    /// Walks a condition expression (If/While/Until), flagging logical
+    /// `XOr` - see BinaryOp::LogicalXOr's own doc comment for why it's not
+    /// yet trusted - and resolving/declaring any variables it references.
+    void visitCondition(ast::Expr& expr);
 
     DiagnosticEngine& diagnostics_;
     std::unordered_map<std::string, TypeSuffix> symbols_;
     std::vector<std::pair<std::string, TypeSuffix>> order_; ///< First-seen declaration order.
+    std::unordered_map<std::string, TypeSuffix> constants_;
+    std::vector<std::pair<std::string, TypeSuffix>> constOrder_;
+    bool explicitEnabled_ = false;
 };
 
 } // namespace easybasic

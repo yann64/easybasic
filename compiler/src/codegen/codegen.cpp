@@ -92,12 +92,55 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
             const auto& ref = static_cast<const ast::VarRefExpr&>(expr);
             return "v_" + ref.name;
         }
+        case ast::ExprKind::ConstRef: {
+            const auto& ref = static_cast<const ast::ConstRefExpr&>(expr);
+            return "k_" + ref.name;
+        }
         case ast::ExprKind::Unary: {
             const auto& un = static_cast<const ast::UnaryExpr&>(expr);
-            return "(-" + genExpr(*un.operand, floatContext) + ")";
+            switch (un.op) {
+                case ast::UnaryOp::Negate:
+                    return "(-" + genExpr(*un.operand, floatContext) + ")";
+                case ast::UnaryOp::BitNot:
+                    // Integer-only, regardless of any enclosing Float
+                    // destination (see BinaryOp::BitAnd's identical
+                    // rationale just below).
+                    return "(~" + genExpr(*un.operand, false) + ")";
+                case ast::UnaryOp::LogicalNot:
+                    // Only ever appears inside a condition tree, lowered by
+                    // genCondition instead - unreachable in practice.
+                    return "(!" + genExpr(*un.operand, false) + ")";
+            }
+            break;
         }
         case ast::ExprKind::Binary: {
             const auto& bin = static_cast<const ast::BinaryExpr&>(expr);
+            switch (bin.op) {
+                case ast::BinaryOp::BitAnd:
+                case ast::BinaryOp::BitOr:
+                case ast::BinaryOp::BitXor:
+                case ast::BinaryOp::ShiftLeft:
+                case ast::BinaryOp::ShiftRight: {
+                    // Integer-only (see Sema::classify's identical
+                    // rationale) - operands generated without floatContext
+                    // even if the destination is Float, since these ops
+                    // themselves are always evaluated as integers first.
+                    std::string lhs = genExpr(*bin.lhs, false);
+                    std::string rhs = genExpr(*bin.rhs, false);
+                    switch (bin.op) {
+                        case ast::BinaryOp::BitAnd: return "(" + lhs + " & " + rhs + ")";
+                        case ast::BinaryOp::BitOr: return "(" + lhs + " | " + rhs + ")";
+                        // PB's `!` is bitwise XOR, not logical negation.
+                        case ast::BinaryOp::BitXor: return "(" + lhs + " ^ " + rhs + ")";
+                        case ast::BinaryOp::ShiftLeft: return "(" + lhs + " << " + rhs + ")";
+                        case ast::BinaryOp::ShiftRight: return "(" + lhs + " >> " + rhs + ")";
+                        default: break;
+                    }
+                    break;
+                }
+                default:
+                    break;
+            }
             std::string lhs = genExpr(*bin.lhs, floatContext);
             std::string rhs = genExpr(*bin.rhs, floatContext);
             switch (bin.op) {
@@ -119,11 +162,92 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                         return "std::fmod(static_cast<double>(" + lhs + "), static_cast<double>(" + rhs + "))";
                     }
                     return "(" + lhs + " % " + rhs + ")";
+                default:
+                    // Eq/Ne/Lt/Gt/Le/Ge/LogicalAnd/LogicalOr/LogicalXOr only
+                    // ever appear inside a condition tree, lowered by
+                    // genCondition instead - unreachable in practice.
+                    return "0";
             }
-            break;
         }
     }
     return "0"; // unreachable for a well-formed AST
+}
+
+std::string Codegen::genCondition(const ast::Expr& expr) {
+    if (expr.kind == ast::ExprKind::Binary) {
+        const auto& bin = static_cast<const ast::BinaryExpr&>(expr);
+        switch (bin.op) {
+            case ast::BinaryOp::LogicalAnd:
+                return "(" + genCondition(*bin.lhs) + " && " + genCondition(*bin.rhs) + ")";
+            case ast::BinaryOp::LogicalOr:
+                return "(" + genCondition(*bin.lhs) + " || " + genCondition(*bin.rhs) + ")";
+            case ast::BinaryOp::LogicalXOr:
+                // Sema already reports an error for this (see
+                // Sema::visitCondition), so main.cpp never reaches Codegen
+                // for this input - a harmless placeholder is enough.
+                return "false";
+            case ast::BinaryOp::Eq: return "(" + genExpr(*bin.lhs, false) + " == " + genExpr(*bin.rhs, false) + ")";
+            case ast::BinaryOp::Ne: return "(" + genExpr(*bin.lhs, false) + " != " + genExpr(*bin.rhs, false) + ")";
+            case ast::BinaryOp::Lt: return "(" + genExpr(*bin.lhs, false) + " < " + genExpr(*bin.rhs, false) + ")";
+            case ast::BinaryOp::Gt: return "(" + genExpr(*bin.lhs, false) + " > " + genExpr(*bin.rhs, false) + ")";
+            case ast::BinaryOp::Le: return "(" + genExpr(*bin.lhs, false) + " <= " + genExpr(*bin.rhs, false) + ")";
+            case ast::BinaryOp::Ge: return "(" + genExpr(*bin.lhs, false) + " >= " + genExpr(*bin.rhs, false) + ")";
+            default:
+                break; // A bare arithmetic expression used as a condition - fall through below.
+        }
+    } else if (expr.kind == ast::ExprKind::Unary) {
+        const auto& un = static_cast<const ast::UnaryExpr&>(expr);
+        if (un.op == ast::UnaryOp::LogicalNot) {
+            return "(!" + genCondition(*un.operand) + ")";
+        }
+    }
+    // PB truthiness: a bare (non-comparison) expression is true iff nonzero.
+    return "(" + genExpr(expr, false) + " != 0)";
+}
+
+void Codegen::genGlobalConstants() {
+    // Constants are compile-time (their initializer can only reference
+    // literals and other already-declared constants, never variables), so
+    // - unlike Define/Assign, whose values are computed inside main() - they
+    // are hoisted out to real global `static const`s here, in source order,
+    // before main() even starts. See codegen.hpp's own doc comment for why
+    // only *top-level* declarations are handled (an M1 limitation).
+    for (const auto& stmt : module_.statements) {
+        if (stmt->kind == ast::StmtKind::ConstDecl) {
+            const auto& constDecl = static_cast<const ast::ConstDeclStmt&>(*stmt);
+            TypeSuffix suffix = sema_.constTypeOf(constDecl.name);
+            std::string valueCode =
+                convert(genExpr(*constDecl.value, false), sema_.classify(*constDecl.value, false), suffix);
+            out_ += std::string("static const ") + cppTypeFor(suffix) + " k_" + constDecl.name + " = " + valueCode +
+                    ";\n";
+        } else if (stmt->kind == ast::StmtKind::Enumeration) {
+            const auto& enumStmt = static_cast<const ast::EnumerationStmt&>(*stmt);
+            std::string previousName;
+            for (const auto& member : enumStmt.members) {
+                std::string valueCode;
+                if (member.explicitValue) {
+                    valueCode = genExpr(*member.explicitValue, false);
+                } else if (previousName.empty()) {
+                    valueCode = "0";
+                } else {
+                    // Chains off the *previous* member's own generated C++
+                    // constant rather than trying to fold the value
+                    // ourselves - correct for any explicit value, not just
+                    // literal ones, and lets the C++ compiler do the actual
+                    // arithmetic.
+                    valueCode = "(k_" + previousName + " + 1)";
+                }
+                out_ += "static const std::int64_t k_" + member.name + " = " + valueCode + ";\n";
+                previousName = member.name;
+            }
+        }
+    }
+}
+
+void Codegen::genBlock(const ast::Block& block) {
+    for (const auto& stmt : block) {
+        genStmt(*stmt);
+    }
 }
 
 void Codegen::genStmt(const ast::Stmt& stmt) {
@@ -177,6 +301,110 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             out_ += "    easybasic::runtime::debugPrint(" + textCode + ");\n";
             break;
         }
+        case ast::StmtKind::If: {
+            const auto& ifStmt = static_cast<const ast::IfStmt&>(stmt);
+            for (std::size_t i = 0; i < ifStmt.branches.size(); ++i) {
+                const auto& branch = ifStmt.branches[i];
+                if (branch.condition) {
+                    out_ += std::string(i == 0 ? "    if (" : "    else if (") + genCondition(*branch.condition) + ") {\n";
+                } else {
+                    out_ += "    else {\n";
+                }
+                genBlock(branch.body);
+                out_ += "    }\n";
+            }
+            break;
+        }
+        case ast::StmtKind::Select: {
+            // Lowered to an if/else-if chain of equality checks rather than
+            // a C++ switch: PB's Select works on arbitrary runtime values
+            // (including PBString), not just integral compile-time
+            // constants, which a real `switch` requires.
+            const auto& sel = static_cast<const ast::SelectStmt&>(stmt);
+            std::string tempName = "sel" + std::to_string(tempCounter_++);
+            out_ += "    { auto " + tempName + " = " + genExpr(*sel.selector, false) + ";\n";
+            bool first = true;
+            for (const auto& branch : sel.cases) {
+                if (branch.values.empty()) {
+                    out_ += "    else {\n"; // Default - PB has no CaseElse (oracle-verified rejected).
+                } else {
+                    std::string cond;
+                    for (std::size_t i = 0; i < branch.values.size(); ++i) {
+                        if (i != 0) {
+                            cond += " || ";
+                        }
+                        cond += "(" + tempName + " == " + genExpr(*branch.values[i], false) + ")";
+                    }
+                    out_ += std::string(first ? "    if (" : "    else if (") + cond + ") {\n";
+                }
+                first = false;
+                genBlock(branch.body);
+                out_ += "    }\n";
+            }
+            out_ += "    }\n";
+            break;
+        }
+        case ast::StmtKind::For: {
+            const auto& forStmt = static_cast<const ast::ForStmt&>(stmt);
+            TypeSuffix suffix = sema_.typeOf(forStmt.varName);
+            bool floatContext = familyOf(suffix) == ValueKind::FloatFamily;
+            std::string varType = cppTypeFor(suffix);
+            std::string fromCode =
+                convert(genExpr(*forStmt.from, floatContext), sema_.classify(*forStmt.from, floatContext), suffix);
+            std::string toCode =
+                convert(genExpr(*forStmt.to, floatContext), sema_.classify(*forStmt.to, floatContext), suffix);
+            std::string stepCode =
+                forStmt.step
+                    ? convert(genExpr(*forStmt.step, floatContext), sema_.classify(*forStmt.step, floatContext), suffix)
+                    : "1";
+            std::string tmp = std::to_string(tempCounter_++);
+            // `to`/`step` are evaluated once at loop entry, not re-evaluated
+            // per iteration (matches PB semantics); the step's sign (also
+            // captured once) picks the loop direction at runtime, since PB
+            // allows a negative Step to count down.
+            out_ += "    { " + varType + " forTo" + tmp + " = " + toCode + "; " + varType + " forStep" + tmp +
+                    " = " + stepCode + ";\n";
+            out_ += "    for (v_" + forStmt.varName + " = " + fromCode + "; (forStep" + tmp + " >= 0) ? (v_" +
+                    forStmt.varName + " <= forTo" + tmp + ") : (v_" + forStmt.varName + " >= forTo" + tmp +
+                    "); v_" + forStmt.varName + " += forStep" + tmp + ") {\n";
+            genBlock(forStmt.body);
+            out_ += "    }\n    }\n";
+            break;
+        }
+        case ast::StmtKind::While: {
+            const auto& whileStmt = static_cast<const ast::WhileStmt&>(stmt);
+            out_ += "    while (" + genCondition(*whileStmt.condition) + ") {\n";
+            genBlock(whileStmt.body);
+            out_ += "    }\n";
+            break;
+        }
+        case ast::StmtKind::Repeat: {
+            const auto& repeatStmt = static_cast<const ast::RepeatStmt&>(stmt);
+            if (repeatStmt.untilCondition) {
+                out_ += "    do {\n";
+                genBlock(repeatStmt.body);
+                // PB's Repeat/Until loops until the condition becomes true
+                // (i.e. continues while it's false) - the opposite sense of
+                // C++'s do/while, hence the negation.
+                out_ += "    } while (!(" + genCondition(*repeatStmt.untilCondition) + "));\n";
+            } else {
+                out_ += "    for (;;) {\n"; // Repeat/ForEver: unconditional.
+                genBlock(repeatStmt.body);
+                out_ += "    }\n";
+            }
+            break;
+        }
+        case ast::StmtKind::Break:
+            out_ += "    break;\n";
+            break;
+        case ast::StmtKind::Continue:
+            out_ += "    continue;\n";
+            break;
+        case ast::StmtKind::EnableExplicit: // NOLINT(bugprone-branch-clone) - a Sema-only directive; nothing to generate.
+            break;
+        case ast::StmtKind::ConstDecl:
+        case ast::StmtKind::Enumeration:
+            break; // Already emitted as global `static const`s by genGlobalConstants().
     }
 }
 
@@ -188,6 +416,7 @@ std::string Codegen::generate() {
     out_ += "#include <string>\n";
     out_ += "#include <easybasic/runtime/runtime.hpp>\n\n";
 
+    genGlobalConstants();
     for (const auto& [name, suffix] : sema_.declarationOrder()) {
         out_ += std::string("static ") + cppTypeFor(suffix) + " v_" + name + "{};\n";
     }

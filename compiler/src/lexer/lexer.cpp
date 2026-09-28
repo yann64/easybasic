@@ -46,6 +46,32 @@ const std::unordered_map<std::string, TokenKind>& keywordTable() {
     static const std::unordered_map<std::string, TokenKind> table = {
         {"define", TokenKind::KwDefine},
         {"debug", TokenKind::KwDebug},
+        {"if", TokenKind::KwIf},
+        {"elseif", TokenKind::KwElseIf},
+        {"else", TokenKind::KwElse},
+        {"endif", TokenKind::KwEndIf},
+        {"select", TokenKind::KwSelect},
+        {"case", TokenKind::KwCase},
+        {"default", TokenKind::KwDefault},
+        {"endselect", TokenKind::KwEndSelect},
+        {"for", TokenKind::KwFor},
+        {"to", TokenKind::KwTo},
+        {"step", TokenKind::KwStep},
+        {"next", TokenKind::KwNext},
+        {"while", TokenKind::KwWhile},
+        {"wend", TokenKind::KwWend},
+        {"repeat", TokenKind::KwRepeat},
+        {"until", TokenKind::KwUntil},
+        {"forever", TokenKind::KwForEver},
+        {"break", TokenKind::KwBreak},
+        {"continue", TokenKind::KwContinue},
+        {"enableexplicit", TokenKind::KwEnableExplicit},
+        {"enumeration", TokenKind::KwEnumeration},
+        {"endenumeration", TokenKind::KwEndEnumeration},
+        {"and", TokenKind::KwAnd},
+        {"or", TokenKind::KwOr},
+        {"not", TokenKind::KwNot},
+        {"xor", TokenKind::KwXOr},
     };
     return table;
 }
@@ -63,12 +89,50 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::StringLiteral: return "string literal";
         case TokenKind::KwDefine: return "'Define'";
         case TokenKind::KwDebug: return "'Debug'";
+        case TokenKind::KwIf: return "'If'";
+        case TokenKind::KwElseIf: return "'ElseIf'";
+        case TokenKind::KwElse: return "'Else'";
+        case TokenKind::KwEndIf: return "'EndIf'";
+        case TokenKind::KwSelect: return "'Select'";
+        case TokenKind::KwCase: return "'Case'";
+        case TokenKind::KwDefault: return "'Default'";
+        case TokenKind::KwEndSelect: return "'EndSelect'";
+        case TokenKind::KwFor: return "'For'";
+        case TokenKind::KwTo: return "'To'";
+        case TokenKind::KwStep: return "'Step'";
+        case TokenKind::KwNext: return "'Next'";
+        case TokenKind::KwWhile: return "'While'";
+        case TokenKind::KwWend: return "'Wend'";
+        case TokenKind::KwRepeat: return "'Repeat'";
+        case TokenKind::KwUntil: return "'Until'";
+        case TokenKind::KwForEver: return "'ForEver'";
+        case TokenKind::KwBreak: return "'Break'";
+        case TokenKind::KwContinue: return "'Continue'";
+        case TokenKind::KwEnableExplicit: return "'EnableExplicit'";
+        case TokenKind::KwEnumeration: return "'Enumeration'";
+        case TokenKind::KwEndEnumeration: return "'EndEnumeration'";
+        case TokenKind::KwAnd: return "'And'";
+        case TokenKind::KwOr: return "'Or'";
+        case TokenKind::KwNot: return "'Not'";
+        case TokenKind::KwXOr: return "'XOr'";
         case TokenKind::Plus: return "'+'";
         case TokenKind::Minus: return "'-'";
         case TokenKind::Star: return "'*'";
         case TokenKind::Slash: return "'/'";
         case TokenKind::Percent: return "'%'";
         case TokenKind::Equal: return "'='";
+        case TokenKind::NotEqual: return "'<>'";
+        case TokenKind::Less: return "'<'";
+        case TokenKind::Greater: return "'>'";
+        case TokenKind::LessEqual: return "'<='";
+        case TokenKind::GreaterEqual: return "'>='";
+        case TokenKind::Ampersand: return "'&'";
+        case TokenKind::Pipe: return "'|'";
+        case TokenKind::Bang: return "'!'";
+        case TokenKind::Tilde: return "'~'";
+        case TokenKind::ShiftLeft: return "'<<'";
+        case TokenKind::ShiftRight: return "'>>'";
+        case TokenKind::Hash: return "'#'";
         case TokenKind::LParen: return "'('";
         case TokenKind::RParen: return "')'";
         case TokenKind::Comma: return "','";
@@ -174,6 +238,48 @@ Token Lexer::next() {
     if (isIdentStart(c)) {
         return lexIdentifierOrKeyword();
     }
+    // Two-character operators needing lookahead, checked before the
+    // generic single-character dispatch below.
+    if (c == '<' && peek(1) == '>') {
+        advance();
+        advance();
+        Token tok;
+        tok.kind = TokenKind::NotEqual;
+        tok.loc = loc;
+        return tok;
+    }
+    if (c == '<' && peek(1) == '=') {
+        advance();
+        advance();
+        Token tok;
+        tok.kind = TokenKind::LessEqual;
+        tok.loc = loc;
+        return tok;
+    }
+    if (c == '<' && peek(1) == '<') {
+        advance();
+        advance();
+        Token tok;
+        tok.kind = TokenKind::ShiftLeft;
+        tok.loc = loc;
+        return tok;
+    }
+    if (c == '>' && peek(1) == '=') {
+        advance();
+        advance();
+        Token tok;
+        tok.kind = TokenKind::GreaterEqual;
+        tok.loc = loc;
+        return tok;
+    }
+    if (c == '>' && peek(1) == '>') {
+        advance();
+        advance();
+        Token tok;
+        tok.kind = TokenKind::ShiftRight;
+        tok.loc = loc;
+        return tok;
+    }
 
     advance();
     Token tok;
@@ -185,6 +291,13 @@ Token Lexer::next() {
         case '/': tok.kind = TokenKind::Slash; break;
         case '%': tok.kind = TokenKind::Percent; break;
         case '=': tok.kind = TokenKind::Equal; break;
+        case '<': tok.kind = TokenKind::Less; break;
+        case '>': tok.kind = TokenKind::Greater; break;
+        case '&': tok.kind = TokenKind::Ampersand; break;
+        case '|': tok.kind = TokenKind::Pipe; break;
+        case '!': tok.kind = TokenKind::Bang; break;
+        case '~': tok.kind = TokenKind::Tilde; break;
+        case '#': tok.kind = TokenKind::Hash; break;
         case '(': tok.kind = TokenKind::LParen; break;
         case ')': tok.kind = TokenKind::RParen; break;
         case ',': tok.kind = TokenKind::Comma; break;

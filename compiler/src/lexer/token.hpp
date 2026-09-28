@@ -22,12 +22,51 @@ enum class TokenKind {
     StringLiteral,
     KwDefine,
     KwDebug,
+    KwIf,
+    KwElseIf,
+    KwElse,
+    KwEndIf,
+    KwSelect,
+    KwCase,
+    KwDefault,
+    KwEndSelect,
+    KwFor,
+    KwTo,
+    KwStep,
+    KwNext,
+    KwWhile,
+    KwWend,
+    KwRepeat,
+    KwUntil,
+    KwForEver,
+    KwBreak,
+    KwContinue,
+    KwEnableExplicit,
+    KwEnumeration,
+    KwEndEnumeration,
+    KwAnd,
+    KwOr,
+    KwNot,
+    KwXOr,
     Plus,
     Minus,
     Star,
     Slash,
     Percent,
-    Equal,
+    Equal,       ///< `=` - both assignment and the equality comparison,
+                 ///< disambiguated by the parser's grammatical position.
+    NotEqual,    ///< `<>`
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+    Ampersand,   ///< `&` - bitwise AND
+    Pipe,        ///< `|` - bitwise OR
+    Bang,        ///< `!` - bitwise XOR (not logical negation - that's `Not`)
+    Tilde,       ///< `~` - unary bitwise NOT
+    ShiftLeft,   ///< `<<`
+    ShiftRight,  ///< `>>`
+    Hash,        ///< `#` - constant-name sigil (`#MyConst`)
     LParen,
     RParen,
     Comma,

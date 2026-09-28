@@ -1,5 +1,6 @@
 #include "parser.hpp"
 
+#include <algorithm>
 #include <cctype>
 
 namespace easybasic {
@@ -85,6 +86,30 @@ std::unique_ptr<ast::Module> Parser::parseModule() {
     return module;
 }
 
+ast::Block Parser::parseBlockUntil(std::initializer_list<TokenKind> terminators) {
+    auto isTerminator = [&] {
+        return std::ranges::any_of(terminators, [&](TokenKind t) { return check(t); });
+    };
+
+    ast::Block block;
+    skipStatementSeparators();
+    while (!isTerminator() && !check(TokenKind::EndOfFile)) {
+        auto stmt = parseStatement();
+        if (stmt) {
+            block.push_back(std::move(stmt));
+        }
+        if (!isAtStatementEnd() && !isTerminator()) {
+            diagnostics_.error(peek().loc, std::string("expected end of statement, found ") +
+                                                tokenKindName(peek().kind));
+            while (!isAtStatementEnd() && !isTerminator() && !check(TokenKind::EndOfFile)) {
+                advance();
+            }
+        }
+        skipStatementSeparators();
+    }
+    return block;
+}
+
 std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwDefine)) {
         return parseDefine();
@@ -92,8 +117,41 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwDebug)) {
         return parseDebug();
     }
-    if (check(TokenKind::Identifier)) {
-        return parseAssignment();
+    if (check(TokenKind::KwIf)) {
+        return parseIf();
+    }
+    if (check(TokenKind::KwSelect)) {
+        return parseSelect();
+    }
+    if (check(TokenKind::KwFor)) {
+        return parseFor();
+    }
+    if (check(TokenKind::KwWhile)) {
+        return parseWhile();
+    }
+    if (check(TokenKind::KwRepeat)) {
+        return parseRepeat();
+    }
+    if (check(TokenKind::KwEnumeration)) {
+        return parseEnumeration();
+    }
+    if (check(TokenKind::KwBreak)) {
+        auto stmt = std::make_unique<ast::BreakStmt>();
+        stmt->loc = advance().loc;
+        return stmt;
+    }
+    if (check(TokenKind::KwContinue)) {
+        auto stmt = std::make_unique<ast::ContinueStmt>();
+        stmt->loc = advance().loc;
+        return stmt;
+    }
+    if (check(TokenKind::KwEnableExplicit)) {
+        auto stmt = std::make_unique<ast::EnableExplicitStmt>();
+        stmt->loc = advance().loc;
+        return stmt;
+    }
+    if (check(TokenKind::Identifier) || check(TokenKind::Hash)) {
+        return parseAssignmentOrConstDecl();
     }
     diagnostics_.error(peek().loc, std::string("expected statement, found ") +
                                         tokenKindName(peek().kind));
@@ -129,7 +187,19 @@ std::unique_ptr<ast::Stmt> Parser::parseDebug() {
     return stmt;
 }
 
-std::unique_ptr<ast::Stmt> Parser::parseAssignment() {
+std::unique_ptr<ast::Stmt> Parser::parseAssignmentOrConstDecl() {
+    if (check(TokenKind::Hash)) {
+        SourceLoc loc = advance().loc; // '#'
+        const Token& nameTok = expect(TokenKind::Identifier, "after '#'");
+        auto stmt = std::make_unique<ast::ConstDeclStmt>();
+        stmt->loc = loc;
+        stmt->spelling = nameTok.text;
+        stmt->name = toLower(nameTok.text);
+        expect(TokenKind::Equal, "in constant declaration");
+        stmt->value = parseExpr();
+        return stmt;
+    }
+
     const Token& nameTok = advance(); // Identifier
     auto stmt = std::make_unique<ast::AssignStmt>();
     stmt->loc = nameTok.loc;
@@ -140,6 +210,192 @@ std::unique_ptr<ast::Stmt> Parser::parseAssignment() {
     stmt->value = parseExpr();
     return stmt;
 }
+
+std::unique_ptr<ast::Stmt> Parser::parseIf() {
+    auto stmt = std::make_unique<ast::IfStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'If'
+
+    ast::IfStmt::Branch ifBranch;
+    ifBranch.condition = parseCondition();
+    ifBranch.body = parseBlockUntil({TokenKind::KwElseIf, TokenKind::KwElse, TokenKind::KwEndIf});
+    stmt->branches.push_back(std::move(ifBranch));
+
+    while (check(TokenKind::KwElseIf)) {
+        advance();
+        ast::IfStmt::Branch branch;
+        branch.condition = parseCondition();
+        branch.body = parseBlockUntil({TokenKind::KwElseIf, TokenKind::KwElse, TokenKind::KwEndIf});
+        stmt->branches.push_back(std::move(branch));
+    }
+
+    if (check(TokenKind::KwElse)) {
+        advance();
+        ast::IfStmt::Branch elseBranch; // condition stays null
+        elseBranch.body = parseBlockUntil({TokenKind::KwEndIf});
+        stmt->branches.push_back(std::move(elseBranch));
+    }
+
+    expect(TokenKind::KwEndIf, "to close 'If'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseSelect() {
+    auto stmt = std::make_unique<ast::SelectStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'Select'
+    stmt->selector = parseExpr();
+    skipStatementSeparators();
+
+    while (check(TokenKind::KwCase) || check(TokenKind::KwDefault)) {
+        ast::SelectStmt::CaseBranch branch;
+        if (match(TokenKind::KwCase)) {
+            do {
+                branch.values.push_back(parseExpr());
+            } while (match(TokenKind::Comma));
+        } else {
+            advance(); // 'Default' - values stays empty
+        }
+        branch.body = parseBlockUntil({TokenKind::KwCase, TokenKind::KwDefault, TokenKind::KwEndSelect});
+        stmt->cases.push_back(std::move(branch));
+    }
+
+    expect(TokenKind::KwEndSelect, "to close 'Select'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseFor() {
+    auto stmt = std::make_unique<ast::ForStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'For'
+
+    const Token& varTok = expect(TokenKind::Identifier, "after 'For'");
+    stmt->varSpelling = varTok.text;
+    stmt->varName = toLower(varTok.text);
+    stmt->suffix = varTok.suffix;
+    expect(TokenKind::Equal, "in 'For'");
+    stmt->from = parseExpr();
+    expect(TokenKind::KwTo, "in 'For'");
+    stmt->to = parseExpr();
+    if (match(TokenKind::KwStep)) {
+        stmt->step = parseExpr();
+    }
+    stmt->body = parseBlockUntil({TokenKind::KwNext});
+    expect(TokenKind::KwNext, "to close 'For'");
+    match(TokenKind::Identifier); // optional `Next <var>` - not cross-checked against varName in M1
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseWhile() {
+    auto stmt = std::make_unique<ast::WhileStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'While'
+    stmt->condition = parseCondition();
+    stmt->body = parseBlockUntil({TokenKind::KwWend});
+    expect(TokenKind::KwWend, "to close 'While'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseRepeat() {
+    auto stmt = std::make_unique<ast::RepeatStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'Repeat'
+    stmt->body = parseBlockUntil({TokenKind::KwUntil, TokenKind::KwForEver});
+    if (match(TokenKind::KwUntil)) {
+        stmt->untilCondition = parseCondition();
+    } else {
+        expect(TokenKind::KwForEver, "to close 'Repeat'");
+    }
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseEnumeration() {
+    auto stmt = std::make_unique<ast::EnumerationStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'Enumeration'
+    skipStatementSeparators();
+
+    while (check(TokenKind::Hash)) {
+        advance(); // '#'
+        const Token& nameTok = expect(TokenKind::Identifier, "after '#' in 'Enumeration'");
+        ast::EnumerationStmt::Member member;
+        member.spelling = nameTok.text;
+        member.name = toLower(nameTok.text);
+        if (match(TokenKind::Equal)) {
+            member.explicitValue = parseExpr();
+        }
+        stmt->members.push_back(std::move(member));
+        skipStatementSeparators();
+    }
+
+    expect(TokenKind::KwEndEnumeration, "to close 'Enumeration'");
+    return stmt;
+}
+
+// --- Condition grammar (If/While/Until only - see parser.hpp's own notes) ---
+
+std::unique_ptr<ast::Expr> Parser::parseCondition() {
+    auto lhs = parseLogicalNot();
+    for (;;) {
+        ast::BinaryOp op = ast::BinaryOp::Add;
+        if (check(TokenKind::KwAnd)) {
+            op = ast::BinaryOp::LogicalAnd;
+        } else if (check(TokenKind::KwOr)) {
+            op = ast::BinaryOp::LogicalOr;
+        } else if (check(TokenKind::KwXOr)) {
+            op = ast::BinaryOp::LogicalXOr;
+        } else {
+            break;
+        }
+        SourceLoc loc = advance().loc;
+        auto rhs = parseLogicalNot();
+        auto bin = std::make_unique<ast::BinaryExpr>();
+        bin->loc = loc;
+        bin->op = op;
+        bin->lhs = std::move(lhs);
+        bin->rhs = std::move(rhs);
+        lhs = std::move(bin);
+    }
+    return lhs;
+}
+
+std::unique_ptr<ast::Expr> Parser::parseLogicalNot() {
+    if (check(TokenKind::KwNot)) {
+        SourceLoc loc = advance().loc;
+        auto operand = parseLogicalNot();
+        auto un = std::make_unique<ast::UnaryExpr>();
+        un->loc = loc;
+        un->op = ast::UnaryOp::LogicalNot;
+        un->operand = std::move(operand);
+        return un;
+    }
+    return parseComparison();
+}
+
+std::unique_ptr<ast::Expr> Parser::parseComparison() {
+    auto lhs = parseExpr();
+    ast::BinaryOp op = ast::BinaryOp::Add;
+    switch (peek().kind) {
+        case TokenKind::Equal: op = ast::BinaryOp::Eq; break;
+        case TokenKind::NotEqual: op = ast::BinaryOp::Ne; break;
+        case TokenKind::Less: op = ast::BinaryOp::Lt; break;
+        case TokenKind::Greater: op = ast::BinaryOp::Gt; break;
+        case TokenKind::LessEqual: op = ast::BinaryOp::Le; break;
+        case TokenKind::GreaterEqual: op = ast::BinaryOp::Ge; break;
+        default:
+            return lhs; // A bare arithmetic expression is also a valid condition (PB truthiness).
+    }
+    SourceLoc loc = advance().loc;
+    auto rhs = parseExpr();
+    auto bin = std::make_unique<ast::BinaryExpr>();
+    bin->loc = loc;
+    bin->op = op;
+    bin->lhs = std::move(lhs);
+    bin->rhs = std::move(rhs);
+    return bin;
+}
+
+// --- General arithmetic grammar (no comparisons/logicals - see parser.hpp) ---
 
 std::unique_ptr<ast::Expr> Parser::parseExpr() {
     auto lhs = parseMul();
@@ -158,11 +414,11 @@ std::unique_ptr<ast::Expr> Parser::parseExpr() {
 }
 
 std::unique_ptr<ast::Expr> Parser::parseMul() {
-    auto lhs = parseMod();
+    auto lhs = parseBitwiseOrAnd();
     while (check(TokenKind::Star) || check(TokenKind::Slash)) {
         ast::BinaryOp op = check(TokenKind::Star) ? ast::BinaryOp::Mul : ast::BinaryOp::Div;
         SourceLoc loc = advance().loc;
-        auto rhs = parseMod();
+        auto rhs = parseBitwiseOrAnd();
         auto bin = std::make_unique<ast::BinaryExpr>();
         bin->loc = loc;
         bin->op = op;
@@ -173,22 +429,56 @@ std::unique_ptr<ast::Expr> Parser::parseMul() {
     return lhs;
 }
 
-std::unique_ptr<ast::Expr> Parser::parseMod() {
-    // `%` binds tighter than `*`/`/` (oracle-verified: `2 * 3 % 4` folds to
-    // `2 * (3 % 4)` = 6, not `(2*3) % 4` = 2) - hence its own tier between
-    // parseMul and parseUnary rather than sharing parseMul's tier.
-    auto lhs = parseUnary();
-    while (check(TokenKind::Percent)) {
+std::unique_ptr<ast::Expr> Parser::parseBitwiseOrAnd() {
+    // `&`/`|` are their own flat precedence tier, left-to-right -
+    // oracle-verified (docs/architecture/roadmap.md's M1 notes: `1 & 6 | 3`
+    // and `4 | 1 & 3` both match whichever operator is textually first,
+    // proving no internal ordering between just these two) - looser than
+    // parseBitwiseTight's tier (`%`/`!`/`<<`/`>>`), which is a SEPARATE flat
+    // tier, not the same one (an earlier, buggy version of this parser
+    // treated all six operators as one combined flat tier, which silently
+    // mis-parsed `12 & 1 << 2` as `0` instead of the correct `4` - caught by
+    // the differential e2e suite against the real pbcompilerc).
+    auto lhs = parseBitwiseTight();
+    while (check(TokenKind::Ampersand) || check(TokenKind::Pipe)) {
+        ast::BinaryOp op = check(TokenKind::Ampersand) ? ast::BinaryOp::BitAnd : ast::BinaryOp::BitOr;
         SourceLoc loc = advance().loc;
-        auto rhs = parseUnary();
+        auto rhs = parseBitwiseTight();
         auto bin = std::make_unique<ast::BinaryExpr>();
         bin->loc = loc;
-        bin->op = ast::BinaryOp::Mod;
+        bin->op = op;
         bin->lhs = std::move(lhs);
         bin->rhs = std::move(rhs);
         lhs = std::move(bin);
     }
     return lhs;
+}
+
+std::unique_ptr<ast::Expr> Parser::parseBitwiseTight() {
+    // `%`/`!`(xor)/`<<`/`>>` are ONE FLAT precedence tier, left-to-right,
+    // tighter than `&`/`|`'s tier - oracle-verified via two-directional
+    // reversal tests for every pair among these four (see
+    // docs/architecture/roadmap.md's M1 notes).
+    auto lhs = parseUnary();
+    for (;;) {
+        ast::BinaryOp op = ast::BinaryOp::Add;
+        switch (peek().kind) {
+            case TokenKind::Percent: op = ast::BinaryOp::Mod; break;
+            case TokenKind::Bang: op = ast::BinaryOp::BitXor; break;
+            case TokenKind::ShiftLeft: op = ast::BinaryOp::ShiftLeft; break;
+            case TokenKind::ShiftRight: op = ast::BinaryOp::ShiftRight; break;
+            default:
+                return lhs;
+        }
+        SourceLoc loc = advance().loc;
+        auto rhs = parseUnary();
+        auto bin = std::make_unique<ast::BinaryExpr>();
+        bin->loc = loc;
+        bin->op = op;
+        bin->lhs = std::move(lhs);
+        bin->rhs = std::move(rhs);
+        lhs = std::move(bin);
+    }
 }
 
 std::unique_ptr<ast::Expr> Parser::parseUnary() {
@@ -198,6 +488,15 @@ std::unique_ptr<ast::Expr> Parser::parseUnary() {
         auto un = std::make_unique<ast::UnaryExpr>();
         un->loc = loc;
         un->op = ast::UnaryOp::Negate;
+        un->operand = std::move(operand);
+        return un;
+    }
+    if (check(TokenKind::Tilde)) {
+        SourceLoc loc = advance().loc;
+        auto operand = parseUnary();
+        auto un = std::make_unique<ast::UnaryExpr>();
+        un->loc = loc;
+        un->op = ast::UnaryOp::BitNot;
         un->operand = std::move(operand);
         return un;
     }
@@ -235,6 +534,15 @@ std::unique_ptr<ast::Expr> Parser::parsePrimary() {
             ref->spelling = tok.text;
             ref->name = toLower(tok.text);
             ref->suffix = tok.suffix;
+            return ref;
+        }
+        case TokenKind::Hash: {
+            advance();
+            const Token& nameTok = expect(TokenKind::Identifier, "after '#'");
+            auto ref = std::make_unique<ast::ConstRefExpr>();
+            ref->loc = tok.loc;
+            ref->spelling = nameTok.text;
+            ref->name = toLower(nameTok.text);
             return ref;
         }
         case TokenKind::LParen: {

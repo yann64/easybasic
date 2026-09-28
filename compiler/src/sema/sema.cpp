@@ -33,11 +33,39 @@ void Sema::declare(const std::string& lowerName, const std::string& spelling, Ty
     }
 }
 
+void Sema::declareImplicit(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
+                            SourceLoc loc) {
+    // Oracle-verified error text (pbcompilerc, `EnableExplicit` + an
+    // undeclared variable): "With 'EnableExplicit', variables have to be
+    // declared: x." `declare()` still runs regardless so Codegen never sees
+    // a symbol with no recorded type - the driver already stops before
+    // Codegen once any error is recorded (see main.cpp), so this is a
+    // defensive fallback, not a way to let the violation silently through.
+    if (explicitEnabled_ && !symbols_.contains(lowerName)) {
+        diagnostics_.error(loc, "With 'EnableExplicit', variables have to be declared: " + spelling + ".");
+    }
+    declare(lowerName, spelling, suffix, loc);
+}
+
+void Sema::declareConst(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
+                         SourceLoc loc) {
+    if (constants_.contains(lowerName)) {
+        diagnostics_.error(loc, "'#" + spelling + "' is already declared as a constant");
+        return;
+    }
+    constants_.emplace(lowerName, suffix);
+    constOrder_.emplace_back(lowerName, suffix);
+}
+
 bool Sema::analyze(ast::Module& module) {
-    for (auto& stmt : module.statements) {
+    visitBlock(module.statements);
+    return !diagnostics_.hasErrors();
+}
+
+void Sema::visitBlock(ast::Block& block) {
+    for (auto& stmt : block) {
         visitStmt(*stmt);
     }
-    return !diagnostics_.hasErrors();
 }
 
 void Sema::visitStmt(ast::Stmt& stmt) {
@@ -56,12 +84,8 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::Assign: {
             auto& assign = static_cast<ast::AssignStmt&>(stmt);
-            // A plain assignment to a name Sema hasn't seen yet is PB's
-            // implicit-declaration behavior (default type Integer, exactly
-            // like real PureBasic with EnableExplicit off) - EnableExplicit
-            // itself is a later milestone (M1).
             TypeSuffix suffix = assign.suffix == TypeSuffix::None ? typeOf(assign.name) : assign.suffix;
-            declare(assign.name, assign.spelling, suffix, assign.loc);
+            declareImplicit(assign.name, assign.spelling, suffix, assign.loc);
             visitExpr(*assign.value);
             checkAssignable(assign.spelling, symbols_[assign.name], *assign.value, assign.loc);
             break;
@@ -69,6 +93,82 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         case ast::StmtKind::Debug: {
             auto& dbg = static_cast<ast::DebugStmt&>(stmt);
             visitExpr(*dbg.value);
+            break;
+        }
+        case ast::StmtKind::If: {
+            auto& ifStmt = static_cast<ast::IfStmt&>(stmt);
+            for (auto& branch : ifStmt.branches) {
+                if (branch.condition) {
+                    visitCondition(*branch.condition);
+                }
+                visitBlock(branch.body);
+            }
+            break;
+        }
+        case ast::StmtKind::Select: {
+            auto& sel = static_cast<ast::SelectStmt&>(stmt);
+            visitExpr(*sel.selector);
+            for (auto& branch : sel.cases) {
+                for (auto& value : branch.values) {
+                    visitExpr(*value);
+                }
+                visitBlock(branch.body);
+            }
+            break;
+        }
+        case ast::StmtKind::For: {
+            auto& forStmt = static_cast<ast::ForStmt&>(stmt);
+            TypeSuffix suffix = forStmt.suffix == TypeSuffix::None ? typeOf(forStmt.varName) : forStmt.suffix;
+            visitExpr(*forStmt.from);
+            visitExpr(*forStmt.to);
+            if (forStmt.step) {
+                visitExpr(*forStmt.step);
+            }
+            declareImplicit(forStmt.varName, forStmt.varSpelling, suffix, forStmt.loc);
+            visitBlock(forStmt.body);
+            break;
+        }
+        case ast::StmtKind::While: {
+            auto& whileStmt = static_cast<ast::WhileStmt&>(stmt);
+            visitCondition(*whileStmt.condition);
+            visitBlock(whileStmt.body);
+            break;
+        }
+        case ast::StmtKind::Repeat: {
+            auto& repeatStmt = static_cast<ast::RepeatStmt&>(stmt);
+            visitBlock(repeatStmt.body);
+            if (repeatStmt.untilCondition) {
+                visitCondition(*repeatStmt.untilCondition);
+            }
+            break;
+        }
+        case ast::StmtKind::Break:
+        case ast::StmtKind::Continue:
+            break; // Nothing to resolve; "outside any loop" checking is a follow-up, not M1-blocking.
+        case ast::StmtKind::EnableExplicit:
+            explicitEnabled_ = true;
+            break;
+        case ast::StmtKind::ConstDecl: {
+            auto& constDecl = static_cast<ast::ConstDeclStmt&>(stmt);
+            visitExpr(*constDecl.value);
+            ValueKind family = familyOfExpr(*constDecl.value);
+            TypeSuffix suffix = TypeSuffix::Integer;
+            if (family == ValueKind::FloatFamily) {
+                suffix = TypeSuffix::Double;
+            } else if (family == ValueKind::StringFamily) {
+                suffix = TypeSuffix::String;
+            }
+            declareConst(constDecl.name, constDecl.spelling, suffix, constDecl.loc);
+            break;
+        }
+        case ast::StmtKind::Enumeration: {
+            auto& enumStmt = static_cast<ast::EnumerationStmt&>(stmt);
+            for (auto& member : enumStmt.members) {
+                if (member.explicitValue) {
+                    visitExpr(*member.explicitValue);
+                }
+                declareConst(member.name, member.spelling, TypeSuffix::Integer, enumStmt.loc);
+            }
             break;
         }
     }
@@ -80,9 +180,16 @@ void Sema::visitExpr(ast::Expr& expr) {
             auto& ref = static_cast<ast::VarRefExpr&>(expr);
             if (!symbols_.contains(ref.name)) {
                 // Implicit read of a never-assigned name: real PB gives it
-                // type Integer and value 0 rather than erroring (again,
-                // EnableExplicit's stricter behavior is M1's job).
-                declare(ref.name, ref.spelling, TypeSuffix::Integer, ref.loc);
+                // type Integer and value 0 (or errors under EnableExplicit).
+                declareImplicit(ref.name, ref.spelling, TypeSuffix::Integer, ref.loc);
+            }
+            break;
+        }
+        case ast::ExprKind::ConstRef: {
+            auto& ref = static_cast<ast::ConstRefExpr&>(expr);
+            if (!constants_.contains(ref.name)) {
+                diagnostics_.error(ref.loc, "'#" + ref.spelling + "' is not declared");
+                declareConst(ref.name, ref.spelling, TypeSuffix::Integer, ref.loc); // recovery fallback
             }
             break;
         }
@@ -102,6 +209,48 @@ void Sema::visitExpr(ast::Expr& expr) {
         case ast::ExprKind::StringLiteral:
             break;
     }
+}
+
+void Sema::visitCondition(ast::Expr& expr) {
+    if (expr.kind == ast::ExprKind::Binary) {
+        auto& bin = static_cast<ast::BinaryExpr&>(expr);
+        switch (bin.op) {
+            case ast::BinaryOp::LogicalAnd:
+            case ast::BinaryOp::LogicalOr:
+                visitCondition(*bin.lhs);
+                visitCondition(*bin.rhs);
+                return;
+            case ast::BinaryOp::LogicalXOr:
+                // Real PB's logical XOr showed a runtime truth table that
+                // didn't match ANY consistent interpretation under oracle
+                // testing (see docs/architecture/roadmap.md's M1 notes) -
+                // rather than guess, this is flagged as unsupported.
+                diagnostics_.error(bin.loc,
+                                    "logical 'XOr' is not yet supported (see "
+                                    "docs/architecture/roadmap.md's M1 notes)");
+                visitCondition(*bin.lhs);
+                visitCondition(*bin.rhs);
+                return;
+            case ast::BinaryOp::Eq:
+            case ast::BinaryOp::Ne:
+            case ast::BinaryOp::Lt:
+            case ast::BinaryOp::Gt:
+            case ast::BinaryOp::Le:
+            case ast::BinaryOp::Ge:
+                visitExpr(*bin.lhs);
+                visitExpr(*bin.rhs);
+                return;
+            default:
+                break; // A bare arithmetic expression used as a condition - fall through.
+        }
+    } else if (expr.kind == ast::ExprKind::Unary) {
+        auto& un = static_cast<ast::UnaryExpr&>(expr);
+        if (un.op == ast::UnaryOp::LogicalNot) {
+            visitCondition(*un.operand);
+            return;
+        }
+    }
+    visitExpr(expr);
 }
 
 void Sema::checkAssignable(const std::string& targetSpelling, TypeSuffix targetSuffix,
@@ -142,35 +291,74 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
             }
             return floatContext ? ValueKind::FloatFamily : natural;
         }
+        case ast::ExprKind::ConstRef: {
+            const auto& ref = static_cast<const ast::ConstRefExpr&>(expr);
+            ValueKind natural = familyOf(constTypeOf(ref.name));
+            if (natural == ValueKind::StringFamily) {
+                return ValueKind::StringFamily;
+            }
+            return floatContext ? ValueKind::FloatFamily : natural;
+        }
         case ast::ExprKind::Unary: {
             const auto& un = static_cast<const ast::UnaryExpr&>(expr);
             return classify(*un.operand, floatContext);
         }
         case ast::ExprKind::Binary: {
             const auto& bin = static_cast<const ast::BinaryExpr&>(expr);
-            if (bin.op == ast::BinaryOp::Div || bin.op == ast::BinaryOp::Mod) {
-                // Target-typed: real (Div) / real-modulo (Mod) exactly when
-                // floatContext is set OR either operand is *naturally*
-                // (context-free) float-family - oracle-verified for Div,
-                // see classify()'s own doc comment for the distinguishing
-                // examples; Mod follows by consistent extrapolation only.
-                bool lhsNaturallyFloat = classify(*bin.lhs, false) == ValueKind::FloatFamily;
-                bool rhsNaturallyFloat = classify(*bin.rhs, false) == ValueKind::FloatFamily;
-                return (floatContext || lhsNaturallyFloat || rhsNaturallyFloat) ? ValueKind::FloatFamily
-                                                                                 : ValueKind::IntegerFamily;
+            switch (bin.op) {
+                case ast::BinaryOp::Div:
+                case ast::BinaryOp::Mod: {
+                    // Target-typed: real (Div) / real-modulo (Mod) exactly
+                    // when floatContext is set OR either operand is
+                    // *naturally* (context-free) float-family - oracle-
+                    // verified for Div; Mod follows by consistent
+                    // extrapolation only (see classify()'s own doc comment).
+                    bool lhsFloat = classify(*bin.lhs, false) == ValueKind::FloatFamily;
+                    bool rhsFloat = classify(*bin.rhs, false) == ValueKind::FloatFamily;
+                    return (floatContext || lhsFloat || rhsFloat) ? ValueKind::FloatFamily
+                                                                   : ValueKind::IntegerFamily;
+                }
+                case ast::BinaryOp::BitAnd:
+                case ast::BinaryOp::BitOr:
+                case ast::BinaryOp::BitXor:
+                case ast::BinaryOp::ShiftLeft:
+                case ast::BinaryOp::ShiftRight:
+                    // Bitwise ops are integer-only regardless of any
+                    // enclosing Float destination - unlike Div/Mod, a
+                    // "real-valued shift/and/or/xor" has no natural meaning,
+                    // so (unlike Div/Mod) floatContext is deliberately NOT
+                    // propagated here. Not independently oracle-verified
+                    // (every real PB program uses these on integers anyway);
+                    // flagged as an assumption in docs/architecture/roadmap.md.
+                    return ValueKind::IntegerFamily;
+                case ast::BinaryOp::Add:
+                case ast::BinaryOp::Sub:
+                case ast::BinaryOp::Mul: {
+                    ValueKind lhs = classify(*bin.lhs, floatContext);
+                    ValueKind rhs = classify(*bin.rhs, floatContext);
+                    if (lhs == ValueKind::StringFamily || rhs == ValueKind::StringFamily) {
+                        return ValueKind::StringFamily; // `+` as string concatenation.
+                    }
+                    if (floatContext || lhs == ValueKind::FloatFamily || rhs == ValueKind::FloatFamily) {
+                        return ValueKind::FloatFamily;
+                    }
+                    return ValueKind::IntegerFamily;
+                }
+                default:
+                    // Eq/Ne/Lt/Gt/Le/Ge/LogicalAnd/LogicalOr/LogicalXOr only
+                    // ever appear inside a condition tree, which Codegen
+                    // lowers via genCondition (not genExpr/classify) - this
+                    // is an unreachable-in-practice, safe fallback only.
+                    return ValueKind::IntegerFamily;
             }
-            ValueKind lhs = classify(*bin.lhs, floatContext);
-            ValueKind rhs = classify(*bin.rhs, floatContext);
-            if (lhs == ValueKind::StringFamily || rhs == ValueKind::StringFamily) {
-                return ValueKind::StringFamily; // `+` as string concatenation.
-            }
-            if (floatContext || lhs == ValueKind::FloatFamily || rhs == ValueKind::FloatFamily) {
-                return ValueKind::FloatFamily;
-            }
-            return ValueKind::IntegerFamily;
         }
     }
     return ValueKind::IntegerFamily;
+}
+
+TypeSuffix Sema::constTypeOf(const std::string& lowerName) const {
+    auto it = constants_.find(lowerName);
+    return it == constants_.end() ? TypeSuffix::Integer : it->second;
 }
 
 } // namespace easybasic

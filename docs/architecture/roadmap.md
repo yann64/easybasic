@@ -24,8 +24,8 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 
 | Milestone | Scope | Status |
 |---|---|---|
-| **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | In progress (this document's own M0 notes below) |
-| **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Not started |
+| **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | Done (see M0 notes below) |
+| **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn`, `Protected`/`Global`/`Shared`, parameter passing, recursion, static `Dim` arrays | Not started |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families | Not started |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
@@ -64,12 +64,12 @@ for the general methodology):
   C). `pbcxx`'s Sema mirrors this, including PB's implicit-declaration behavior (a plain
   assignment to an unseen name declares it, rather than erroring - `EnableExplicit`'s
   stricter behavior is M1's job).
-- **`/` always performs real (floating-point) division**, regardless of operand types -
-  oracle-verified (`10.0/3.0` and `10/3` both compute a real quotient; only the
-  *destination* variable's type decides whether the result then gets stored as a float
-  or converted to an integer). `Sema::familyOfExpr` hard-codes `Div` as always
-  float-family for exactly this reason; `Codegen` always casts both operands to
-  `double` before dividing rather than ever using C++'s native `/n` on two integers.
+- **`/` performs real (floating-point) division only when a Float/Double destination is
+  in play** - **superseded by M1's finding below**: M0 originally (incorrectly) believed
+  `/` was unconditionally real division; M1's differential e2e suite caught the actual
+  rule (target-typed, propagating through the whole expression tree) the very first time
+  a bare `Debug a/b` with two Integer operands was tested. See M1's notes for the full,
+  corrected story - kept here only so this section's history stays honest.
 - **Float-to-integer conversion rounds half-to-even (banker's rounding), not
   truncation.** Oracle-verified with `Define a.i = 2.5` / `3.5` / `-2.5` -> `2` / `4` /
   `-2` respectively (2 and 4 are the nearest *even* integers to their ties; -2 likewise).
@@ -105,3 +105,83 @@ milestone actually verifies it against the oracle systematically); string+numeri
 `checkAssignable`'s family check, but that check is scoped to assignment targets today,
 not general binary `+` operands - a real diagnostic for `"x" + 5` specifically is a
 follow-up, not yet verified against the oracle).
+
+## M1 Implementation Notes
+
+**Scope landed**: all 11 type suffixes (already in place since M0), the full oracle-
+derived operator/precedence table (comparisons, bitwise `& | ! ~ << >>`, logical
+`And`/`Or`/`Not`), `If/ElseIf/Else/EndIf`, `Select/Case/Default/EndSelect`, `For/To/
+Step/Next`, `While/Wend`, `Repeat/Until`/`Repeat/ForEver`, `Break`/`Continue`,
+`EnableExplicit`, `#Name` constants, and `Enumeration`.
+
+**The headline finding: PB's `/` (and `%`) is *target-typed*, not unconditionally real
+division.** M0 assumed `/` always performs real division because `10/3` and `10.0/3.0`
+both gave a real quotient in isolation. The very first differential e2e test written for
+M1 (`Debug a / b` with two plain `.i` variables, no destination at all) immediately
+failed: the real `pbcompilerc` printed `3` (plain integer division), while `pbcxx`
+printed `3.500000`. Systematic oracle probing (see the reversal-testing methodology
+below) established the real rule: **a Float/Double destination forces real division
+through the *entire* initializer expression tree** - `Define g.d = 1 + 7/2` evaluates to
+`4.5`, not `4`, proving the float-ness propagates recursively through nested `+`, not
+just a shallow top-level check - **but the exact same expression with no Float
+destination in sight (a bare `Debug 7/2`, or an Integer destination) performs plain
+integer division.** `Sema::classify(expr, floatContext)` implements this by threading a
+`floatContext` flag down through the whole tree from whatever statement is consuming the
+expression (`Define`/`Assign`'s declared type; `Debug` has no destination, so it's always
+un-forced); `Codegen::genExpr` threads the identical flag so generated code matches
+node-for-node. `%` is assumed to follow the same target-typed rule by consistent
+extrapolation only - the two oracle tests that could have distinguished it both landed on
+values consistent with either interpretation (a real, acknowledged gap, not a verified
+fact).
+
+**A second, distinct bug the differential suite caught: the bitwise operators are TWO
+separate flat tiers, not one.** The initial implementation treated `%`, `&`, `|`, `!`
+(xor), `<<`, `>>` as a single flat left-to-right precedence tier, based on an incomplete
+set of pairwise oracle tests. `tests/e2e/operators` (`12 & 1 << 2`) immediately exposed
+the bug: `pbcxx` computed `0` (treating `&`/`<<` as one tier, left-to-right: `(12&1)<<2`),
+the real compiler computed `4` (`12&(1<<2)`). The error traced back to a methodological
+mistake: distinguishing genuine precedence from same-tier left-to-right chaining requires
+testing **both orderings** of a pair - "A op1 B op2 C" *and* "A op2 B op1 C" - since
+whichever operator is *positioned first* coincidentally matches the "genuinely tighter"
+prediction too, making a single-direction test ambiguous. Several pairs had only been
+tested in one direction. Redone properly (see `docs/developer/oracle-testing.md` for the
+reusable methodology), the real structure is:
+
+- Tightest: unary `-`, unary `~` (prefix)
+- Flat tier A (left-to-right, verified via two-directional reversal for every pair):
+  `%`, `!` (xor), `<<`, `>>`
+- Flat tier B (left-to-right, separately verified): `&`, `|`
+- Tier A is tighter than tier B in every direction tested (e.g. `&`/`|` never win against
+  any tier-A operator regardless of which is positioned first)
+- `*`, `/` (flat, standard)
+- binary `+`, `-` (flat, standard)
+- (conditions only, restricted exactly like comparisons) `Not`, then `And`/`Or` - also
+  ONE FLAT tier, left-to-right, **not nested** (`0 Or 1 And 0` = `(0 Or 1) And 0` = false,
+  not the `And`-binds-tighter result every other mainstream language would give)
+
+**`XOr` remains unsupported.** Runtime-tested (not just constant-folded) truth tables for
+`Bool(1 XOr 0)` etc. didn't match standard XOR, PB's own bitwise `!` (which *does* work
+correctly as XOR), or any other consistent interpretation found. Rather than guess,
+`Sema::visitCondition` reports an explicit error whenever logical `XOr` is used, and
+`Codegen` never lowers it. This needs a dedicated follow-up investigation before landing.
+
+**Other oracle-verified facts**: `Select` has no `CaseElse` (`Default` is the only form -
+oracle-confirmed `CaseElse` is a syntax error); `Repeat`/`Until` loops *until* the
+condition becomes true (the opposite sense of C++'s `do`/`while`, handled with an
+explicit negation in Codegen); `Enumeration` members auto-increment from the *previous*
+member's value (`Codegen` emits `k_next = k_previous + 1` in the generated C++ itself
+rather than trying to constant-fold this in the compiler, which also makes an explicit
+non-literal starting value work for free); redeclaring one of PB's own built-in constants
+(`#PI`, `#Red`, etc.) is a real PB error - test programs use non-colliding names like
+`#MYPI` for exactly this reason.
+
+**Deliberately deferred past M1**: constants/`Enumeration` declared *inside* an
+If/For/While/Repeat body are silently dropped by `Codegen::genGlobalConstants` (which
+only walks top-level statements) - real PB code overwhelmingly declares these at module
+scope, so this hasn't blocked anything yet, but it's a real, tracked gap; bitwise ops
+(`&`/`|`/`!`/`<<`/`>>`) are assumed integer-only regardless of any enclosing Float
+destination, not independently oracle-verified (every realistic PB program already uses
+them on integers, so this is a reasonable assumption, not a confirmed fact); `Next`'s
+optional trailing loop-variable name (`Next x`) is parsed but not cross-checked against
+the actual loop variable.
+

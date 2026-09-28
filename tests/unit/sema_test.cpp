@@ -85,3 +85,56 @@ TEST_CASE("Sema treats `%` as integer-family unless a float operand promotes it"
     auto* def = static_cast<ast::DefineStmt*>(module->statements[0].get());
     CHECK(sema.familyOfExpr(*def->declarators[0].init) == ValueKind::IntegerFamily);
 }
+
+TEST_CASE("Sema allows implicit variable declaration without EnableExplicit", "[sema][enable-explicit]") {
+    DiagnosticEngine diags;
+    auto module = parse("x = 5\nDebug x", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects an undeclared variable under EnableExplicit", "[sema][enable-explicit]") {
+    // Oracle-verified error text: "With 'EnableExplicit', variables have to
+    // be declared: x."
+    DiagnosticEngine diags;
+    auto module = parse("EnableExplicit\nx = 5", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts a Define'd variable under EnableExplicit", "[sema][enable-explicit]") {
+    DiagnosticEngine diags;
+    auto module = parse("EnableExplicit\nDefine x.i = 5\nDebug x", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves a #Name constant's family", "[sema][const]") {
+    DiagnosticEngine diags;
+    auto module = parse("#GREETING = \"hi\"\nDebug #GREETING", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK(sema.constTypeOf("greeting") == TypeSuffix::String);
+}
+
+TEST_CASE("Sema rejects a reference to an undeclared constant", "[sema][const]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug #NOPE", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema flags logical XOr as unsupported", "[sema][xor]") {
+    // Real PB's logical XOr showed an unexplained runtime anomaly under
+    // oracle testing (docs/architecture/roadmap.md's M1 notes) - Sema
+    // refuses to silently generate possibly-wrong code for it.
+    DiagnosticEngine diags;
+    auto module = parse("If 1 XOr 0\nDebug 1\nEndIf", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

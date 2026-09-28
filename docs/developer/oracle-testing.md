@@ -57,10 +57,24 @@ recipe against both `pbcompilerc` and `pbcxx`, diffing their stdout - see
 differential test over a hand-written golden fixture whenever the construct under test
 doesn't yet depend on stdlib `pbcxx` hasn't implemented.
 
-## Precedence probing (planned, M1)
+## Precedence probing: always test both orderings
 
-`scripts/pb_precedence_probe.sh` (not yet written) will mechanically generate many
-pairwise binary-operator combinations with distinguishable literal operands, compile
-each with `pbcompilerc -c`, and extract the constant-folded result to reverse-engineer
-the complete operator precedence table - cheaper and more reliable than further one-off
-hand testing once more operators than `+ - * / %` are in scope.
+M1 hit a real bug from under-testing this (see `docs/architecture/roadmap.md`'s M1
+notes): for an expression `A op1 B op2 C`, whichever operator is textually first
+(`op1`) produces the *same* result whether it's genuinely higher-precedence than `op2`
+**or** the two are actually the same flat, left-to-right precedence tier. A single test
+can't tell these apart - the operator positioned first "wins" either way. The only way to
+distinguish them is to also test the mirrored expression `A op2 B op1 C`:
+
+- If the *same* operator (by identity) wins in both orderings → it's genuinely
+  higher-precedence, independent of position.
+- If whichever operator is positioned *first* wins in both orderings → they're the same
+  flat tier, left-associative.
+
+Never conclude a precedence relationship (or its absence) from a single-direction test -
+every real finding in `docs/architecture/roadmap.md` that says "verified both
+directions" or "reversal-tested" used exactly this two-expression method. A
+`scripts/pb_precedence_probe.sh` that automates generating both orderings for many
+operator pairs and diffing against `pbcompilerc -c`'s constant-folded output would make
+this systematic instead of ad hoc - not yet written, worth doing before the next
+milestone that introduces new operators.
