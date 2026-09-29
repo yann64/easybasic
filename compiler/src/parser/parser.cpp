@@ -171,7 +171,8 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::Hash)) {
         return parseConstDecl();
     }
-    if (check(TokenKind::Identifier)) {
+    if (check(TokenKind::Identifier) ||
+        (check(TokenKind::Star) && peek(1).kind == TokenKind::Identifier)) {
         return parseIdentifierStatement();
     }
     diagnostics_.error(peek().loc, std::string("expected statement, found ") +
@@ -187,10 +188,16 @@ std::unique_ptr<ast::Stmt> Parser::parseDefine(bool isGlobal) {
     advance(); // 'Define' / 'Global' / 'Protected'
 
     do {
+        // A leading `*` declares a pointer (oracle-verified: `Define
+        // *ptr.Point = @p`) - `.suffix`/`.structTypeName` describe the
+        // *pointee* type in that case, not the variable's own (see
+        // ast::DefineStmt::Declarator's own doc comment).
+        bool isPointer = match(TokenKind::Star);
         const Token& nameTok = expect(TokenKind::Identifier, "in declaration");
         ast::DefineStmt::Declarator decl;
-        decl.spelling = nameTok.text;
-        decl.name = toLower(nameTok.text);
+        decl.isPointer = isPointer;
+        decl.spelling = (isPointer ? "*" : "") + nameTok.text;
+        decl.name = (isPointer ? "*" : "") + toLower(nameTok.text);
         decl.suffix = nameTok.suffix;
         decl.structTypeName = nameTok.structSuffix;
         decl.structTypeSpelling = nameTok.structSuffixSpelling;
@@ -278,6 +285,36 @@ std::unique_ptr<ast::Stmt> Parser::parseConstDecl() {
 
 std::unique_ptr<ast::Stmt> Parser::parseIdentifierStatement() {
     SourceLoc loc = peek().loc;
+
+    if (check(TokenKind::Star)) {
+        // `*ptr = expr` or `*ptr\field = expr` - a pointer's own value, or
+        // a dereferenced field, used as an assignment target (see
+        // parsePrimaryAtom's identical `*ptr`-as-expression handling).
+        advance(); // '*'
+        const Token& ptrNameTok = expect(TokenKind::Identifier, "after '*'");
+        auto ref = std::make_unique<ast::VarRefExpr>();
+        ref->loc = loc;
+        ref->spelling = "*" + ptrNameTok.text;
+        ref->name = "*" + toLower(ptrNameTok.text);
+        bool hadPtrField = check(TokenKind::Backslash);
+        std::unique_ptr<ast::Expr> target = parsePostfixFieldAccess(std::move(ref));
+        expect(TokenKind::Equal, "in pointer assignment");
+        if (hadPtrField) {
+            auto stmt = std::make_unique<ast::FieldAssignStmt>();
+            stmt->loc = loc;
+            stmt->target = std::move(target);
+            stmt->value = parseExpr();
+            return stmt;
+        }
+        auto& targetRef = static_cast<ast::VarRefExpr&>(*target);
+        auto stmt = std::make_unique<ast::AssignStmt>();
+        stmt->loc = loc;
+        stmt->spelling = targetRef.spelling;
+        stmt->name = targetRef.name;
+        stmt->value = parseExpr();
+        return stmt;
+    }
+
     const Token& nameTok = advance(); // Identifier
 
     std::unique_ptr<ast::Expr> base;
@@ -496,11 +533,15 @@ std::unique_ptr<ast::Stmt> Parser::parseProcedureDecl() {
     expect(TokenKind::LParen, "after procedure name");
     if (!check(TokenKind::RParen)) {
         do {
+            bool isPointer = match(TokenKind::Star); // e.g. `Procedure SetX(*p.Point, v.i)`
             const Token& paramTok = expect(TokenKind::Identifier, "in parameter list");
             ast::ProcedureDeclStmt::Param param;
-            param.spelling = paramTok.text;
-            param.name = toLower(paramTok.text);
+            param.isPointer = isPointer;
+            param.spelling = (isPointer ? "*" : "") + paramTok.text;
+            param.name = (isPointer ? "*" : "") + toLower(paramTok.text);
             param.suffix = paramTok.suffix;
+            param.structTypeName = paramTok.structSuffix;
+            param.structTypeSpelling = paramTok.structSuffixSpelling;
             if (match(TokenKind::Equal)) {
                 param.defaultValue = parseExpr();
             }
@@ -715,6 +756,29 @@ std::unique_ptr<ast::Expr> Parser::parsePostfixFieldAccess(std::unique_ptr<ast::
 
 std::unique_ptr<ast::Expr> Parser::parsePrimaryAtom() {
     const Token& tok = peek();
+    if (tok.kind == TokenKind::Star && peek(1).kind == TokenKind::Identifier) {
+        // `*ptr` - a reference to the pointer-namespaced variable itself
+        // (its raw address value - oracle-verified: `Debug *pa` prints the
+        // address, not the pointee's value; only a following `\field`
+        // dereferences - see ast::DefineStmt::Declarator's own doc comment
+        // on the leading-`*`-in-the-name convention this reuses). `*` never
+        // means anything else at the start of a primary expression (PB has
+        // no unary-multiply), so this is unambiguous.
+        advance(); // '*'
+        const Token& nameTok = advance(); // Identifier
+        auto ref = std::make_unique<ast::VarRefExpr>();
+        ref->loc = tok.loc;
+        ref->spelling = "*" + nameTok.text;
+        ref->name = "*" + toLower(nameTok.text);
+        return ref;
+    }
+    if (tok.kind == TokenKind::At) {
+        advance();
+        auto addr = std::make_unique<ast::AddressOfExpr>();
+        addr->loc = tok.loc;
+        addr->operand = parsePrimary(); // e.g. `@var`, `@var\field`, `@arr(i)`
+        return addr;
+    }
     switch (tok.kind) {
         case TokenKind::IntegerLiteral: {
             advance();

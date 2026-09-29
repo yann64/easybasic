@@ -35,7 +35,9 @@ enum class UnaryOp { Negate, BitNot, LogicalNot };
 /// the target toolchain builds with RTTI enabled (Haiku's GCC does by
 /// default, but there's no reason to depend on it for a simple closed set
 /// of node types known entirely at compile time).
-enum class ExprKind { IntLiteral, FloatLiteral, StringLiteral, VarRef, ConstRef, Binary, Unary, Call, FieldAccess };
+enum class ExprKind {
+    IntLiteral, FloatLiteral, StringLiteral, VarRef, ConstRef, Binary, Unary, Call, FieldAccess, AddressOf
+};
 
 /// Base of every expression node. Untyped: Sema annotates/validates types in
 /// place over this same tree rather than building a second, typed tree - the
@@ -120,6 +122,16 @@ struct FieldAccessExpr : Expr {
     std::string fieldSpelling;
 };
 
+/// `@operand` - address-of, yielding an Integer address (oracle-verified:
+/// `Define *ptr.Point = @p` initializes a pointer with a plain variable's
+/// address; `@p\field` and `@arr(i)` - address of a field or array element
+/// - work the same way, since `operand` can be any location-denoting
+/// expression the existing grammar already parses).
+struct AddressOfExpr : Expr {
+    AddressOfExpr() : Expr(ExprKind::AddressOf) {}
+    std::unique_ptr<Expr> operand;
+};
+
 enum class StmtKind {
     Define, Assign, Debug,
     If, Select, For, While, Repeat,
@@ -155,11 +167,25 @@ using Block = std::vector<std::unique_ptr<Stmt>>;
 struct DefineStmt : Stmt {
     DefineStmt() : Stmt(StmtKind::Define) {}
     struct Declarator {
-        std::string name;
-        std::string spelling;
+        std::string name;     ///< For a pointer, this already includes the leading '*' (see below).
+        std::string spelling; ///< Likewise includes a leading '*' for a pointer, for diagnostics.
+        /// `suffix`/`structTypeName` describe the *pointee* type when
+        /// `isPointer` is set (`Define *ptr.Point` - oracle-verified), not
+        /// the variable's own type (a pointer's own value is always a plain
+        /// address, represented as Integer - see Sema's own notes). Meaning
+        /// depends entirely on `isPointer`; there's no separate "primitive
+        /// pointer" vs "struct pointer" tag here.
         TypeSuffix suffix = TypeSuffix::None; ///< TypeSuffix::Struct means look at structTypeName instead.
         std::string structTypeName;    ///< Lowercased; meaningful only if suffix == Struct.
         std::string structTypeSpelling;
+        /// `Define *ptr.Type = ...` - oracle-verified: a pointer variable's
+        /// name is in a genuinely separate namespace from a plain variable
+        /// of the same base name (reading a same-named non-pointer variable
+        /// gives an unrelated value) - modeled simply by giving `name`/
+        /// `spelling` a literal leading `*` wherever a pointer is declared
+        /// or referenced, which every existing name-keyed Sema table
+        /// already keeps distinct for free, with zero additional plumbing.
+        bool isPointer = false;
         std::unique_ptr<Expr> init; ///< May be null (default-initialized).
     };
     std::vector<Declarator> declarators;
@@ -366,9 +392,16 @@ struct ProcedureDeclStmt : Stmt {
     std::string spelling;
     TypeSuffix returnSuffix = TypeSuffix::None; ///< None defaults to Integer, like everywhere else.
     struct Param {
-        std::string name;
+        std::string name;     ///< Includes a leading '*' for a pointer param (see DefineStmt::Declarator).
         std::string spelling;
+        /// Describes the *pointee* type when `isPointer` is set, exactly
+        /// like DefineStmt::Declarator's identically-named fields (oracle-
+        /// verified pointer parameters, e.g. `Procedure SetX(*p.Point,
+        /// v.i)` mutating the caller's Structure through `*p\x = v`).
         TypeSuffix suffix = TypeSuffix::None;
+        std::string structTypeName;
+        std::string structTypeSpelling;
+        bool isPointer = false;
         std::unique_ptr<Expr> defaultValue; ///< Null means required.
     };
     std::vector<Param> params;

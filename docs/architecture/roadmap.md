@@ -27,7 +27,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | Done (see M0 notes below) |
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deliberately deferred to M3 |
-| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), and `Structure` (M3c) done; pointers/`NewList`/`NewMap` still to come |
+| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), and pointers (M3d) done; `NewList`/`NewMap` still to come |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
@@ -442,4 +442,88 @@ return values (procedures remain primitive-only for now); pointers to Structures
 (`*ptr.Point`, `*ptr\field`) - the natural next increment, since the field-access
 machinery this milestone built is what pointer dereferencing through a Structure will
 reuse directly.
+
+## M3d Implementation Notes (pointers)
+
+**Scope landed**: `*Var`/`@Var` pointer declaration and address-of syntax, `\field`
+dereference through a Structure-typed pointer (reusing M3c's field-access machinery
+directly, as predicted above), pointer procedure parameters (mutating the caller's own
+Structure through the pointer, oracle-verified), and the four allocation built-ins that
+make pointers usable without waiting for the full Memory library (M4):
+`AllocateMemory`/`FreeMemory`/`AllocateStructure`/`FreeStructure`.
+
+**Oracle correction made mid-implementation: a pointer can only be *untyped* or
+*Structure-typed*, never primitive.** The initial design (before checking the oracle)
+assumed `Define *pa.i` was legal, dereferenced via a `\i`-style pseudo-field matching the
+suffix letter. `pbcompilerc -k` rejected it outright: `Error: ... Native types can't be
+used with pointers.` The real rule, confirmed empirically: `Define *pa` (untyped -
+dereferenced via the Memory library's `Peek*`/`Poke*` functions, not yet implemented, so
+`\field` on one is rejected by Sema with a clear diagnostic rather than silently
+miscompiling) or `Define *pp.Point` (Structure-typed - dereferenced with `\field`,
+exactly like a plain Structure variable) are the only two legal forms. This is a good
+example of why this project treats the installed compiler as authoritative over a
+plausible-sounding guess, even mid-implementation - the wrong assumption was caught by a
+single `-k` syntax check before it shipped in the differential test suite, let alone in a
+release.
+
+**Pointer variables live in a genuinely separate namespace from same-named non-pointer
+variables (oracle-verified), modeled with zero new plumbing.** Every existing Sema table
+(`symbols_`, `pointerPointeeType_`, `varStructType_`, `order_`) is already keyed by a
+plain string name - so a pointer's name/spelling simply carries a literal leading `*`
+wherever it's declared or referenced (`Define *pa` produces the key `"*pa"`, distinct from
+plain `"pa"`), and every existing table keeps the two apart for free. The one place this
+*did* need a new C++-identifier-legal mapping is Codegen, since `*` isn't a valid C++
+identifier character: `Codegen::cppVarName` maps a plain name to `v_name` (unchanged) and
+a pointer name to `vp_name` (stripping the `*`), and every call site that could see a
+pointer-flavored name (`VarRef`, `Define`/`Assign` codegen, procedure param/local
+declarations, the global-variable emission loop) now goes through it instead of
+constructing `"v_" + name` inline.
+
+**A pointer's own C++ storage is a plain `std::int64_t` address, never a typed C++
+pointer** - deliberately mirroring PB's own internal model (oracle-verified: a pointer
+variable's default value is a plain integer zero, comparisons and reassignment work like
+ordinary integer operations) rather than introducing a second, parallel "this is really a
+pointer" representation that Codegen's existing target-typed-conversion machinery would
+need to special-case everywhere. The pointee type it was declared to point at
+(`Sema::ResolvedType`, either `TypeSuffix::None` for untyped or `TypeSuffix::Struct` +
+a structure name) is tracked in a new side table, `Sema::pointerPointeeType_`, keyed by
+the same `*`-prefixed name; dereferencing (`Codegen`'s `FieldAccess` case, when the base
+is a bare pointer-value `VarRef`) is the *only* place a `reinterpret_cast<s_Point*>(...)`
+appears, exactly at the point real PB itself would follow the pointer.
+
+**`pointerPointeeType_` is deliberately NOT saved/restored around a `ProcedureDecl`'s
+scope swap, matching `varStructType_`'s existing (pre-M3d) convention.** Both
+`symbols_`/`order_` get a real per-procedure save/swap/restore (see M2's isolated-scope
+notes) because Codegen never reads them directly - it reads `Sema::ProcedureInfo::locals`
+instead, captured explicitly right before the restore. But `varStructType_` and now
+`pointerPointeeType_` *are* read directly by Codegen (`structTypeOfVar`/`pointeeTypeOf`),
+and that reading happens in an entirely separate pass, well after `Sema::analyze()` (and
+every one of its internal scope swaps) has already finished - so an entry added while
+visiting a procedure's body must survive past that procedure's own swap-back, or Codegen
+would see a wiped/wrong entry for that procedure's own params when it later re-walks the
+body. (A first attempt at implementing this added a save/restore anyway, by analogy with
+`symbols_` - it broke exactly this way, caught immediately by an end-to-end pointer-
+parameter test failing to compile.) The accepted tradeoff, inherited unchanged from
+`varStructType_`: a pointer parameter or local sharing a base name with an unrelated
+global pointer of a different pointee type can leak the wrong pointee type across
+procedures. Not yet observed in practice and not worth the added complexity to close
+until it is.
+
+**The four allocation built-ins are recognized by name, not through the normal
+user-declared-procedure table**, via `Sema::isPointerBuiltinName`/
+`Sema::visitPointerBuiltinCall`, checked before the ordinary array-read/procedure-call
+dispatch in both `Sema::visitExpr` and `Codegen::genExpr`'s `Call` handling.
+`AllocateStructure`'s sole argument is a bare Structure *type name* (oracle-verified
+syntax: `AllocateStructure(Point)`), not a variable read - it is deliberately never
+passed through `visitExpr`, since doing so would implicitly declare a bogus variable
+named after the type. `FreeStructure(*p)` determines which C++ type to `delete` as by
+looking up its argument's pointee type via `Sema::pointeeTypeOf` - this only works when
+the argument is literally a bare pointer-value `VarRef`, which covers every oracle-
+verified usage seen so far; a computed pointer expression falls back to treating the
+delete as untyped (`std::int64_t`), a known, narrow limitation rather than a silent
+miscompile of anything actually exercised.
+
+**Deliberately deferred past M3d**: the Memory library's `Peek*`/`Poke*` functions
+(needed to make an *untyped* pointer's own dereference actually useful - M4); pointers to
+arrays or to other pointers; `NewList`/`NewMap` (the remaining, unrelated piece of M3).
 

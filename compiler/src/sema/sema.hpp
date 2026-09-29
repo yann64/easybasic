@@ -163,6 +163,23 @@ public:
     /// for anything that might be Structure-typed.
     ResolvedType resolveType(const ast::Expr& expr) const;
 
+    /// The pointee type a pointer variable (keyed with its leading '*', see
+    /// ast::DefineStmt::Declarator's own doc comment) was declared to point
+    /// at, or a safe Integer fallback if `pointerKey` names no known
+    /// pointer. Used by Codegen to pick the right `reinterpret_cast` target
+    /// when lowering a dereference (`*ptr\field`).
+    ResolvedType pointeeTypeOf(const std::string& pointerKey) const;
+
+    /// True for the handful of pointer/memory built-ins (`AllocateMemory`,
+    /// `FreeMemory`, `AllocateStructure`, `FreeStructure`) that Sema
+    /// recognizes by name rather than through the normal user-declared-
+    /// procedure table - these exist only because pointers are essentially
+    /// unusable without *some* allocation mechanism, bundled into M3d
+    /// rather than waiting for the general standard library (M4). Exposed
+    /// so Codegen's `genExpr`/`ExprStmt` handling can special-case them the
+    /// same way Sema's own `visitExpr` does.
+    static bool isPointerBuiltinName(const std::string& lowerName);
+
 private:
     void visitStmt(ast::Stmt& stmt);
     void visitBlock(ast::Block& block);
@@ -212,6 +229,28 @@ private:
     /// a Structure at all or has no such field.
     ResolvedType resolveField(const ResolvedType& baseType, const std::string& fieldLowerName,
                                const std::string& fieldSpelling, SourceLoc loc) const;
+    /// Handles one of the four names `isPointerBuiltinName` recognizes,
+    /// returning true if `call.name` was one of them (and hence fully
+    /// handled here - the caller must not also treat it as an array read or
+    /// a normal procedure call). `AllocateStructure`'s sole argument is a
+    /// bare Structure type name, not a variable read (oracle-verified
+    /// syntax: `AllocateStructure(Point)`), so it's deliberately *not*
+    /// visited as an expression - doing so would implicitly declare a
+    /// bogus variable named after the type.
+    bool visitPointerBuiltinCall(ast::CallExpr& call);
+    /// Validates and builds the `ResolvedType` a pointer declaration's own
+    /// pointee-describing fields (`suffix`/`structTypeName`/
+    /// `structTypeSpelling`, shared field names between
+    /// ast::DefineStmt::Declarator and ast::ProcedureDeclStmt::Param)
+    /// resolve to. Oracle-verified: only an *untyped* pointer (`Define
+    /// *pa`, `suffix == TypeSuffix::None` - dereferenced via the Memory
+    /// library's Peek*/Poke* functions, not yet implemented - M4) or a
+    /// *Structure-typed* one (`Define *pp.Point`, dereferenced with
+    /// `\field`) is legal; a primitive-typed pointer (`Define *pa.i`) is
+    /// rejected by real PB itself ("Native types can't be used with
+    /// pointers."), reproduced here verbatim.
+    ResolvedType resolvePointeeType(TypeSuffix suffix, const std::string& structTypeName,
+                                     const std::string& structTypeSpelling, SourceLoc loc);
 
     DiagnosticEngine& diagnostics_;
     std::unordered_map<std::string, TypeSuffix> symbols_;
@@ -245,6 +284,19 @@ private:
     /// local scope) - what a `Shared` statement inside that body resolves
     /// names against. Null outside that window.
     const std::unordered_map<std::string, TypeSuffix>* outerScopeForShared_ = nullptr;
+    /// The pointee type each declared pointer variable/parameter was
+    /// declared to point at, keyed by the variable's own `*`-prefixed name
+    /// (same key as `symbols_`). See ast::DefineStmt::Declarator's doc
+    /// comment: the pointer's own `symbols_` entry is always forced to
+    /// TypeSuffix::Integer (its C++ storage is a plain int64_t address), so
+    /// the *pointee* type has to live somewhere else - this is that
+    /// somewhere else. Like `varStructType_`, deliberately NOT saved/
+    /// restored around a `ProcedureDecl`'s scope swap - Codegen queries this
+    /// map for a procedure's own params/locals only *after* Sema::analyze()
+    /// has finished entirely, by which point the swap has already unwound,
+    /// so an entry added while visiting a procedure body must outlive that
+    /// visit (unlike `symbols_` itself, which Codegen never reads directly).
+    std::unordered_map<std::string, ResolvedType> pointerPointeeType_;
 };
 
 } // namespace easybasic

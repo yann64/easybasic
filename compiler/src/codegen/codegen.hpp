@@ -75,6 +75,15 @@ private:
     /// applies (oracle-verified: 2.5->2, 3.5->4, -2.5->-2 - round-half-to-
     /// even, not truncation).
     static std::string convert(const std::string& exprCode, ValueKind fromFamily, TypeSuffix toSuffix);
+    /// The C++ identifier for a declared name, exactly as Sema keys it
+    /// (`symbols_`/`declarationOrder()`/a procedure's `locals`) - a plain
+    /// name gets the usual `v_` prefix, while a pointer's name (which always
+    /// carries a leading '*', see ast::DefineStmt::Declarator's own doc
+    /// comment) gets `vp_` instead, both to strip the `*` - not a legal C++
+    /// identifier character - and so a pointer and a same-named non-pointer
+    /// variable (a real, distinct PB namespace pair - oracle-verified) never
+    /// collide in the generated C++.
+    static std::string cppVarName(const std::string& name);
 
     const ast::Module& module_;
     const Sema& sema_;

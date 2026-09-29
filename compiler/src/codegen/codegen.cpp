@@ -73,6 +73,13 @@ std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName
 Codegen::Codegen(const ast::Module& module, const Sema& sema, bool debugMode)
     : module_(module), sema_(sema), debugMode_(debugMode) {}
 
+std::string Codegen::cppVarName(const std::string& name) {
+    if (!name.empty() && name.front() == '*') {
+        return "vp_" + name.substr(1);
+    }
+    return "v_" + name;
+}
+
 std::string Codegen::convert(const std::string& exprCode, ValueKind fromFamily, TypeSuffix toSuffix) {
     ValueKind toFamily = familyOf(toSuffix);
     const char* cppType = cppTypeFor(toSuffix);
@@ -107,7 +114,7 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
         }
         case ast::ExprKind::VarRef: {
             const auto& ref = static_cast<const ast::VarRefExpr&>(expr);
-            return "v_" + ref.name;
+            return cppVarName(ref.name);
         }
         case ast::ExprKind::ConstRef: {
             const auto& ref = static_cast<const ast::ConstRefExpr&>(expr);
@@ -115,10 +122,60 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
         }
         case ast::ExprKind::FieldAccess: {
             const auto& access = static_cast<const ast::FieldAccessExpr&>(expr);
+            // `*ptr\field` - a dereference, not a plain Structure field
+            // access: the base is a bare pointer-value VarRef (its name
+            // always starts with '*') whose C++ storage is a plain
+            // int64_t address, so it's `reinterpret_cast` at exactly this
+            // point rather than a `.f_field` member access (see
+            // Sema::resolveType's identical special-case for why).
+            if (access.base->kind == ast::ExprKind::VarRef) {
+                const auto& baseRef = static_cast<const ast::VarRefExpr&>(*access.base);
+                if (!baseRef.name.empty() && baseRef.name.front() == '*') {
+                    // Sema already rejected any pointer whose pointee isn't
+                    // a Structure (see Sema::resolveType's identical
+                    // pointer-dereference branch), and the pipeline stops
+                    // before Codegen runs whenever Sema reports an error -
+                    // so `pointee.suffix == Struct` always holds here.
+                    Sema::ResolvedType pointee = sema_.pointeeTypeOf(baseRef.name);
+                    std::string addrCode = cppVarName(baseRef.name);
+                    return "(reinterpret_cast<" + cppTypeFor(pointee.suffix, pointee.structName) + "*>(" +
+                           addrCode + ")->f_" + access.field + ")";
+                }
+            }
             return "(" + genExpr(*access.base, false) + ").f_" + access.field;
+        }
+        case ast::ExprKind::AddressOf: {
+            const auto& addr = static_cast<const ast::AddressOfExpr&>(expr);
+            return "reinterpret_cast<std::int64_t>(&(" + genExpr(*addr.operand, false) + "))";
         }
         case ast::ExprKind::Call: {
             const auto& call = static_cast<const ast::CallExpr&>(expr);
+            if (Sema::isPointerBuiltinName(call.name)) {
+                if (call.name == "allocatememory") {
+                    return "reinterpret_cast<std::int64_t>(std::malloc(static_cast<std::size_t>(" +
+                           genExpr(*call.args.front(), false) + ")))";
+                }
+                if (call.name == "allocatestructure") {
+                    const auto& typeRef = static_cast<const ast::VarRefExpr&>(*call.args.front());
+                    return "reinterpret_cast<std::int64_t>(new " + cppTypeFor(TypeSuffix::Struct, typeRef.name) +
+                           "())";
+                }
+                if (call.name == "freememory") {
+                    return "(std::free(reinterpret_cast<void*>(" + genExpr(*call.args.front(), false) +
+                           ")), static_cast<std::int64_t>(0))";
+                }
+                // freestructure
+                const ast::Expr& ptrArg = *call.args.front();
+                Sema::ResolvedType pointee{};
+                if (ptrArg.kind == ast::ExprKind::VarRef) {
+                    pointee = sema_.pointeeTypeOf(static_cast<const ast::VarRefExpr&>(ptrArg).name);
+                }
+                std::string typeName = pointee.suffix == TypeSuffix::Struct
+                                            ? cppTypeFor(pointee.suffix, pointee.structName)
+                                            : std::string(cppTypeFor(TypeSuffix::Integer));
+                return "(delete reinterpret_cast<" + typeName + "*>(" + genExpr(ptrArg, false) +
+                       "), static_cast<std::int64_t>(0))";
+            }
             if (sema_.arrayInfo(call.name) != nullptr) {
                 return "v_" + call.name + ".at(" + genArrayIndexCode(call.name, call.args) + ")";
             }
@@ -336,7 +393,7 @@ void Codegen::genProcedureDecl(const ast::ProcedureDeclStmt& proc) {
         }
         const auto& param = proc.params[i];
         TypeSuffix paramSuffix = info != nullptr && i < info->paramSuffixes.size() ? info->paramSuffixes[i] : TypeSuffix::Integer;
-        out_ += std::string(cppTypeFor(paramSuffix)) + " v_" + param.name;
+        out_ += std::string(cppTypeFor(paramSuffix)) + " " + cppVarName(param.name);
         if (param.defaultValue) {
             // A real C++ default parameter - the callee's own declaration
             // supplies it natively, so a call site omitting the argument
@@ -355,7 +412,7 @@ void Codegen::genProcedureDecl(const ast::ProcedureDeclStmt& proc) {
             const auto& [name, suffix] = info->locals[i];
             std::string cppType =
                 suffix == TypeSuffix::Struct ? cppTypeFor(suffix, sema_.structTypeOfVar(name)) : cppTypeFor(suffix);
-            out_ += "    " + cppType + " v_" + name + "{};\n";
+            out_ += "    " + cppType + " " + cppVarName(name) + "{};\n";
         }
     }
 
@@ -391,7 +448,7 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
                 bool floatContext = familyOf(targetSuffix) == ValueKind::FloatFamily;
                 std::string rhs =
                     convert(genExpr(*decl.init, floatContext), sema_.classify(*decl.init, floatContext), targetSuffix);
-                out_ += "    v_" + decl.name + " = " + rhs + ";\n";
+                out_ += "    " + cppVarName(decl.name) + " = " + rhs + ";\n";
             }
             break;
         }
@@ -401,7 +458,7 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             bool floatContext = familyOf(targetSuffix) == ValueKind::FloatFamily;
             std::string rhs =
                 convert(genExpr(*assign.value, floatContext), sema_.classify(*assign.value, floatContext), targetSuffix);
-            out_ += "    v_" + assign.name + " = " + rhs + ";\n";
+            out_ += "    " + cppVarName(assign.name) + " = " + rhs + ";\n";
             break;
         }
         case ast::StmtKind::Debug: {
@@ -610,6 +667,7 @@ std::string Codegen::generate() {
     out_.clear();
     out_ += "// Generated by pbcxx - do not edit.\n";
     out_ += "#include <cstdint>\n";
+    out_ += "#include <cstdlib>\n";
     out_ += "#include <cmath>\n";
     out_ += "#include <string>\n";
     out_ += "#include <vector>\n";
@@ -620,7 +678,7 @@ std::string Codegen::generate() {
     for (const auto& [name, suffix] : sema_.declarationOrder()) {
         std::string cppType = suffix == TypeSuffix::Struct ? cppTypeFor(suffix, sema_.structTypeOfVar(name))
                                                              : cppTypeFor(suffix);
-        out_ += "static " + cppType + " v_" + name + "{};\n";
+        out_ += "static " + cppType + " " + cppVarName(name) + "{};\n";
     }
     for (const auto& [name, info] : sema_.arrayDeclarationOrder()) {
         std::string elemType = info.elementSuffix == TypeSuffix::Struct

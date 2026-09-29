@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+
 #include "../../compiler/src/diagnostics/diagnostics.hpp"
 #include "../../compiler/src/lexer/lexer.hpp"
 #include "../../compiler/src/parser/parser.hpp"
@@ -317,6 +319,114 @@ TEST_CASE("Sema rejects an unknown field name on a real Structure", "[sema][stru
 TEST_CASE("Sema keeps Structure and variable Define'd with the wrong type name separate errors", "[sema][struct]") {
     DiagnosticEngine diags;
     auto module = parse("Define p.NotDeclared", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema gives a pointer variable itself Integer type, regardless of its pointee", "[sema][pointer]") {
+    DiagnosticEngine diags;
+    auto module = parse("Structure Point\nx.i\nEndStructure\nDefine *pp.Point", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    CHECK(sema.typeOf("*pp") == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema tracks a Structure-typed pointer's pointee and namespaces it from a same-named variable",
+          "[sema][pointer]") {
+    DiagnosticEngine diags;
+    auto module = parse("Structure Point\nx.i\nEndStructure\nDefine pp.s = \"hi\"\nDefine *pp.Point", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    // "pp" and "*pp" are genuinely separate namespaces (oracle-verified) -
+    // the plain String variable must be untouched by the pointer sharing
+    // its base name.
+    CHECK(sema.typeOf("pp") == TypeSuffix::String);
+    CHECK(sema.typeOf("*pp") == TypeSuffix::Integer);
+    CHECK(sema.pointeeTypeOf("*pp").suffix == TypeSuffix::Struct);
+    CHECK(sema.pointeeTypeOf("*pp").structName == "point");
+}
+
+TEST_CASE("Sema resolves a Structure-typed pointer's dereferenced field type", "[sema][pointer]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Structure Point\nx.i\nEndStructure\n"
+        "Define p.Point\nDefine *pp.Point = @p\nDebug *pp\\x",
+        diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    auto* dbg = static_cast<ast::DebugStmt*>(module->statements[3].get());
+    CHECK(sema.resolveType(*dbg->value).suffix == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema rejects a primitive-typed pointer, exactly like real PB", "[sema][pointer]") {
+    // Oracle-verified (`pbcompilerc`): "Error: ... Native types can't be
+    // used with pointers." for `Define *pa.i`.
+    DiagnosticEngine diags;
+    auto module = parse("Define *pa.i", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a field dereference on an untyped pointer", "[sema][pointer]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define *pa\nDebug *pa\\x", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts an untyped pointer used only by its own address value", "[sema][pointer]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define a.i = 5\nDefine *pa = @a\nDebug *pa", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves a pointer parameter's Structure pointee inside the procedure body", "[sema][pointer]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Structure Point\nx.i\nEndStructure\n"
+        "Procedure SetX(*p.Point, v.i)\n*p\\x = v\nEndProcedure",
+        diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    CHECK(sema.pointeeTypeOf("*p").suffix == TypeSuffix::Struct);
+    CHECK(sema.pointeeTypeOf("*p").structName == "point");
+}
+
+TEST_CASE("Sema recognizes the pointer/memory built-ins by name", "[sema][pointer]") {
+    CHECK(Sema::isPointerBuiltinName("allocatememory"));
+    CHECK(Sema::isPointerBuiltinName("freememory"));
+    CHECK(Sema::isPointerBuiltinName("allocatestructure"));
+    CHECK(Sema::isPointerBuiltinName("freestructure"));
+    CHECK_FALSE(Sema::isPointerBuiltinName("somethingelse"));
+}
+
+TEST_CASE("Sema resolves AllocateStructure's Structure-name argument without declaring a bogus variable",
+          "[sema][pointer]") {
+    DiagnosticEngine diags;
+    auto module = parse("Structure Point\nx.i\nEndStructure\nDefine *sp.Point = AllocateStructure(Point)", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    // AllocateStructure's argument names a *type*, not a variable - Sema
+    // must not have implicitly declared "point" as an ordinary variable.
+    const auto& order = sema.declarationOrder();
+    bool declaredPointAsVariable =
+        std::any_of(order.begin(), order.end(), [](const auto& entry) { return entry.first == "point"; });
+    CHECK_FALSE(declaredPointAsVariable);
+}
+
+TEST_CASE("Sema rejects AllocateStructure given an undeclared Structure name", "[sema][pointer]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define *sp.Point = AllocateStructure(NotDeclared)", diags);
     Sema sema(diags);
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());

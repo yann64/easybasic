@@ -73,6 +73,23 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         case ast::StmtKind::Define: {
             auto& def = static_cast<ast::DefineStmt&>(stmt);
             for (auto& decl : def.declarators) {
+                if (decl.isPointer) {
+                    // A pointer variable's own storage is always a plain
+                    // Integer address (see ast::DefineStmt::Declarator's own
+                    // doc comment); `decl.suffix`/`structTypeName` describe
+                    // what it *points at*, recorded separately below.
+                    declare(decl.name, decl.spelling, TypeSuffix::Integer, def.loc);
+                    pointerPointeeType_[decl.name] = resolvePointeeType(decl.suffix, decl.structTypeName,
+                                                                         decl.structTypeSpelling, def.loc);
+                    if (decl.init) {
+                        visitExpr(*decl.init);
+                        checkAssignable(decl.spelling, TypeSuffix::Integer, *decl.init, def.loc);
+                    }
+                    if (def.isGlobal) {
+                        globalNames_.insert(decl.name);
+                    }
+                    continue;
+                }
                 TypeSuffix suffix = decl.suffix == TypeSuffix::None ? TypeSuffix::Integer : decl.suffix;
                 declare(decl.name, decl.spelling, suffix, def.loc);
                 if (suffix == TypeSuffix::Struct) {
@@ -301,7 +318,14 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             info.returnSuffix = returnSuffix;
             bool sawDefault = false;
             for (auto& param : proc.params) {
-                TypeSuffix paramSuffix = param.suffix == TypeSuffix::None ? TypeSuffix::Integer : param.suffix;
+                // A pointer parameter's own runtime representation is always
+                // a plain Integer address, exactly like a pointer Define
+                // (see the Define case above) - `param.suffix` here
+                // describes the pointee, not the parameter's own storage.
+                TypeSuffix paramSuffix = TypeSuffix::Integer;
+                if (!param.isPointer && param.suffix != TypeSuffix::None) {
+                    paramSuffix = param.suffix;
+                }
                 info.paramSuffixes.push_back(paramSuffix);
                 if (param.defaultValue) {
                     sawDefault = true;
@@ -335,6 +359,12 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             order_ = {};
 
             for (auto& param : proc.params) {
+                if (param.isPointer) {
+                    declare(param.name, param.spelling, TypeSuffix::Integer, proc.loc);
+                    pointerPointeeType_[param.name] = resolvePointeeType(param.suffix, param.structTypeName,
+                                                                         param.structTypeSpelling, proc.loc);
+                    continue;
+                }
                 TypeSuffix paramSuffix = param.suffix == TypeSuffix::None ? TypeSuffix::Integer : param.suffix;
                 declare(param.name, param.spelling, paramSuffix, proc.loc);
             }
@@ -421,6 +451,13 @@ void Sema::visitExpr(ast::Expr& expr) {
         }
         case ast::ExprKind::Call: {
             auto& call = static_cast<ast::CallExpr&>(expr);
+            // The handful of pointer/memory built-ins are recognized by name
+            // before anything else - `AllocateStructure`'s sole argument in
+            // particular must NOT fall through to the ordinary call/array
+            // handling below (see visitPointerBuiltinCall's own doc comment).
+            if (visitPointerBuiltinCall(call)) {
+                break;
+            }
             // `Name(args)` is ambiguous with a call at parse time - a
             // `Dim`'d name always means an array read here (see ArrayInfo's
             // own doc comment).
@@ -440,8 +477,12 @@ void Sema::visitExpr(ast::Expr& expr) {
         case ast::ExprKind::FieldAccess: {
             auto& access = static_cast<ast::FieldAccessExpr&>(expr);
             visitExpr(*access.base);
-            ResolvedType baseType = resolveType(*access.base);
-            resolveField(baseType, access.field, access.fieldSpelling, access.loc); // reported errors only
+            resolveType(expr); // reported errors only; handles the pointer-dereference case too.
+            break;
+        }
+        case ast::ExprKind::AddressOf: {
+            auto& addr = static_cast<ast::AddressOfExpr&>(expr);
+            visitExpr(*addr.operand);
             break;
         }
         case ast::ExprKind::IntLiteral:
@@ -603,6 +644,10 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
             const auto& un = static_cast<const ast::UnaryExpr&>(expr);
             return classify(*un.operand, floatContext);
         }
+        case ast::ExprKind::AddressOf:
+            // `@operand` always yields a plain Integer address, regardless
+            // of any enclosing Float destination.
+            return ValueKind::IntegerFamily;
         case ast::ExprKind::Binary: {
             const auto& bin = static_cast<const ast::BinaryExpr&>(expr);
             switch (bin.op) {
@@ -731,12 +776,97 @@ Sema::ResolvedType Sema::resolveType(const ast::Expr& expr) const {
         }
         case ast::ExprKind::FieldAccess: {
             const auto& access = static_cast<const ast::FieldAccessExpr&>(expr);
+            // `*ptr\field` - the base is a bare pointer-value VarRef (its
+            // name always starts with '*', see DefineStmt::Declarator's own
+            // doc comment), whose *own* symbols_ entry is forced to plain
+            // Integer (the address itself) - so resolving the dereference's
+            // type has to go through pointerPointeeType_ instead of
+            // recursing into resolveType(*access.base) normally, which
+            // would just see "Integer" and reject the field access outright.
+            if (access.base->kind == ast::ExprKind::VarRef) {
+                const auto& baseRef = static_cast<const ast::VarRefExpr&>(*access.base);
+                if (!baseRef.name.empty() && baseRef.name.front() == '*') {
+                    ResolvedType pointee = pointeeTypeOf(baseRef.name);
+                    if (pointee.suffix == TypeSuffix::Struct) {
+                        return resolveField(pointee, access.field, access.fieldSpelling, access.loc);
+                    }
+                    // An untyped pointer (`Define *pa`, no Structure type)
+                    // has no fields to dereference - real dereferencing for
+                    // one of these goes through the Memory library's
+                    // Peek*/Poke* functions instead (not yet implemented -
+                    // M4), so `\field` on one is rejected outright here.
+                    diagnostics_.error(access.loc, "'\\" + access.fieldSpelling + "' used on '" + baseRef.spelling +
+                                                        "', which is not a Structure-typed pointer");
+                    return ResolvedType{};
+                }
+            }
             ResolvedType baseType = resolveType(*access.base);
             return resolveField(baseType, access.field, access.fieldSpelling, access.loc);
         }
         default:
             return ResolvedType{};
     }
+}
+
+Sema::ResolvedType Sema::pointeeTypeOf(const std::string& pointerKey) const {
+    auto it = pointerPointeeType_.find(pointerKey);
+    return it == pointerPointeeType_.end() ? ResolvedType{} : it->second;
+}
+
+bool Sema::isPointerBuiltinName(const std::string& lowerName) {
+    return lowerName == "allocatememory" || lowerName == "freememory" ||
+           lowerName == "allocatestructure" || lowerName == "freestructure";
+}
+
+bool Sema::visitPointerBuiltinCall(ast::CallExpr& call) {
+    if (!isPointerBuiltinName(call.name)) {
+        return false;
+    }
+    if (call.name == "allocatestructure") {
+        // Oracle-verified syntax: `AllocateStructure(Point)` - the sole
+        // argument is a bare Structure type name, not a variable read, so
+        // it's deliberately not visited as an expression (doing so would
+        // implicitly declare a bogus variable named after the type).
+        if (call.args.size() != 1 || call.args.front()->kind != ast::ExprKind::VarRef) {
+            diagnostics_.error(call.loc, "'AllocateStructure' expects a single Structure type name");
+            return true;
+        }
+        const auto& typeRef = static_cast<const ast::VarRefExpr&>(*call.args.front());
+        if (!structures_.contains(typeRef.name)) {
+            diagnostics_.error(call.loc, "'" + typeRef.spelling + "' is not a declared Structure");
+        }
+        return true;
+    }
+    // AllocateMemory(size)/FreeMemory(ptr)/FreeStructure(ptr) all take one
+    // ordinary expression argument (a size or a pointer value) - visited
+    // normally like any other call argument.
+    if (call.args.size() != 1) {
+        diagnostics_.error(call.loc, "'" + call.spelling + "' expects a single argument");
+    }
+    for (auto& arg : call.args) {
+        visitExpr(*arg);
+    }
+    return true;
+}
+
+Sema::ResolvedType Sema::resolvePointeeType(TypeSuffix suffix, const std::string& structTypeName,
+                                             const std::string& structTypeSpelling, SourceLoc loc) {
+    ResolvedType pointee;
+    if (suffix == TypeSuffix::Struct) {
+        if (!structures_.contains(structTypeName)) {
+            diagnostics_.error(loc, "'" + structTypeSpelling + "' is not a declared Structure");
+        }
+        pointee.suffix = TypeSuffix::Struct;
+        pointee.structName = structTypeName;
+    } else if (suffix != TypeSuffix::None) {
+        // Oracle-verified (`pbcompilerc`, `Define *pa.i`): a pointer can
+        // only be untyped or Structure-typed, never a primitive.
+        diagnostics_.error(loc, "Native types can't be used with pointers.");
+        pointee.suffix = TypeSuffix::None;
+    } else {
+        pointee.suffix = TypeSuffix::None; // Untyped pointer - see resolveType()'s own FieldAccess notes.
+    }
+    return pointee;
 }
 
 } // namespace easybasic
