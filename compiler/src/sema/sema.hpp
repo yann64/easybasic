@@ -232,6 +232,17 @@ public:
 private:
     void visitStmt(ast::Stmt& stmt);
     void visitBlock(ast::Block& block);
+    /// Like `visitBlock`, but for a body that is genuinely nested inside a
+    /// control-flow construct (`If`/`Select`/`For`/`While`/`Repeat`/
+    /// `ForEach`) - tracked via `controlFlowDepth_` purely so a
+    /// `ProcedureDecl` reached through it can be rejected the same way real
+    /// PB itself rejects one (oracle-verified: "A procedure can't be
+    /// declared inside an If, Repeat, While or For." - the same wording
+    /// PB's own compiler uses even for `Select`/`ForEach`, which its own
+    /// error text doesn't actually name). Not used for a `ProcedureDecl`'s
+    /// own body (see `insideProcedure_` instead, which covers that case with
+    /// its own distinct oracle-verified wording).
+    void visitNestedBlock(ast::Block& block);
     void declare(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
                  SourceLoc loc);
     /// Like declare(), but for a name reached through PB's implicit-
@@ -334,6 +345,15 @@ private:
     std::vector<std::pair<std::string, TypeSuffix>> constOrder_;
     bool explicitEnabled_ = false;
     std::unordered_map<std::string, ProcedureInfo> procedures_;
+    /// Names `Declare`d but not yet fulfilled by a matching `Procedure`,
+    /// mapping the lowercased name to its original spelling and the
+    /// `Declare` statement's own location (for the final error message,
+    /// oracle-verified wording: "The procedure 'name()' has been declared
+    /// but not defined."). Populated by a `Declare`, erased once the real
+    /// `Procedure` with the same name is seen (after its signature is
+    /// checked to match); anything still present once `analyze()` finishes
+    /// the whole module is reported as an error.
+    std::unordered_map<std::string, std::pair<std::string, SourceLoc>> declaredNotDefined_;
     std::unordered_map<std::string, ArrayInfo> arrays_;
     std::vector<std::pair<std::string, ArrayInfo>> arrayOrder_;
     std::unordered_map<std::string, ListInfo> lists_;
@@ -352,6 +372,11 @@ private:
     /// nest, so a single flag - not a stack - is enough).
     TypeSuffix currentProcedureReturnSuffix_ = TypeSuffix::Integer;
     bool insideProcedure_ = false;
+    /// How many `If`/`Select`/`For`/`While`/`Repeat`/`ForEach` bodies deep
+    /// the statement currently being visited is nested (0 at true top level,
+    /// or directly inside a `ProcedureDecl`'s own body) - see
+    /// `visitNestedBlock`'s own doc comment for why this exists.
+    int controlFlowDepth_ = 0;
     /// Every `Global`-declared name seen so far (module scope only - PB
     /// requires declare-before-use even for procedures, oracle-verified, so
     /// "seen so far" is the right set to pre-populate a procedure's scope

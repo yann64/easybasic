@@ -420,40 +420,106 @@ void Codegen::genStructures() {
 
 void Codegen::genGlobalConstants() {
     // Constants are compile-time (their initializer can only reference
-    // literals and other already-declared constants, never variables), so
-    // - unlike Define/Assign, whose values are computed inside main() - they
+    // literals and other already-declared constants, never variables), so -
+    // unlike Define/Assign, whose values are computed inside main() - they
     // are hoisted out to real global `static const`s here, in source order,
     // before main() even starts. See codegen.hpp's own doc comment for why
-    // only *top-level* declarations are handled (an M1 limitation).
-    for (const auto& stmt : module_.statements) {
-        if (stmt->kind == ast::StmtKind::ConstDecl) {
-            const auto& constDecl = static_cast<const ast::ConstDeclStmt&>(*stmt);
-            TypeSuffix suffix = sema_.constTypeOf(constDecl.name);
-            std::string valueCode =
-                convert(genExpr(*constDecl.value, false), sema_.classify(*constDecl.value, false), suffix);
-            out_ += std::string("static const ") + cppTypeFor(suffix) + " k_" + constDecl.name + " = " + valueCode +
-                    ";\n";
-        } else if (stmt->kind == ast::StmtKind::Enumeration) {
-            const auto& enumStmt = static_cast<const ast::EnumerationStmt&>(*stmt);
-            std::string previousName;
-            for (const auto& member : enumStmt.members) {
-                std::string valueCode;
-                if (member.explicitValue) {
-                    valueCode = genExpr(*member.explicitValue, false);
-                } else if (previousName.empty()) {
-                    valueCode = "0";
-                } else {
-                    // Chains off the *previous* member's own generated C++
-                    // constant rather than trying to fold the value
-                    // ourselves - correct for any explicit value, not just
-                    // literal ones, and lets the C++ compiler do the actual
-                    // arithmetic.
-                    valueCode = "(k_" + previousName + " + 1)";
-                }
-                out_ += "static const std::int64_t k_" + member.name + " = " + valueCode + ";\n";
-                previousName = member.name;
+    // this has to recurse into every nested block, not just scan
+    // `module_.statements` directly.
+    genConstantsIn(module_.statements);
+}
+
+void Codegen::genConstantsIn(const ast::Block& block) {
+    for (const auto& stmt : block) {
+        switch (stmt->kind) {
+            case ast::StmtKind::ConstDecl: {
+                const auto& constDecl = static_cast<const ast::ConstDeclStmt&>(*stmt);
+                TypeSuffix suffix = sema_.constTypeOf(constDecl.name);
+                std::string valueCode =
+                    convert(genExpr(*constDecl.value, false), sema_.classify(*constDecl.value, false), suffix);
+                out_ += std::string("static const ") + cppTypeFor(suffix) + " k_" + constDecl.name + " = " +
+                        valueCode + ";\n";
+                break;
             }
+            case ast::StmtKind::Enumeration: {
+                const auto& enumStmt = static_cast<const ast::EnumerationStmt&>(*stmt);
+                std::string previousName;
+                for (const auto& member : enumStmt.members) {
+                    std::string valueCode;
+                    if (member.explicitValue) {
+                        valueCode = genExpr(*member.explicitValue, false);
+                    } else if (previousName.empty()) {
+                        valueCode = "0";
+                    } else {
+                        // Chains off the *previous* member's own generated
+                        // C++ constant rather than trying to fold the value
+                        // ourselves - correct for any explicit value, not
+                        // just literal ones, and lets the C++ compiler do
+                        // the actual arithmetic.
+                        valueCode = "(k_" + previousName + " + 1)";
+                    }
+                    out_ += "static const std::int64_t k_" + member.name + " = " + valueCode + ";\n";
+                    previousName = member.name;
+                }
+                break;
+            }
+            case ast::StmtKind::If: {
+                const auto& ifStmt = static_cast<const ast::IfStmt&>(*stmt);
+                for (const auto& branch : ifStmt.branches) {
+                    genConstantsIn(branch.body);
+                }
+                break;
+            }
+            case ast::StmtKind::Select: {
+                const auto& sel = static_cast<const ast::SelectStmt&>(*stmt);
+                for (const auto& branch : sel.cases) {
+                    genConstantsIn(branch.body);
+                }
+                break;
+            }
+            case ast::StmtKind::For:
+                genConstantsIn(static_cast<const ast::ForStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::While:
+                genConstantsIn(static_cast<const ast::WhileStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::Repeat:
+                genConstantsIn(static_cast<const ast::RepeatStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::ForEach:
+                genConstantsIn(static_cast<const ast::ForEachStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::ProcedureDecl:
+                // Oracle-verified legal (`Procedure Foo() : #X = 5 : ...`) -
+                // a Procedure itself can never be nested (Sema now rejects
+                // that, see its own ProcedureDecl notes), so recursing here
+                // can't double-visit anything genProcedures() also walks.
+                genConstantsIn(static_cast<const ast::ProcedureDeclStmt&>(*stmt).body);
+                break;
+            default:
+                break; // Nothing to collect from any other statement kind.
         }
+    }
+}
+
+void Codegen::genDeclarePrototypes() {
+    for (const auto& stmt : module_.statements) {
+        if (stmt->kind != ast::StmtKind::Declare) {
+            continue;
+        }
+        const auto& decl = static_cast<const ast::DeclareStmt&>(*stmt);
+        const Sema::ProcedureInfo* info = sema_.procedureInfo(decl.name);
+        TypeSuffix returnSuffix = info != nullptr ? info->returnSuffix : TypeSuffix::Integer;
+        out_ += std::string(cppTypeFor(returnSuffix)) + " f_" + decl.name + "(";
+        for (std::size_t i = 0; i < decl.params.size(); ++i) {
+            if (i != 0) {
+                out_ += ", ";
+            }
+            TypeSuffix paramSuffix =
+                info != nullptr && i < info->paramSuffixes.size() ? info->paramSuffixes[i] : TypeSuffix::Integer;
+            out_ += cppTypeFor(paramSuffix);
+        }
+        out_ += ");\n";
     }
 }
 
@@ -675,6 +741,11 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
         case ast::StmtKind::Enumeration:
         case ast::StmtKind::ProcedureDecl: // NOLINT(bugprone-branch-clone) - already emitted by genProcedures().
             break; // Already emitted as globals/functions by genGlobalConstants()/genProcedures().
+        case ast::StmtKind::Declare:
+            // Sema-only (forward-declares a signature in `procedures_` for
+            // mutual recursion) - nothing to generate; the real `Procedure`
+            // it promises is what genProcedures() actually emits.
+            break;
         case ast::StmtKind::ProcedureReturn: {
             const auto& ret = static_cast<const ast::ProcedureReturnStmt&>(stmt);
             if (ret.value) {
@@ -839,6 +910,7 @@ std::string Codegen::generate() {
     // notes on how Global/Shared pre-populate a procedure's local scope
     // without adding to its locals list) - C++ needs the declaration
     // visible first, unlike PB itself which has no such ordering concern.
+    genDeclarePrototypes();
     genProcedures();
     out_ += "\nint main() {\n";
     for (const auto& stmt : module_.statements) {

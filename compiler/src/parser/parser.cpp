@@ -162,6 +162,9 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwProcedureReturn)) {
         return parseProcedureReturn();
     }
+    if (check(TokenKind::KwDeclare)) {
+        return parseDeclare();
+    }
     if (check(TokenKind::KwDim)) {
         return parseDim();
     }
@@ -606,6 +609,35 @@ std::unique_ptr<ast::Stmt> Parser::parseProcedureDecl() {
 
     stmt->body = parseBlockUntil({TokenKind::KwEndProcedure});
     expect(TokenKind::KwEndProcedure, "to close 'Procedure'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseDeclare() {
+    auto stmt = std::make_unique<ast::DeclareStmt>();
+    stmt->loc = peek().loc;
+    const Token& declareTok = advance(); // 'Declare[.suffix]'
+    stmt->returnSuffix = declareTok.suffix;
+
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'Declare'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+
+    expect(TokenKind::LParen, "after procedure name");
+    if (!check(TokenKind::RParen)) {
+        do {
+            const Token& paramTok = expect(TokenKind::Identifier, "in parameter list");
+            ast::DeclareStmt::Param param;
+            param.spelling = paramTok.text;
+            param.name = toLower(paramTok.text);
+            param.suffix = paramTok.suffix;
+            if (match(TokenKind::Equal)) {
+                parseExpr(); // Discarded - see ast::DeclareStmt::Param::hasDefault's own doc comment.
+                param.hasDefault = true;
+            }
+            stmt->params.push_back(std::move(param));
+        } while (match(TokenKind::Comma));
+    }
+    expect(TokenKind::RParen, "to close parameter list");
     return stmt;
 }
 

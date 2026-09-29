@@ -138,7 +138,7 @@ enum class StmtKind {
     Break, Continue, EnableExplicit, ConstDecl, Enumeration,
     ProcedureDecl, ProcedureReturn, ExprStmt, Shared,
     Dim, IndexAssign, StructureDecl, FieldAssign,
-    NewList, ForEach, NewMap,
+    NewList, ForEach, NewMap, Declare,
 };
 
 /// Base of every statement node.
@@ -458,6 +458,39 @@ struct ProcedureDeclStmt : Stmt {
     };
     std::vector<Param> params;
     Block body;
+};
+
+/// `Declare[.suffix] Name(params)` - a forward declaration enabling mutual
+/// recursion (or simply a forward call from earlier in the file), the one
+/// legitimate way around PB's usual declare-before-use rule for procedures
+/// (oracle-verified: `Declare IsOdd(n.i)` before `Procedure IsEven` lets
+/// `IsEven`'s body call the not-yet-defined `IsOdd`). The later real
+/// `Procedure` with the same name must match this signature exactly -
+/// oracle-verified error: "Declare doesn't match with real Procedure." for
+/// *any* parameter or return type mismatch, not just an arity mismatch -
+/// and if no matching `Procedure` ever follows, real PB rejects the whole
+/// program ("The procedure 'name()' has been declared but not defined.").
+/// Deliberately scoped to primitive parameter types only - a `Declare` for
+/// a pointer- or Structure-typed parameter is not independently oracle-
+/// verified and judged rare enough not to hold up closing this gap.
+struct DeclareStmt : Stmt {
+    DeclareStmt() : Stmt(StmtKind::Declare) {}
+    std::string name;
+    std::string spelling;
+    TypeSuffix returnSuffix = TypeSuffix::None;
+    struct Param {
+        std::string name;
+        std::string spelling;
+        TypeSuffix suffix = TypeSuffix::None;
+        /// Oracle-verified: `Declare` params can carry a default value too
+        /// (`Declare Foo(x.i = 5)`), matching the real `Procedure`'s own -
+        /// only *whether* one is present matters here (for computing how
+        /// many arguments a call is required to supply before the real
+        /// `Procedure` is even seen), so the expression itself is parsed
+        /// and discarded rather than stored.
+        bool hasDefault = false;
+    };
+    std::vector<Param> params;
 };
 
 /// `ProcedureReturn [expr]` - `value` is null for a bare return with no

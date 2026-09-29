@@ -59,6 +59,7 @@ private:
     std::unique_ptr<ast::Stmt> parseEnumeration();
     std::unique_ptr<ast::Stmt> parseProcedureDecl();
     std::unique_ptr<ast::Stmt> parseProcedureReturn();
+    std::unique_ptr<ast::Stmt> parseDeclare();
     ast::Block parseBlockUntil(std::initializer_list<TokenKind> terminators);
     void skipStatementSeparators();
 

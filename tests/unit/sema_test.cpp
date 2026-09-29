@@ -668,3 +668,128 @@ TEST_CASE("Sema rejects a non-String key argument to FindMapElement", "[sema][ma
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+// --- M2-closure: items originally deferred to M3, picked up as a follow-up
+// (mutual recursion / Declare, call-argument type-checking, and a
+// constant/procedure declared inside a nested block). ---
+
+TEST_CASE("Sema allows mutual recursion via a Declare forward declaration", "[sema][declare]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Declare IsOdd(n.i)\n"
+        "Procedure IsEven(n.i)\nIf n = 0\nProcedureReturn 1\nEndIf\nProcedureReturn IsOdd(n - 1)\nEndProcedure\n"
+        "Procedure IsOdd(n.i)\nIf n = 0\nProcedureReturn 0\nEndIf\nProcedureReturn IsEven(n - 1)\nEndProcedure\n"
+        "Debug IsEven(10)",
+        diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a Declare left unfulfilled by any matching Procedure", "[sema][declare]") {
+    // Oracle-verified: "The procedure 'name()' has been declared but not
+    // defined."
+    DiagnosticEngine diags;
+    auto module = parse("Declare NeverDefined()\nDebug NeverDefined()", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a Procedure whose signature doesn't match its own Declare", "[sema][declare]") {
+    // Oracle-verified: "Declare doesn't match with real Procedure." for any
+    // parameter or return type mismatch, not just an arity mismatch.
+    DiagnosticEngine diags;
+    auto module = parse("Declare Foo()\nProcedure Foo(x.i)\nProcedureReturn x\nEndProcedure\nDebug Foo(1)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts a Declare and Procedure with a matching default-valued parameter", "[sema][declare]") {
+    DiagnosticEngine diags;
+    auto module =
+        parse("Declare Foo(x.i = 5)\nProcedure Foo(x.i = 5)\nProcedureReturn x\nEndProcedure\nDebug Foo()", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a String argument passed to an Integer parameter", "[sema][call-types]") {
+    // Oracle-verified: "Bad parameter type, number expected instead of
+    // string." - only caught by a full compile, not `-k`'s syntax check.
+    DiagnosticEngine diags;
+    auto module = parse("Procedure Foo(x.i)\nProcedureReturn x\nEndProcedure\nDebug Foo(\"hi\")", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a numeric argument passed to a String parameter", "[sema][call-types]") {
+    // Oracle-verified: "Bad parameter type: a string is expected."
+    DiagnosticEngine diags;
+    auto module = parse("Procedure Foo(x.s)\nProcedureReturn 1\nEndProcedure\nDebug Foo(5)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts a matching-family call argument", "[sema][call-types]") {
+    DiagnosticEngine diags;
+    auto module = parse("Procedure Foo(x.i)\nProcedureReturn x\nEndProcedure\nDebug Foo(5)", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves a constant declared inside a never-taken If branch", "[sema][nested-decl]") {
+    // Oracle-verified: a constant is purely compile-time/textual and
+    // entirely independent of runtime control flow - usable afterward
+    // regardless of whether the branch that declared it actually runs.
+    DiagnosticEngine diags;
+    auto module = parse("a.i = 0\nIf a = 1\n#X = 5\nEndIf\nDebug #X", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves a constant declared inside a Procedure body", "[sema][nested-decl]") {
+    DiagnosticEngine diags;
+    auto module = parse("Procedure Foo()\n#X = 5\nProcedureReturn #X\nEndProcedure\nDebug Foo()", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a Procedure declared inside an If block", "[sema][nested-decl]") {
+    // Oracle-verified: "A procedure can't be declared inside an If, Repeat,
+    // While or For."
+    DiagnosticEngine diags;
+    auto module = parse("a.i = 1\nIf a = 1\nProcedure Foo()\nProcedureReturn 1\nEndProcedure\nEndIf", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a Procedure declared inside a ForEach block", "[sema][nested-decl]") {
+    DiagnosticEngine diags;
+    auto module =
+        parse("NewList n.i()\nAddElement(n())\nForEach n()\nProcedure Foo()\nProcedureReturn 1\nEndProcedure\nNext",
+              diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a Procedure declared inside another Procedure", "[sema][nested-decl]") {
+    // Oracle-verified: "Can't define a procedure inside another procedure."
+    // - distinct wording from the control-flow-nesting case above.
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Procedure Outer()\nProcedure Inner()\nProcedureReturn 1\nEndProcedure\nProcedureReturn Inner()\n"
+        "EndProcedure",
+        diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

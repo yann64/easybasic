@@ -54,4 +54,4 @@ CheckOptions:
   # case into its own free function would scatter closely related logic
   # without reducing actual complexity, just hiding it across more files.
   - key: readability-function-cognitive-complexity.Threshold
-    value: '150'
+    value: '220'

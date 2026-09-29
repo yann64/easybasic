@@ -47,6 +47,7 @@ enum class TokenKind {
     KwProcedure,
     KwProcedureReturn,
     KwEndProcedure,
+    KwDeclare,   ///< `Declare[.suffix] Name(params)` - forward declaration (M2-closure).
     KwGlobal,
     KwShared,
     KwProtected,

@@ -21,28 +21,44 @@ public:
     std::string generate();
 
 private:
-    /// Emits every top-level `#Name = expr` / `Enumeration` member as a
-    /// global `static const` before `main()` - see the .cpp file's own
-    /// comment for why these can't just be handled inline like Define/
-    /// Assign statements. Known M1 limitation: only *top-level* constant
-    /// declarations are collected this way; one nested inside an If/For/
-    /// While/Repeat body is silently dropped (real PB code overwhelmingly
-    /// declares constants at module scope, so this hasn't blocked anything
-    /// yet, but it's a real gap worth fixing before it does).
+    /// Emits every `#Name = expr` / `Enumeration` member, wherever it
+    /// appears in the source, as a global `static const` before `main()` -
+    /// see the .cpp file's own comment for why these can't just be handled
+    /// inline like Define/Assign statements. A constant is purely compile-
+    /// time and entirely independent of runtime control flow (oracle-
+    /// verified: one declared inside a never-taken `If` branch is still
+    /// usable afterward - PB resolves it positionally/textually, not by
+    /// actually executing the branch), so this recurses into every nested
+    /// block (`If`/`Select`/`For`/`While`/`Repeat`/`ForEach`/a
+    /// `ProcedureDecl`'s own body - oracle-verified legal too) via
+    /// `genConstantsIn`, in the same declare-before-use document order Sema
+    /// itself already enforces.
     void genGlobalConstants();
+    /// The recursive worker behind `genGlobalConstants` - see its own doc
+    /// comment.
+    void genConstantsIn(const ast::Block& block);
     /// Emits every declared `Structure` as a real C++ `struct s_<name>`
     /// before anything that might be an instance of one (global variables,
     /// arrays, procedures) - `Sema::structureDeclarationOrder()` is already
     /// a valid emission order (see its own doc comment on why source order
     /// suffices).
     void genStructures();
+    /// Emits a real C++ function prototype for every top-level `Declare` -
+    /// PB itself requires a procedure to be fully defined before any call to
+    /// it (oracle-verified: no forward declarations/hoisting - see
+    /// ast::ProcedureDeclStmt's own doc comment), *except* through an
+    /// explicit `Declare` (ast::DeclareStmt's own doc comment), which is
+    /// exactly what C++ itself needs a forward declaration for too - so
+    /// unlike genProcedures() below, this one genuinely can't rely on
+    /// source order alone. Must run before genProcedures() so a Declare'd
+    /// name is already known to the C++ compiler by the time an earlier-
+    /// defined procedure's body calls it.
+    void genDeclarePrototypes();
     /// Emits every top-level `Procedure` as a standalone C++ function,
-    /// before `main()`. PB requires a procedure to be fully defined before
-    /// any call to it (oracle-verified: no forward declarations/hoisting -
-    /// see ast::ProcedureDeclStmt's own doc comment), so emitting each one
-    /// in source order - exactly like this walk does - already satisfies
-    /// C++'s own "declared before use" rule for free, without a separate
-    /// prototype-emission pass. Same top-level-only limitation as
+    /// before `main()`, in source order - which already satisfies C++'s own
+    /// "declared before use" rule for free for anything reachable without a
+    /// `Declare` (see genDeclarePrototypes() just above for the one case
+    /// that needs its own pass). Same top-level-only limitation as
     /// genGlobalConstants (PB doesn't nest procedures anyway, so this
     /// hasn't been a real gap in practice).
     void genProcedures();

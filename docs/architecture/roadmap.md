@@ -26,7 +26,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 |---|---|---|
 | **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | Done (see M0 notes below) |
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
-| **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deliberately deferred to M3 |
+| **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deferred to and closed by M3a/M3b; mutual recursion/`Declare`, call-argument type-checking, and constants in nested blocks deferred further, closed by a dedicated M2-closure pass (see its own notes) |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
@@ -654,4 +654,82 @@ procedure (the same kind of gap M3b left open for arrays and M3e left open for L
 PB's OOP-adjacent features this project doesn't model); a Map key type other than String
 (not supported by real PB itself, so nothing was actually deferred here - confirmed
 oracle-verified, not assumed).
+
+## M2-closure Implementation Notes
+
+M2's own "Deliberately deferred" list (see above) had five items. `Global`/`Shared`/
+`Protected` and static `Dim` arrays were closed by M3a/M3b as part of the normal
+roadmap. The other three - mutual recursion/`Declare`, call-argument type-checking
+beyond arity, and a constant declared inside a nested block - were never in scope for
+any of M3's own sub-milestones (all about Structure/pointers/arrays/List/Map, not
+procedure-call rigor) and sat open until this follow-up pass closed them explicitly.
+
+**`Declare` enables exactly the forward reference PB otherwise forbids, and needed a
+real C++ forward declaration to match, not just a Sema-level allowance.** Oracle-
+verified: `Declare IsOdd(n.i)` before `Procedure IsEven` lets `IsEven`'s body call the
+not-yet-defined `IsOdd`, and the real `Procedure` fulfilling a `Declare` must match its
+promised signature *exactly* - return type and every parameter type, not just arity
+("Declare doesn't match with real Procedure." for any mismatch) - while a `Declare` left
+unfulfilled by any matching `Procedure` rejects the whole program ("The procedure
+'name()' has been declared but not defined."). `Sema::visitStmt`'s new `Declare` case
+pre-registers the promised signature in the same `procedures_` table an ordinary
+`Procedure` uses, tracking still-unfulfilled ones in `declaredNotDefined_` (checked once
+at the end of `analyze()`, since the fulfilling `Procedure` can appear anywhere later in
+the file) and validating the match when the real `ProcedureDecl` for that name is
+reached. The first implementation attempt stopped there and still failed at the C++
+level with `'f_isodd' was not declared in this scope` - Sema allowing the *PB-level*
+forward call doesn't make the generated C++ compile, since `Codegen::genProcedures`
+still emits each function only in source order; `Codegen::genDeclarePrototypes` (run
+before `genProcedures`) closes that second half of the gap with a genuine C++ prototype
+per `Declare`. `Declare`'s own parameter list is deliberately primitive-suffix-only (no
+pointer/Structure params) - not independently oracle-verified and judged rare enough not
+to hold up closing the primary gap (mutual recursion among ordinary procedures).
+
+**A procedure can't be declared just anywhere - PB enforces this itself, with two
+distinct wordings this project wasn't reproducing at all.** `Procedure` nested inside
+`If`/`Select`/`For`/`While`/`Repeat`/`ForEach` is rejected ("A procedure can't be
+declared inside an If, Repeat, While or For." - real PB's own generic wording, used
+verbatim even for `Select`/`ForEach`, which it doesn't actually name); nested inside
+*another* `Procedure` gets a different message ("Can't define a procedure inside another
+procedure."). Before this pass, `pbcxx` didn't just fail to reproduce either rejection -
+it silently miscompiled: a nested `Procedure`'s body was accepted by Sema, silently
+dropped by `Codegen` (which only ever scans top-level statements for `ProcedureDecl`,
+same as it does for constants - see below), and any call to it downstream produced an
+undefined-C++-symbol failure with no PB-level diagnostic at all pointing at the actual
+mistake - or, if the resulting call was itself never reached, no error whatsoever (exit
+code 0). `Sema::visitNestedBlock` (wrapping every control-flow body's own `visitBlock`
+call) tracks a `controlFlowDepth_` counter purely so `ProcedureDecl`'s own handling can
+check it (alongside the pre-existing `insideProcedure_` flag, which already existed for
+`ProcedureReturn`'s own type-checking) and reject both illegal positions with real PB's
+own wording, stopping the pipeline before `Codegen` ever sees the malformed input.
+
+**A constant is purely compile-time and textual, entirely independent of runtime
+control flow - a genuinely different situation from the Procedure-nesting case just
+above, verified rather than assumed to be analogous.** `#X = 5` declared inside a
+never-taken `If a = 1` branch (`a` is 0) is still usable afterward, reading `5` - PB
+resolves constants by source position, not by actually executing the branch; a
+constant declared inside a `Procedure`'s own body works the same way and is equally
+legal (unlike nesting a `Procedure` itself, which is flatly rejected). Since `Sema`
+itself already handled this correctly for free (`visitBlock`'s ordinary recursion
+already reaches a nested `ConstDecl`/`Enumeration` and declares it exactly like a
+top-level one, regardless of depth), the actual gap was entirely in `Codegen`:
+`genGlobalConstants` only ever scanned `module_.statements` directly when deciding what
+to hoist as a global `static const` before `main()`, silently dropping anything nested.
+Fixed by refactoring it into a recursive `genConstantsIn` that walks every nested block
+(`If`/`Select`/`For`/`While`/`Repeat`/`ForEach`/a `ProcedureDecl`'s own body) in the same
+document order `Sema` already enforces declare-before-use in - safe to recurse into a
+`ProcedureDecl`'s body unconditionally now, precisely because the fix just above means a
+`Procedure` itself can never legally be the thing doing the nesting.
+
+**Call-argument type-checking beyond arity has its own oracle-verified wording,
+distinct from `checkAssignable`'s existing String-vs-numeric message, and its own
+oracle-testing-methodology lesson.** `Foo("hello")` against `Procedure Foo(x.i)`
+syntax-checks fine under `-k` - the same "`-k` verifies grammar, never real semantic
+validity" lesson M3f's `TotallyBogusFunctionXYZ` finding already recorded, now
+confirmed for a second, unrelated kind of check. Only a full compile surfaces "Bad
+parameter type, number expected instead of string." (or, for the reverse direction,
+"Bad parameter type: a string is expected."). `Sema::visitCall` now checks each
+argument's family against its corresponding declared parameter's, once arity itself has
+already been validated, reusing the existing per-argument `visitExpr` loop rather than
+adding a second pass over `call.args`.
 

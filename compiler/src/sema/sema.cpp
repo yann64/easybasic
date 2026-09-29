@@ -59,6 +59,15 @@ void Sema::declareConst(const std::string& lowerName, const std::string& spellin
 
 bool Sema::analyze(ast::Module& module) {
     visitBlock(module.statements);
+    // Every `Declare` must eventually be fulfilled by a matching
+    // `Procedure` (oracle-verified: "The procedure 'name()' has been
+    // declared but not defined." otherwise) - checked only after the whole
+    // module has been walked, since the fulfilling `Procedure` may appear
+    // anywhere later in the file.
+    for (const auto& [lowerName, spellingAndLoc] : declaredNotDefined_) {
+        diagnostics_.error(spellingAndLoc.second,
+                            "The procedure '" + spellingAndLoc.first + "()' has been declared but not defined.");
+    }
     return !diagnostics_.hasErrors();
 }
 
@@ -66,6 +75,12 @@ void Sema::visitBlock(ast::Block& block) {
     for (auto& stmt : block) {
         visitStmt(*stmt);
     }
+}
+
+void Sema::visitNestedBlock(ast::Block& block) {
+    ++controlFlowDepth_;
+    visitBlock(block);
+    --controlFlowDepth_;
 }
 
 void Sema::visitStmt(ast::Stmt& stmt) {
@@ -184,7 +199,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             if (listInfo(forEach.name) == nullptr && mapInfo(forEach.name) == nullptr) {
                 diagnostics_.error(forEach.loc, "'" + forEach.spelling + "' is not a declared List or Map");
             }
-            visitBlock(forEach.body);
+            visitNestedBlock(forEach.body);
             break;
         }
         case ast::StmtKind::IndexAssign: {
@@ -270,7 +285,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 if (branch.condition) {
                     visitCondition(*branch.condition);
                 }
-                visitBlock(branch.body);
+                visitNestedBlock(branch.body);
             }
             break;
         }
@@ -281,7 +296,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 for (auto& value : branch.values) {
                     visitExpr(*value);
                 }
-                visitBlock(branch.body);
+                visitNestedBlock(branch.body);
             }
             break;
         }
@@ -294,18 +309,18 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 visitExpr(*forStmt.step);
             }
             declareImplicit(forStmt.varName, forStmt.varSpelling, suffix, forStmt.loc);
-            visitBlock(forStmt.body);
+            visitNestedBlock(forStmt.body);
             break;
         }
         case ast::StmtKind::While: {
             auto& whileStmt = static_cast<ast::WhileStmt&>(stmt);
             visitCondition(*whileStmt.condition);
-            visitBlock(whileStmt.body);
+            visitNestedBlock(whileStmt.body);
             break;
         }
         case ast::StmtKind::Repeat: {
             auto& repeatStmt = static_cast<ast::RepeatStmt&>(stmt);
-            visitBlock(repeatStmt.body);
+            visitNestedBlock(repeatStmt.body);
             if (repeatStmt.untilCondition) {
                 visitCondition(*repeatStmt.untilCondition);
             }
@@ -390,11 +405,58 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             }
             break;
         }
+        case ast::StmtKind::Declare: {
+            auto& decl = static_cast<ast::DeclareStmt&>(stmt);
+            if (procedures_.contains(decl.name)) {
+                // Either a genuine duplicate `Declare`, or one appearing
+                // after the real `Procedure` already fully defined it -
+                // neither is the intended "forward-declare, define later"
+                // usage this exists for, so it's simplest to just flag it
+                // the same way any other redeclaration is flagged rather
+                // than modeling PB's own (unverified) behavior for this
+                // unusual ordering.
+                diagnostics_.error(decl.loc, "'" + decl.spelling + "' is already declared as a procedure");
+                break;
+            }
+            ProcedureInfo info;
+            info.returnSuffix = decl.returnSuffix == TypeSuffix::None ? TypeSuffix::Integer : decl.returnSuffix;
+            for (auto& param : decl.params) {
+                info.paramSuffixes.push_back(param.suffix == TypeSuffix::None ? TypeSuffix::Integer : param.suffix);
+                if (!param.hasDefault) {
+                    ++info.requiredParamCount;
+                }
+            }
+            procedures_[decl.name] = info;
+            declaredNotDefined_[decl.name] = {decl.spelling, decl.loc};
+            break;
+        }
         case ast::StmtKind::ProcedureDecl: {
             auto& proc = static_cast<ast::ProcedureDeclStmt&>(stmt);
+            // Oracle-verified: PB rejects a Procedure declared in either of
+            // these positions outright (distinct wording for each), rather
+            // than accepting it and doing something PB-specific with it - so
+            // this reports the error and stops, matching that (unlike a
+            // recoverable issue like a redeclaration, just below, there is
+            // no sensible "continue processing anyway" for a Procedure whose
+            // very presence here is illegal).
+            if (insideProcedure_) {
+                diagnostics_.error(proc.loc, "Can't define a procedure inside another procedure.");
+                break;
+            }
+            if (controlFlowDepth_ > 0) {
+                diagnostics_.error(proc.loc,
+                                    "A procedure can't be declared inside an If, Repeat, While or For.");
+                break;
+            }
             TypeSuffix returnSuffix = proc.returnSuffix == TypeSuffix::None ? TypeSuffix::Integer : proc.returnSuffix;
 
-            if (procedures_.contains(proc.name)) {
+            // Fulfilling an earlier `Declare` looks identical to a plain
+            // redeclaration (`procedures_` already contains the name
+            // either way) - `declaredNotDefined_` is what tells the two
+            // apart, so only a genuine second full definition is flagged
+            // here.
+            bool fulfillsDeclare = declaredNotDefined_.contains(proc.name);
+            if (procedures_.contains(proc.name) && !fulfillsDeclare) {
                 diagnostics_.error(proc.loc, "'" + proc.spelling + "' is already declared as a procedure");
             }
 
@@ -419,6 +481,17 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 } else {
                     ++info.requiredParamCount;
                 }
+            }
+            if (fulfillsDeclare) {
+                // Oracle-verified: the real Procedure must match the
+                // Declare's promised signature exactly (return type AND
+                // every parameter type, not just arity) - "Declare doesn't
+                // match with real Procedure." otherwise.
+                const ProcedureInfo& declared = procedures_[proc.name];
+                if (declared.returnSuffix != info.returnSuffix || declared.paramSuffixes != info.paramSuffixes) {
+                    diagnostics_.error(proc.loc, "Declare doesn't match with real Procedure.");
+                }
+                declaredNotDefined_.erase(proc.name);
             }
             // Registered BEFORE the body is visited - oracle-verified PB
             // requires this for self-recursion to resolve at all (see the
@@ -629,8 +702,25 @@ void Sema::visitCall(ast::CallExpr& call) {
     if (call.args.size() < info.requiredParamCount || call.args.size() > info.paramSuffixes.size()) {
         diagnostics_.error(call.loc, "'" + call.spelling + "' called with the wrong number of arguments");
     }
-    for (auto& arg : call.args) {
-        visitExpr(*arg);
+    for (std::size_t i = 0; i < call.args.size(); ++i) {
+        visitExpr(*call.args[i]);
+        if (i >= info.paramSuffixes.size()) {
+            continue; // Already flagged above as a wrong-argument-count error.
+        }
+        // Oracle-verified: real PB rejects a String<->numeric mismatch here
+        // too (with its own distinct wording from `checkAssignable`'s, and -
+        // unlike an arity mismatch - only caught by a full compile, not by
+        // `-k`'s syntax-only check, a general lesson recorded in this
+        // project's oracle-testing methodology doc): "Bad parameter type,
+        // number expected instead of string." when a String argument is
+        // passed for a numeric parameter, or "Bad parameter type: a string
+        // is expected." for the reverse.
+        bool paramIsString = familyOf(info.paramSuffixes[i]) == ValueKind::StringFamily;
+        bool argIsString = familyOfExpr(*call.args[i]) == ValueKind::StringFamily;
+        if (paramIsString != argIsString) {
+            diagnostics_.error(call.loc, paramIsString ? "Bad parameter type: a string is expected."
+                                                        : "Bad parameter type, number expected instead of string.");
+        }
     }
 }
 
