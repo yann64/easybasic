@@ -165,11 +165,14 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwDim)) {
         return parseDim();
     }
-    if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::LParen) {
-        return parseCallOrIndexAssignStatement();
+    if (check(TokenKind::KwStructure)) {
+        return parseStructureDecl();
     }
-    if (check(TokenKind::Identifier) || check(TokenKind::Hash)) {
-        return parseAssignmentOrConstDecl();
+    if (check(TokenKind::Hash)) {
+        return parseConstDecl();
+    }
+    if (check(TokenKind::Identifier)) {
+        return parseIdentifierStatement();
     }
     diagnostics_.error(peek().loc, std::string("expected statement, found ") +
                                         tokenKindName(peek().kind));
@@ -189,6 +192,8 @@ std::unique_ptr<ast::Stmt> Parser::parseDefine(bool isGlobal) {
         decl.spelling = nameTok.text;
         decl.name = toLower(nameTok.text);
         decl.suffix = nameTok.suffix;
+        decl.structTypeName = nameTok.structSuffix;
+        decl.structTypeSpelling = nameTok.structSuffixSpelling;
         if (match(TokenKind::Equal)) {
             decl.init = parseExpr();
         }
@@ -220,6 +225,8 @@ std::unique_ptr<ast::Stmt> Parser::parseDim() {
     stmt->spelling = nameTok.text;
     stmt->name = toLower(nameTok.text);
     stmt->suffix = nameTok.suffix;
+    stmt->structTypeName = nameTok.structSuffix;
+    stmt->structTypeSpelling = nameTok.structSuffixSpelling;
     expect(TokenKind::LParen, "after array name");
     stmt->dimensionSizes.push_back(parseExpr());
     while (match(TokenKind::Comma)) {
@@ -232,28 +239,118 @@ std::unique_ptr<ast::Stmt> Parser::parseDim() {
     return stmt;
 }
 
-std::unique_ptr<ast::Stmt> Parser::parseCallOrIndexAssignStatement() {
-    // `Name(args)` as a whole statement is ambiguous between a call and an
-    // array-element assignment until we see whether `=` follows - both
-    // share the identical `Name(args)` prefix (see ast::IndexAssignStmt's
-    // own doc comment), so parse it once via parsePrimary (which already
-    // knows how to parse a parenthesized, comma-separated expression list)
-    // and reinterpret the result based on what comes next.
+std::unique_ptr<ast::Stmt> Parser::parseStructureDecl() {
+    auto stmt = std::make_unique<ast::StructureDeclStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'Structure'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'Structure'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    skipStatementSeparators();
+
+    while (check(TokenKind::Identifier)) {
+        const Token& fieldTok = advance();
+        ast::StructureDeclStmt::Field field;
+        field.spelling = fieldTok.text;
+        field.name = toLower(fieldTok.text);
+        field.suffix = fieldTok.suffix;
+        field.structTypeName = fieldTok.structSuffix;
+        field.structTypeSpelling = fieldTok.structSuffixSpelling;
+        stmt->fields.push_back(std::move(field));
+        skipStatementSeparators();
+    }
+
+    expect(TokenKind::KwEndStructure, "to close 'Structure'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseConstDecl() {
+    SourceLoc loc = advance().loc; // '#'
+    const Token& nameTok = expect(TokenKind::Identifier, "after '#'");
+    auto stmt = std::make_unique<ast::ConstDeclStmt>();
+    stmt->loc = loc;
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    expect(TokenKind::Equal, "in constant declaration");
+    stmt->value = parseExpr();
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseIdentifierStatement() {
     SourceLoc loc = peek().loc;
-    auto parsed = parsePrimary(); // yields an ast::CallExpr
+    const Token& nameTok = advance(); // Identifier
+
+    std::unique_ptr<ast::Expr> base;
+    if (check(TokenKind::LParen)) {
+        // Ambiguous with a call until Sema resolves `nameTok` as an array
+        // or a procedure (see ast::IndexAssignStmt's own doc comment) -
+        // both share this identical `Name(args)` parse either way.
+        advance(); // '('
+        auto call = std::make_unique<ast::CallExpr>();
+        call->loc = loc;
+        call->spelling = nameTok.text;
+        call->name = toLower(nameTok.text);
+        if (!check(TokenKind::RParen)) {
+            do {
+                call->args.push_back(parseExpr());
+            } while (match(TokenKind::Comma));
+        }
+        expect(TokenKind::RParen, "to close call arguments");
+        base = std::move(call);
+    } else {
+        auto ref = std::make_unique<ast::VarRefExpr>();
+        ref->loc = loc;
+        ref->spelling = nameTok.text;
+        ref->name = toLower(nameTok.text);
+        ref->suffix = nameTok.suffix;
+        base = std::move(ref);
+    }
+
+    bool hadField = check(TokenKind::Backslash);
+    base = parsePostfixFieldAccess(std::move(base));
+
     if (match(TokenKind::Equal)) {
-        auto& call = static_cast<ast::CallExpr&>(*parsed);
-        auto stmt = std::make_unique<ast::IndexAssignStmt>();
+        if (hadField) {
+            auto stmt = std::make_unique<ast::FieldAssignStmt>();
+            stmt->loc = loc;
+            stmt->target = std::move(base);
+            stmt->value = parseExpr();
+            return stmt;
+        }
+        if (base->kind == ast::ExprKind::Call) {
+            auto& call = static_cast<ast::CallExpr&>(*base);
+            auto stmt = std::make_unique<ast::IndexAssignStmt>();
+            stmt->loc = loc;
+            stmt->name = call.name;
+            stmt->spelling = call.spelling;
+            stmt->indices = std::move(call.args);
+            stmt->value = parseExpr();
+            return stmt;
+        }
+        auto& ref = static_cast<ast::VarRefExpr&>(*base);
+        auto stmt = std::make_unique<ast::AssignStmt>();
         stmt->loc = loc;
-        stmt->name = call.name;
-        stmt->spelling = call.spelling;
-        stmt->indices = std::move(call.args);
+        stmt->spelling = ref.spelling;
+        stmt->name = ref.name;
+        stmt->suffix = ref.suffix;
         stmt->value = parseExpr();
         return stmt;
     }
+
+    if (!hadField && base->kind == ast::ExprKind::Call) {
+        // `Name(args)` as a whole statement with no trailing `=` - a call,
+        // its return value (if any) discarded.
+        auto stmt = std::make_unique<ast::ExprStmt>();
+        stmt->loc = loc;
+        stmt->expr = std::move(base);
+        return stmt;
+    }
+
+    diagnostics_.error(peek().loc, "expected '=' to complete this statement, found " +
+                                        std::string(tokenKindName(peek().kind)));
     auto stmt = std::make_unique<ast::ExprStmt>();
     stmt->loc = loc;
-    stmt->expr = std::move(parsed);
+    stmt->expr = std::move(base);
     return stmt;
 }
 
@@ -261,30 +358,6 @@ std::unique_ptr<ast::Stmt> Parser::parseDebug() {
     auto stmt = std::make_unique<ast::DebugStmt>();
     stmt->loc = peek().loc;
     advance(); // 'Debug'
-    stmt->value = parseExpr();
-    return stmt;
-}
-
-std::unique_ptr<ast::Stmt> Parser::parseAssignmentOrConstDecl() {
-    if (check(TokenKind::Hash)) {
-        SourceLoc loc = advance().loc; // '#'
-        const Token& nameTok = expect(TokenKind::Identifier, "after '#'");
-        auto stmt = std::make_unique<ast::ConstDeclStmt>();
-        stmt->loc = loc;
-        stmt->spelling = nameTok.text;
-        stmt->name = toLower(nameTok.text);
-        expect(TokenKind::Equal, "in constant declaration");
-        stmt->value = parseExpr();
-        return stmt;
-    }
-
-    const Token& nameTok = advance(); // Identifier
-    auto stmt = std::make_unique<ast::AssignStmt>();
-    stmt->loc = nameTok.loc;
-    stmt->spelling = nameTok.text;
-    stmt->name = toLower(nameTok.text);
-    stmt->suffix = nameTok.suffix;
-    expect(TokenKind::Equal, "in assignment");
     stmt->value = parseExpr();
     return stmt;
 }
@@ -623,6 +696,24 @@ std::unique_ptr<ast::Expr> Parser::parseUnary() {
 }
 
 std::unique_ptr<ast::Expr> Parser::parsePrimary() {
+    return parsePostfixFieldAccess(parsePrimaryAtom());
+}
+
+std::unique_ptr<ast::Expr> Parser::parsePostfixFieldAccess(std::unique_ptr<ast::Expr> base) {
+    while (check(TokenKind::Backslash)) {
+        SourceLoc loc = advance().loc;
+        const Token& fieldTok = expect(TokenKind::Identifier, "after '\\'");
+        auto access = std::make_unique<ast::FieldAccessExpr>();
+        access->loc = loc;
+        access->base = std::move(base);
+        access->field = toLower(fieldTok.text);
+        access->fieldSpelling = fieldTok.text;
+        base = std::move(access);
+    }
+    return base;
+}
+
+std::unique_ptr<ast::Expr> Parser::parsePrimaryAtom() {
     const Token& tok = peek();
     switch (tok.kind) {
         case TokenKind::IntegerLiteral: {

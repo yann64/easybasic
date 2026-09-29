@@ -75,6 +75,8 @@ const std::unordered_map<std::string, TokenKind>& keywordTable() {
         {"shared", TokenKind::KwShared},
         {"protected", TokenKind::KwProtected},
         {"dim", TokenKind::KwDim},
+        {"structure", TokenKind::KwStructure},
+        {"endstructure", TokenKind::KwEndStructure},
         {"and", TokenKind::KwAnd},
         {"or", TokenKind::KwOr},
         {"not", TokenKind::KwNot},
@@ -125,6 +127,8 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwShared: return "'Shared'";
         case TokenKind::KwProtected: return "'Protected'";
         case TokenKind::KwDim: return "'Dim'";
+        case TokenKind::KwStructure: return "'Structure'";
+        case TokenKind::KwEndStructure: return "'EndStructure'";
         case TokenKind::KwAnd: return "'And'";
         case TokenKind::KwOr: return "'Or'";
         case TokenKind::KwNot: return "'Not'";
@@ -147,6 +151,8 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::ShiftLeft: return "'<<'";
         case TokenKind::ShiftRight: return "'>>'";
         case TokenKind::Hash: return "'#'";
+        case TokenKind::Backslash: return "'\\'";
+        case TokenKind::At: return "'@'";
         case TokenKind::LParen: return "'('";
         case TokenKind::RParen: return "')'";
         case TokenKind::Comma: return "','";
@@ -312,6 +318,8 @@ Token Lexer::next() {
         case '!': tok.kind = TokenKind::Bang; break;
         case '~': tok.kind = TokenKind::Tilde; break;
         case '#': tok.kind = TokenKind::Hash; break;
+        case '\\': tok.kind = TokenKind::Backslash; break;
+        case '@': tok.kind = TokenKind::At; break;
         case '(': tok.kind = TokenKind::LParen; break;
         case ')': tok.kind = TokenKind::RParen; break;
         case ',': tok.kind = TokenKind::Comma; break;
@@ -332,6 +340,8 @@ Token Lexer::lexIdentifierOrKeyword() {
     }
 
     TypeSuffix suffix = TypeSuffix::None;
+    std::string structSuffix;
+    std::string structSuffixSpelling;
     // A `.` immediately after an identifier is always a type-suffix marker
     // in PB, never member access (PB uses `\` for that instead) - so this
     // is unambiguous, unlike e.g. C-family languages.
@@ -343,6 +353,19 @@ Token Lexer::lexIdentifierOrKeyword() {
             advance(); // '.'
             advance(); // suffix letter
             suffix = candidate;
+        } else if (isIdentStart(peek(1))) {
+            // Not one of the 11 primitive letters (or followed by more
+            // identifier characters, so it's a longer name regardless) -
+            // this is a named Structure type annotation instead
+            // (oracle-verified: `Define p.Point`).
+            advance(); // '.'
+            std::string typeName;
+            while (!isAtEnd() && isIdentContinue(peek())) {
+                typeName += advance();
+            }
+            suffix = TypeSuffix::Struct;
+            structSuffixSpelling = typeName;
+            structSuffix = toLower(typeName);
         }
     } else if (peek() == '$') {
         // `$` is a general alternative String-suffix sigil, usable on any
@@ -358,6 +381,8 @@ Token Lexer::lexIdentifierOrKeyword() {
     tok.loc = loc;
     tok.text = text;
     tok.suffix = suffix;
+    tok.structSuffix = structSuffix;
+    tok.structSuffixSpelling = structSuffixSpelling;
     if (it != keywordTable().end()) {
         // Unlike every other keyword, `Procedure` legitimately carries a
         // type suffix (`Procedure.i`/`Procedure$ Name(...)`) - the suffix

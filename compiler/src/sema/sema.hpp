@@ -39,6 +39,12 @@ public:
     /// successful analyze() on a well-formed module).
     TypeSuffix typeOf(const std::string& lowerName) const;
 
+    /// The Structure type name for a variable whose typeOf() is
+    /// TypeSuffix::Struct, or an empty string otherwise. Used by Codegen to
+    /// pick the real C++ type (`s_<name>`) for a struct-typed variable's
+    /// own declaration.
+    const std::string& structTypeOfVar(const std::string& lowerName) const;
+
     /// Bottom-up family classification with no destination context - what an
     /// expression "naturally" is when nothing forces it otherwise. Used for
     /// a `Debug`'d expression (which has no destination type at all) and for
@@ -105,7 +111,8 @@ public:
     /// own namespace rules for this collision aren't modeled - not
     /// expected to come up in practice).
     struct ArrayInfo {
-        TypeSuffix elementSuffix = TypeSuffix::Integer;
+        TypeSuffix elementSuffix = TypeSuffix::Integer; ///< Struct means look at elementStructName instead.
+        std::string elementStructName; ///< Lowercased; meaningful only if elementSuffix == Struct.
         int dimensionCount = 1;
     };
     const ArrayInfo* arrayInfo(const std::string& lowerName) const;
@@ -116,6 +123,45 @@ public:
     const std::vector<std::pair<std::string, ArrayInfo>>& arrayDeclarationOrder() const {
         return arrayOrder_;
     }
+
+    /// A resolved type: either one of PB's 11 primitive suffixes, or -
+    /// when `suffix == TypeSuffix::Struct` - a named Structure (looked up
+    /// via `structureInfo(structName)`). Every variable, array element,
+    /// and Structure field ultimately resolves to one of these.
+    struct ResolvedType {
+        TypeSuffix suffix = TypeSuffix::Integer;
+        std::string structName; ///< Lowercased; meaningful only if suffix == Struct.
+    };
+
+    /// One declared Structure's field list, in declaration order.
+    struct FieldInfo {
+        std::string name;
+        std::string spelling;
+        TypeSuffix suffix = TypeSuffix::Integer;
+        std::string structTypeName; ///< Meaningful only if suffix == Struct.
+    };
+    struct StructureInfo {
+        std::vector<FieldInfo> fields;
+    };
+    /// Returns nullptr if `lowerName` was never declared as a Structure.
+    const StructureInfo* structureInfo(const std::string& lowerName) const;
+    /// Every declared Structure, in declaration order (a field naming
+    /// another Structure can only refer to one already declared earlier -
+    /// PB's usual declare-before-use rule - so source order is always a
+    /// valid Codegen emission order too, with no separate dependency sort
+    /// needed).
+    const std::vector<std::pair<std::string, StructureInfo>>& structureDeclarationOrder() const {
+        return structureOrder_;
+    }
+
+    /// Resolves the type of any expression that denotes a storage location
+    /// - a plain variable, an array element (`arr(i)`), or a field-access
+    /// chain (`base\field`, however deeply nested) - by walking down to the
+    /// root and then re-resolving each field lookup on the way back up.
+    /// This is the single place that understands how a Structure's field
+    /// types chain together; `classify()` and Codegen both go through it
+    /// for anything that might be Structure-typed.
+    ResolvedType resolveType(const ast::Expr& expr) const;
 
 private:
     void visitStmt(ast::Stmt& stmt);
@@ -161,6 +207,11 @@ private:
     void bringIntoScope(const std::unordered_map<std::string, TypeSuffix>& outerScope,
                          const std::string& lowerName, const std::string& spelling, SourceLoc loc,
                          const char* directiveNameForError);
+    /// Looks up `field` on whatever Structure `baseType` names, reporting a
+    /// diagnostic and returning a safe Integer fallback if `baseType` isn't
+    /// a Structure at all or has no such field.
+    ResolvedType resolveField(const ResolvedType& baseType, const std::string& fieldLowerName,
+                               const std::string& fieldSpelling, SourceLoc loc) const;
 
     DiagnosticEngine& diagnostics_;
     std::unordered_map<std::string, TypeSuffix> symbols_;
@@ -171,6 +222,12 @@ private:
     std::unordered_map<std::string, ProcedureInfo> procedures_;
     std::unordered_map<std::string, ArrayInfo> arrays_;
     std::vector<std::pair<std::string, ArrayInfo>> arrayOrder_;
+    /// A declared variable's Structure type name, keyed by the variable's
+    /// lowercased name, present only when that variable's entry in
+    /// `symbols_` is `TypeSuffix::Struct`.
+    std::unordered_map<std::string, std::string> varStructType_;
+    std::unordered_map<std::string, StructureInfo> structures_;
+    std::vector<std::pair<std::string, StructureInfo>> structureOrder_;
     /// The return suffix of the procedure whose body is currently being
     /// visited, used by a nested `ProcedureReturn`'s own type checking; only
     /// meaningful while `insideProcedure_` is true (PB procedures don't

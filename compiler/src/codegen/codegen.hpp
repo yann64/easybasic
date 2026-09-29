@@ -30,6 +30,12 @@ private:
     /// declares constants at module scope, so this hasn't blocked anything
     /// yet, but it's a real gap worth fixing before it does).
     void genGlobalConstants();
+    /// Emits every declared `Structure` as a real C++ `struct s_<name>`
+    /// before anything that might be an instance of one (global variables,
+    /// arrays, procedures) - `Sema::structureDeclarationOrder()` is already
+    /// a valid emission order (see its own doc comment on why source order
+    /// suffices).
+    void genStructures();
     /// Emits every top-level `Procedure` as a standalone C++ function,
     /// before `main()`. PB requires a procedure to be fully defined before
     /// any call to it (oracle-verified: no forward declarations/hoisting -
@@ -84,15 +90,28 @@ private:
 };
 
 /// The C++ type easybasic uses to represent each PB type-suffix. Exposed for
-/// tests/tooling as well as Codegen itself.
+/// tests/tooling as well as Codegen itself. `TypeSuffix::Struct` has no
+/// single fixed C++ type (it depends on which Structure), so this returns a
+/// placeholder for it - callers that might be dealing with a struct-typed
+/// value must use the `structName`-aware overload below instead.
 const char* cppTypeFor(TypeSuffix suffix);
 
+/// As above, but resolves `TypeSuffix::Struct` to the real generated C++
+/// struct name (`s_<structName>`) using the Structure name Sema already
+/// resolved. Every *new* call site that might see a struct-typed variable,
+/// array element, or field goes through this one; the plain, single-
+/// argument overload remains for existing call sites that are only ever
+/// reached for definitely-primitive values (e.g. `Debug`'s
+/// `std::to_string`, `Mod`'s `fmod` cast).
+std::string cppTypeFor(TypeSuffix suffix, const std::string& structName);
+
 /// The C++ literal representing PB's "zero value" for `suffix` - `0`/`0.0`
-/// for numeric types, an empty `PBString` for `.s`. Used both for a
-/// procedure's fallthrough-returns-zero-value semantics (oracle-verified:
-/// falling off the end of a procedure body returns the declared return
-/// type's zero value, not undefined behavior) and for default-initializing
-/// a global/local variable's own C++ declaration.
-std::string defaultValueLiteral(TypeSuffix suffix);
+/// for numeric types, an empty `PBString` for `.s`, a default-constructed
+/// `s_<structName>{}` for a Structure. Used both for a procedure's
+/// fallthrough-returns-zero-value semantics (oracle-verified: falling off
+/// the end of a procedure body returns the declared return type's zero
+/// value, not undefined behavior) and for default-initializing a
+/// global/local variable's own C++ declaration.
+std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName = "");
 
 } // namespace easybasic

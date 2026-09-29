@@ -263,3 +263,61 @@ TEST_CASE("Sema rejects assigning a String into a numeric array element", "[sema
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+TEST_CASE("Sema resolves a Structure's field types", "[sema][struct]") {
+    DiagnosticEngine diags;
+    auto module = parse("Structure Point\nx.i\nname.s\nEndStructure", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    const auto* info = sema.structureInfo("point");
+    REQUIRE(info != nullptr);
+    REQUIRE(info->fields.size() == 2);
+    CHECK(info->fields[0].suffix == TypeSuffix::Integer);
+    CHECK(info->fields[1].suffix == TypeSuffix::String);
+}
+
+TEST_CASE("Sema resolves a field-access chain's type, including through nesting", "[sema][struct]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Structure Point\nx.i\nEndStructure\n"
+        "Structure Rect\ntopLeft.Point\nEndStructure\n"
+        "Define r.Rect\nDebug r\\topLeft\\x",
+        diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    auto* dbg = static_cast<ast::DebugStmt*>(module->statements[2].get());
+    CHECK(sema.resolveType(*dbg->value).suffix == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema resolves a field's type through an array-of-Structure element", "[sema][struct]") {
+    DiagnosticEngine diags;
+    auto module = parse("Structure Point\nx.i\nEndStructure\nDim points.Point(2)\nDebug points(0)\\x", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a field access on a non-Structure value", "[sema][struct]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define x.i = 5\nDebug x\\field", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects an unknown field name on a real Structure", "[sema][struct]") {
+    DiagnosticEngine diags;
+    auto module = parse("Structure Point\nx.i\nEndStructure\nDefine p.Point\nDebug p\\nope", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema keeps Structure and variable Define'd with the wrong type name separate errors", "[sema][struct]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define p.NotDeclared", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

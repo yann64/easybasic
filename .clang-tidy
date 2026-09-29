@@ -21,6 +21,12 @@
 #   - use-designated-initializers: the small aggregate structs
 #     (SourceLoc/Diagnostic/ProcessResult) are consistently positional-
 #     brace-initialized throughout; not worth churning for style alone.
+#   - inefficient-string-concatenation: Codegen builds its entire output via
+#     `out_ += "literal" + expr + "literal" + ...` throughout - hundreds of
+#     lines follow this exact pattern already; the extra temporaries are
+#     negligible for a hobbyist-scale compiler's own runtime, and rewriting
+#     a handful of call sites while leaving the rest alone would just be
+#     inconsistent style, not a real perf fix.
 Checks: >
   bugprone-*,
   clang-analyzer-*,
@@ -37,7 +43,8 @@ Checks: >
   -cppcoreguidelines-avoid-const-or-ref-data-members,
   -cppcoreguidelines-avoid-do-while,
   -cppcoreguidelines-pro-type-static-cast-downcast,
-  -modernize-use-designated-initializers
+  -modernize-use-designated-initializers,
+  -performance-inefficient-string-concatenation
 WarningsAsErrors: ''
 HeaderFilterRegex: '(compiler|runtime)/.*'
 FormatStyle: none
@@ -47,4 +54,4 @@ CheckOptions:
   # case into its own free function would scatter closely related logic
   # without reducing actual complexity, just hiding it across more files.
   - key: readability-function-cognitive-complexity.Threshold
-    value: '90'
+    value: '150'

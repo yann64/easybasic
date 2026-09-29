@@ -27,6 +27,13 @@ const char* cppTypeFor(TypeSuffix suffix) {
     }
 }
 
+std::string cppTypeFor(TypeSuffix suffix, const std::string& structName) {
+    if (suffix == TypeSuffix::Struct) {
+        return "s_" + structName;
+    }
+    return cppTypeFor(suffix);
+}
+
 namespace {
 
 std::string escapeCppString(const std::string& raw) {
@@ -53,7 +60,10 @@ std::string formatFloatLiteral(double value) {
 
 } // namespace
 
-std::string defaultValueLiteral(TypeSuffix suffix) {
+std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName) {
+    if (suffix == TypeSuffix::Struct) {
+        return cppTypeFor(suffix, structName) + "{}";
+    }
     if (familyOf(suffix) == ValueKind::StringFamily) {
         return "easybasic::runtime::PBString()";
     }
@@ -102,6 +112,10 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
         case ast::ExprKind::ConstRef: {
             const auto& ref = static_cast<const ast::ConstRefExpr&>(expr);
             return "k_" + ref.name;
+        }
+        case ast::ExprKind::FieldAccess: {
+            const auto& access = static_cast<const ast::FieldAccessExpr&>(expr);
+            return "(" + genExpr(*access.base, false) + ").f_" + access.field;
         }
         case ast::ExprKind::Call: {
             const auto& call = static_cast<const ast::CallExpr&>(expr);
@@ -251,6 +265,19 @@ std::string Codegen::genCondition(const ast::Expr& expr) {
     return "(" + genExpr(expr, false) + " != 0)";
 }
 
+void Codegen::genStructures() {
+    for (const auto& [name, info] : sema_.structureDeclarationOrder()) {
+        out_ += "struct s_" + name + " {\n";
+        for (const auto& field : info.fields) {
+            std::string fieldType = field.suffix == TypeSuffix::Struct
+                                         ? cppTypeFor(field.suffix, field.structTypeName)
+                                         : cppTypeFor(field.suffix);
+            out_ += "    " + fieldType + " f_" + field.name + "{};\n";
+        }
+        out_ += "};\n\n";
+    }
+}
+
 void Codegen::genGlobalConstants() {
     // Constants are compile-time (their initializer can only reference
     // literals and other already-declared constants, never variables), so
@@ -326,7 +353,9 @@ void Codegen::genProcedureDecl(const ast::ProcedureDeclStmt& proc) {
     if (info != nullptr) {
         for (std::size_t i = info->paramSuffixes.size(); i < info->locals.size(); ++i) {
             const auto& [name, suffix] = info->locals[i];
-            out_ += std::string("    ") + cppTypeFor(suffix) + " v_" + name + "{};\n";
+            std::string cppType =
+                suffix == TypeSuffix::Struct ? cppTypeFor(suffix, sema_.structTypeOfVar(name)) : cppTypeFor(suffix);
+            out_ += "    " + cppType + " v_" + name + "{};\n";
         }
     }
 
@@ -533,6 +562,7 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             const auto& dim = static_cast<const ast::DimStmt&>(stmt);
             const Sema::ArrayInfo* info = sema_.arrayInfo(dim.name);
             TypeSuffix elemSuffix = info != nullptr ? info->elementSuffix : TypeSuffix::Integer;
+            std::string elemStructName = info != nullptr ? info->elementStructName : "";
             std::string sizeExpr0 = genExpr(*dim.dimensionSizes[0], false);
             if (dim.dimensionSizes.size() == 1) {
                 // `Dim` (re-)sizes and resets the array at this exact
@@ -541,13 +571,13 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
                 // (oracle-verified: PB allows an arbitrary expression here,
                 // not just a compile-time constant).
                 out_ += "    v_" + dim.name + ".assign(static_cast<std::size_t>(" + sizeExpr0 + ") + 1, " +
-                        defaultValueLiteral(elemSuffix) + ");\n";
+                        defaultValueLiteral(elemSuffix, elemStructName) + ");\n";
             } else {
                 std::string sizeExpr1 = genExpr(*dim.dimensionSizes[1], false);
                 out_ += "    v_" + dim.name + "_dim1 = " + sizeExpr1 + ";\n";
                 out_ += "    v_" + dim.name + ".assign(static_cast<std::size_t>(" + sizeExpr0 +
                         " + 1) * static_cast<std::size_t>(v_" + dim.name + "_dim1 + 1), " +
-                        defaultValueLiteral(elemSuffix) + ");\n";
+                        defaultValueLiteral(elemSuffix, elemStructName) + ");\n";
             }
             break;
         }
@@ -562,6 +592,17 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
                     genArrayIndexCode(indexAssign.name, indexAssign.indices) + ") = " + valueCode + ";\n";
             break;
         }
+        case ast::StmtKind::StructureDecl:
+            break; // Already emitted as a real C++ struct by genStructures().
+        case ast::StmtKind::FieldAssign: {
+            const auto& fieldAssign = static_cast<const ast::FieldAssignStmt&>(stmt);
+            Sema::ResolvedType targetType = sema_.resolveType(*fieldAssign.target);
+            bool floatCtx = familyOf(targetType.suffix) == ValueKind::FloatFamily;
+            std::string valueCode = convert(genExpr(*fieldAssign.value, floatCtx),
+                                             sema_.classify(*fieldAssign.value, floatCtx), targetType.suffix);
+            out_ += "    " + genExpr(*fieldAssign.target, false) + " = " + valueCode + ";\n";
+            break;
+        }
     }
 }
 
@@ -574,12 +615,18 @@ std::string Codegen::generate() {
     out_ += "#include <vector>\n";
     out_ += "#include <easybasic/runtime/runtime.hpp>\n\n";
 
+    genStructures(); // must precede any variable/array/procedure that might be an instance of one
     genGlobalConstants();
     for (const auto& [name, suffix] : sema_.declarationOrder()) {
-        out_ += std::string("static ") + cppTypeFor(suffix) + " v_" + name + "{};\n";
+        std::string cppType = suffix == TypeSuffix::Struct ? cppTypeFor(suffix, sema_.structTypeOfVar(name))
+                                                             : cppTypeFor(suffix);
+        out_ += "static " + cppType + " v_" + name + "{};\n";
     }
     for (const auto& [name, info] : sema_.arrayDeclarationOrder()) {
-        out_ += std::string("static std::vector<") + cppTypeFor(info.elementSuffix) + "> v_" + name + ";\n";
+        std::string elemType = info.elementSuffix == TypeSuffix::Struct
+                                    ? cppTypeFor(info.elementSuffix, info.elementStructName)
+                                    : cppTypeFor(info.elementSuffix);
+        out_ += "static std::vector<" + elemType + "> v_" + name + ";\n";
         if (info.dimensionCount == 2) {
             out_ += "static std::int64_t v_" + name + "_dim1 = 0;\n";
         }

@@ -75,12 +75,20 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             for (auto& decl : def.declarators) {
                 TypeSuffix suffix = decl.suffix == TypeSuffix::None ? TypeSuffix::Integer : decl.suffix;
                 declare(decl.name, decl.spelling, suffix, def.loc);
-                if (def.isGlobal) {
-                    globalNames_.insert(decl.name);
-                }
-                if (decl.init) {
+                if (suffix == TypeSuffix::Struct) {
+                    if (!structures_.contains(decl.structTypeName)) {
+                        diagnostics_.error(def.loc, "'" + decl.structTypeSpelling + "' is not a declared Structure");
+                    }
+                    varStructType_[decl.name] = decl.structTypeName;
+                    if (decl.init) {
+                        diagnostics_.error(def.loc, "Structure-typed variables cannot have an initializer");
+                    }
+                } else if (decl.init) {
                     visitExpr(*decl.init);
                     checkAssignable(decl.spelling, suffix, *decl.init, def.loc);
+                }
+                if (def.isGlobal) {
+                    globalNames_.insert(decl.name);
                 }
             }
             break;
@@ -108,6 +116,12 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             ArrayInfo info;
             info.elementSuffix = dim.suffix == TypeSuffix::None ? TypeSuffix::Integer : dim.suffix;
             info.dimensionCount = static_cast<int>(dim.dimensionSizes.size());
+            if (info.elementSuffix == TypeSuffix::Struct) {
+                if (!structures_.contains(dim.structTypeName)) {
+                    diagnostics_.error(dim.loc, "'" + dim.structTypeSpelling + "' is not a declared Structure");
+                }
+                info.elementStructName = dim.structTypeName;
+            }
             arrays_.emplace(dim.name, info);
             arrayOrder_.emplace_back(dim.name, info);
             break;
@@ -127,7 +141,13 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 diagnostics_.error(indexAssign.loc, "'" + indexAssign.spelling +
                                                          "' indexed with the wrong number of dimensions");
             }
-            checkAssignable(indexAssign.spelling, info->elementSuffix, *indexAssign.value, indexAssign.loc);
+            if (info->elementSuffix == TypeSuffix::Struct) {
+                diagnostics_.error(indexAssign.loc, "cannot assign directly to '" + indexAssign.spelling +
+                                                         "(...)', a Structure element - assign to one of its "
+                                                         "own fields instead");
+            } else {
+                checkAssignable(indexAssign.spelling, info->elementSuffix, *indexAssign.value, indexAssign.loc);
+            }
             break;
         }
         case ast::StmtKind::Assign: {
@@ -216,6 +236,56 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                     visitExpr(*member.explicitValue);
                 }
                 declareConst(member.name, member.spelling, TypeSuffix::Integer, enumStmt.loc);
+            }
+            break;
+        }
+        case ast::StmtKind::StructureDecl: {
+            auto& structDecl = static_cast<ast::StructureDeclStmt&>(stmt);
+            if (structures_.contains(structDecl.name)) {
+                diagnostics_.error(structDecl.loc,
+                                    "'" + structDecl.spelling + "' is already declared as a Structure");
+                break;
+            }
+            StructureInfo info;
+            for (auto& field : structDecl.fields) {
+                FieldInfo fieldInfo;
+                fieldInfo.name = field.name;
+                fieldInfo.spelling = field.spelling;
+                fieldInfo.suffix = field.suffix == TypeSuffix::None ? TypeSuffix::Integer : field.suffix;
+                if (fieldInfo.suffix == TypeSuffix::Struct) {
+                    // Oracle-verified: a field can name another, previously
+                    // declared Structure (nesting) - `structures_` only
+                    // contains Structures already fully processed by this
+                    // point in source order, so this naturally enforces
+                    // PB's own declare-before-use rule for free.
+                    if (!structures_.contains(field.structTypeName)) {
+                        diagnostics_.error(structDecl.loc,
+                                            "'" + field.structTypeSpelling + "' is not a declared Structure");
+                    }
+                    fieldInfo.structTypeName = field.structTypeName;
+                }
+                info.fields.push_back(std::move(fieldInfo));
+            }
+            structures_.emplace(structDecl.name, info);
+            structureOrder_.emplace_back(structDecl.name, info);
+            break;
+        }
+        case ast::StmtKind::FieldAssign: {
+            auto& fieldAssign = static_cast<ast::FieldAssignStmt&>(stmt);
+            visitExpr(*fieldAssign.target);
+            visitExpr(*fieldAssign.value);
+            ResolvedType targetType = resolveType(*fieldAssign.target);
+            const std::string& targetSpelling = static_cast<ast::FieldAccessExpr&>(*fieldAssign.target).fieldSpelling;
+            if (targetType.suffix == TypeSuffix::Struct) {
+                // Whole-Structure assignment (`r\topLeft = ...` where
+                // topLeft is itself a nested Structure, not a leaf
+                // primitive field) isn't supported - only leaf primitive
+                // fields can be assigned to (`r\topLeft\x = ...` instead).
+                diagnostics_.error(fieldAssign.loc,
+                                    "cannot assign directly to '" + targetSpelling +
+                                        "', which is a Structure - assign to one of its own fields instead");
+            } else {
+                checkAssignable(targetSpelling, targetType.suffix, *fieldAssign.value, fieldAssign.loc);
             }
             break;
         }
@@ -367,6 +437,13 @@ void Sema::visitExpr(ast::Expr& expr) {
             }
             break;
         }
+        case ast::ExprKind::FieldAccess: {
+            auto& access = static_cast<ast::FieldAccessExpr&>(expr);
+            visitExpr(*access.base);
+            ResolvedType baseType = resolveType(*access.base);
+            resolveField(baseType, access.field, access.fieldSpelling, access.loc); // reported errors only
+            break;
+        }
         case ast::ExprKind::IntLiteral:
         case ast::ExprKind::FloatLiteral:
         case ast::ExprKind::StringLiteral:
@@ -468,6 +545,12 @@ TypeSuffix Sema::typeOf(const std::string& lowerName) const {
     return it == symbols_.end() ? TypeSuffix::Integer : it->second;
 }
 
+const std::string& Sema::structTypeOfVar(const std::string& lowerName) const {
+    static const std::string empty;
+    auto it = varStructType_.find(lowerName);
+    return it == varStructType_.end() ? empty : it->second;
+}
+
 ValueKind Sema::familyOfExpr(const ast::Expr& expr) const { return classify(expr, false); }
 
 ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
@@ -504,6 +587,13 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
             } else if (proc != nullptr) {
                 natural = familyOf(proc->returnSuffix);
             }
+            if (natural == ValueKind::StringFamily) {
+                return ValueKind::StringFamily;
+            }
+            return floatContext ? ValueKind::FloatFamily : natural;
+        }
+        case ast::ExprKind::FieldAccess: {
+            ValueKind natural = familyOf(resolveType(expr).suffix);
             if (natural == ValueKind::StringFamily) {
                 return ValueKind::StringFamily;
             }
@@ -579,6 +669,74 @@ const Sema::ProcedureInfo* Sema::procedureInfo(const std::string& lowerName) con
 const Sema::ArrayInfo* Sema::arrayInfo(const std::string& lowerName) const {
     auto it = arrays_.find(lowerName);
     return it == arrays_.end() ? nullptr : &it->second;
+}
+
+const Sema::StructureInfo* Sema::structureInfo(const std::string& lowerName) const {
+    auto it = structures_.find(lowerName);
+    return it == structures_.end() ? nullptr : &it->second;
+}
+
+Sema::ResolvedType Sema::resolveField(const ResolvedType& baseType, const std::string& fieldLowerName,
+                                      const std::string& fieldSpelling, SourceLoc loc) const {
+    if (baseType.suffix != TypeSuffix::Struct) {
+        diagnostics_.error(loc, "'\\" + fieldSpelling + "' used on a value that isn't a Structure");
+        return ResolvedType{};
+    }
+    const StructureInfo* info = structureInfo(baseType.structName);
+    if (info == nullptr) {
+        diagnostics_.error(loc, "'\\" + fieldSpelling + "' used on an unknown Structure type");
+        return ResolvedType{};
+    }
+    for (const auto& field : info->fields) {
+        if (field.name == fieldLowerName) {
+            ResolvedType result;
+            result.suffix = field.suffix;
+            if (field.suffix == TypeSuffix::Struct) {
+                result.structName = field.structTypeName;
+            }
+            return result;
+        }
+    }
+    diagnostics_.error(loc, "'" + fieldSpelling + "' is not a field of this Structure");
+    return ResolvedType{};
+}
+
+Sema::ResolvedType Sema::resolveType(const ast::Expr& expr) const {
+    switch (expr.kind) {
+        case ast::ExprKind::VarRef: {
+            const auto& ref = static_cast<const ast::VarRefExpr&>(expr);
+            TypeSuffix suffix = typeOf(ref.name);
+            ResolvedType result;
+            result.suffix = suffix;
+            if (suffix == TypeSuffix::Struct) {
+                auto it = varStructType_.find(ref.name);
+                result.structName = it != varStructType_.end() ? it->second : "";
+            }
+            return result;
+        }
+        case ast::ExprKind::Call: {
+            const auto& call = static_cast<const ast::CallExpr&>(expr);
+            if (const ArrayInfo* arr = arrayInfo(call.name)) {
+                ResolvedType result;
+                result.suffix = arr->elementSuffix;
+                if (arr->elementSuffix == TypeSuffix::Struct) {
+                    result.structName = arr->elementStructName;
+                }
+                return result;
+            }
+            if (const ProcedureInfo* proc = procedureInfo(call.name)) {
+                return ResolvedType{proc->returnSuffix, ""};
+            }
+            return ResolvedType{};
+        }
+        case ast::ExprKind::FieldAccess: {
+            const auto& access = static_cast<const ast::FieldAccessExpr&>(expr);
+            ResolvedType baseType = resolveType(*access.base);
+            return resolveField(baseType, access.field, access.fieldSpelling, access.loc);
+        }
+        default:
+            return ResolvedType{};
+    }
 }
 
 } // namespace easybasic

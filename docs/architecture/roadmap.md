@@ -27,7 +27,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | Done (see M0 notes below) |
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deliberately deferred to M3 |
-| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` (M3a) and static `Dim` arrays, 1D/2D (M3b) done; `Structure`/pointers/`NewList`/`NewMap` still to come |
+| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), and `Structure` (M3c) done; pointers/`NewList`/`NewMap` still to come |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
@@ -370,4 +370,76 @@ its own small parsing wrinkle distinct from everything above, deferred alongside
 rest of the standard library to M4; passing an array to a procedure (PB's
 `Array Name.type(N)` parameter syntax is a distinct feature from a plain scalar
 parameter, not yet supported).
+
+## M3c Implementation Notes (`Structure`)
+
+**Scope landed**: `Structure`/`EndStructure` declarations with primitive and nested-
+Structure fields, field access and assignment via `\` (arbitrarily deep chains),
+Structure-typed variables (including as procedure-local `Define`s, with their own
+isolated-scope treatment from M2 applying unchanged), and arrays of Structures
+(`Dim points.Point(2)` then `points(0)\x`).
+
+**The type system needed a real extension, done with minimal disruption.** Every
+declaration site (`Define`, `Dim`, a Structure's own field list) previously only ever
+carried a `TypeSuffix`. Rather than replacing that with a general "type" variant
+everywhere (touching every existing call site across four milestones' worth of code), a
+single new enumerator was added - `TypeSuffix::Struct` - meaning "look elsewhere for the
+real type": the lexer now also captures a `.Name` annotation that isn't one of the 11
+primitive letters as a `structSuffix` field on the token (oracle-verified: `Define
+p.Point` and a Structure field naming another Structure, e.g. `topLeft.Point` inside
+`Rect`, both use this), and every AST node that can carry a Structure type gained a
+companion `structTypeName` string used only when its `suffix` is `Struct`. This kept
+every *existing* primitive-only code path (M0-M3b) completely unchanged while adding
+Structure support as a parallel, opt-in case.
+
+**A single recursive resolver (`Sema::resolveType`) is the one place that understands
+how field types chain together** - given any expression that denotes a storage location
+(a plain variable, an array element, or a field-access chain however deeply nested), it
+walks down to the root and re-resolves each field lookup on the way back up via
+`resolveField`. This is what makes `r\topLeft\x` (a field of a field), `points(0)\x` (a
+field of an array element), and a bare `p\x` all resolve correctly through the exact
+same code path, and it's the single source of truth both `Sema::classify` (for the usual
+numeric-family/target-typed-conversion machinery) and `Codegen` (to pick a field
+assignment's real conversion target type) go through - no second, drifting notion of
+"what type is this" exists anywhere else in the compiler.
+
+**`name(args)` was already ambiguous between an array read and a procedure call (M3b);
+adding `\field` chains needed the identical treatment applied one level up, for
+*statements*.** `Parser::parseIdentifierStatement` now parses one unified base (a plain
+name, or `Name(args)`) followed by zero or more `\field` segments, and only *afterward*
+decides what kind of statement it actually is based on what follows: `=` with a field
+chain present is a field assignment, `=` with array-index args is an element assignment,
+`=` with neither is a plain assignment, and no `=` at all (with no field chain) is a call
+used as a statement. All four share an identical prefix and genuinely cannot be told
+apart any earlier - this single function replaced what had been two separate, narrower
+parsing functions (`parseCallOrIndexAssignStatement` and the non-`#` half of
+`parseAssignmentOrConstDecl`) from M3b.
+
+**Structures are real C++ structs, emitted before anything that could be an instance of
+one.** `Codegen::genStructures` walks `Sema::structureDeclarationOrder()` (already a
+valid emission order for free, since PB requires a field's Structure type to be declared
+*before* the Structure that uses it - the same declare-before-use rule enforced
+everywhere else in this project) and emits a plain `struct s_<name> { ... };` per
+declaration, before global variables, arrays, or procedures - any of which might need the
+type already defined. Field access (`base\field`) lowers to plain C++ member access
+(`(base).f_field`); no getter/setter machinery, no virtual dispatch (PB has no
+inheritance at all, so there's nothing to dispatch).
+
+**Deliberately rejected rather than silently mishandled**: assigning directly to a
+Structure-typed field or array element as a whole (`r\topLeft = ...`, `points(0) =
+...`) - PB's own field-assignment model only ever targets a *leaf* primitive field
+(`r\topLeft\x = ...`), and silently treating a whole-struct target as if it had a
+numeric type (which `familyOf(TypeSuffix::Struct)` would otherwise quietly do, via its
+catch-all `default: IntegerFamily` case) would have let invalid assignments through
+without any diagnostic at all - both `FieldAssignStmt` and `IndexAssignStmt`'s Sema
+handling now explicitly check for this and report a real error instead.
+
+**Deliberately deferred past M3c**: `StructureUnion`; array fields *within* a Structure
+(a field like `data.i[10]`, distinct from a top-level `Dim`); fixed-length string fields
+(PB's `name.s{20}` syntax, as opposed to a plain dynamic `.s` field, which already works
+exactly like a top-level String variable); Structure-typed procedure parameters and
+return values (procedures remain primitive-only for now); pointers to Structures
+(`*ptr.Point`, `*ptr\field`) - the natural next increment, since the field-access
+machinery this milestone built is what pointer dereferencing through a Structure will
+reuse directly.
 

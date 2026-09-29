@@ -30,14 +30,21 @@ private:
     std::unique_ptr<ast::Stmt> parseDefine(bool isGlobal);
     std::unique_ptr<ast::Stmt> parseShared();
     std::unique_ptr<ast::Stmt> parseDim();
-    /// Called once `Identifier(` has been seen at statement position -
-    /// parses the full `Name(args)`, then decides between an array-element
-    /// assignment (`Name(args) = expr`) and a call-as-statement based on
-    /// whether `=` follows (see ast::IndexAssignStmt's own doc comment for
-    /// why this can't be decided any earlier, at the token level alone).
-    std::unique_ptr<ast::Stmt> parseCallOrIndexAssignStatement();
+    std::unique_ptr<ast::Stmt> parseStructureDecl();
+    /// Called at statement position on a bare `Identifier` - parses a
+    /// single unified "base" (a plain variable, or `Name(args)` which is
+    /// ambiguous between a call and an array index until Sema resolves it -
+    /// see ast::IndexAssignStmt's own doc comment), then any number of
+    /// `\field` segments (building an ast::FieldAccessExpr chain), and only
+    /// *then* decides what statement this actually is based on whether `=`
+    /// follows: a field assignment, an array-element assignment, a plain
+    /// assignment, or - if nothing follows and there was no field chain - a
+    /// call used as a whole statement. All of these share an identical
+    /// `Name(args)...` prefix, so none of them can be told apart any
+    /// earlier than this.
+    std::unique_ptr<ast::Stmt> parseIdentifierStatement();
+    std::unique_ptr<ast::Stmt> parseConstDecl();
     std::unique_ptr<ast::Stmt> parseDebug();
-    std::unique_ptr<ast::Stmt> parseAssignmentOrConstDecl();
     std::unique_ptr<ast::Stmt> parseIf();
     std::unique_ptr<ast::Stmt> parseSelect();
     std::unique_ptr<ast::Stmt> parseFor();
@@ -70,6 +77,17 @@ private:
     std::unique_ptr<ast::Expr> parseBitwiseTight();  // % ! << >> (flat, tighter than & |)
     std::unique_ptr<ast::Expr> parseUnary();         // unary - ~
     std::unique_ptr<ast::Expr> parsePrimary();
+    /// The literal/identifier/parenthesized-expression cases, before any
+    /// `\field` postfix chain is applied - parsePrimary() itself is a thin
+    /// wrapper (`parsePostfixFieldAccess(parsePrimaryAtom())`).
+    std::unique_ptr<ast::Expr> parsePrimaryAtom();
+    /// Wraps `base` in as many `ast::FieldAccessExpr` layers as there are
+    /// consecutive `\field` segments following it (zero is fine - most
+    /// expressions have none). Shared by both expression-position reads
+    /// (`Debug p\x`, via parsePrimary) and Parser::parseIdentifierStatement,
+    /// which needs the identical chain-building logic before deciding what
+    /// kind of statement it's looking at.
+    std::unique_ptr<ast::Expr> parsePostfixFieldAccess(std::unique_ptr<ast::Expr> base);
 
     // --- token stream plumbing ---
     [[nodiscard]] const Token& peek(int offset = 0) const;

@@ -35,7 +35,7 @@ enum class UnaryOp { Negate, BitNot, LogicalNot };
 /// the target toolchain builds with RTTI enabled (Haiku's GCC does by
 /// default, but there's no reason to depend on it for a simple closed set
 /// of node types known entirely at compile time).
-enum class ExprKind { IntLiteral, FloatLiteral, StringLiteral, VarRef, ConstRef, Binary, Unary, Call };
+enum class ExprKind { IntLiteral, FloatLiteral, StringLiteral, VarRef, ConstRef, Binary, Unary, Call, FieldAccess };
 
 /// Base of every expression node. Untyped: Sema annotates/validates types in
 /// place over this same tree rather than building a second, typed tree - the
@@ -107,12 +107,25 @@ struct CallExpr : Expr {
     std::vector<std::unique_ptr<Expr>> args;
 };
 
+/// `base\field` - a Structure field access, read as a value. Chains left-
+/// associate: `r\topLeft\x` parses as `FieldAccessExpr{ base:
+/// FieldAccessExpr{ base: VarRef(r), field: topLeft }, field: x }` (see
+/// Sema's own notes on how the base's structure type is resolved
+/// recursively down such a chain, including through an array-of-Structure
+/// element, e.g. `points(0)\x`).
+struct FieldAccessExpr : Expr {
+    FieldAccessExpr() : Expr(ExprKind::FieldAccess) {}
+    std::unique_ptr<Expr> base;
+    std::string field;
+    std::string fieldSpelling;
+};
+
 enum class StmtKind {
     Define, Assign, Debug,
     If, Select, For, While, Repeat,
     Break, Continue, EnableExplicit, ConstDecl, Enumeration,
     ProcedureDecl, ProcedureReturn, ExprStmt, Shared,
-    Dim, IndexAssign,
+    Dim, IndexAssign, StructureDecl, FieldAssign,
 };
 
 /// Base of every statement node.
@@ -144,7 +157,9 @@ struct DefineStmt : Stmt {
     struct Declarator {
         std::string name;
         std::string spelling;
-        TypeSuffix suffix = TypeSuffix::None;
+        TypeSuffix suffix = TypeSuffix::None; ///< TypeSuffix::Struct means look at structTypeName instead.
+        std::string structTypeName;    ///< Lowercased; meaningful only if suffix == Struct.
+        std::string structTypeSpelling;
         std::unique_ptr<Expr> init; ///< May be null (default-initialized).
     };
     std::vector<Declarator> declarators;
@@ -181,7 +196,9 @@ struct DimStmt : Stmt {
     DimStmt() : Stmt(StmtKind::Dim) {}
     std::string name;
     std::string spelling;
-    TypeSuffix suffix = TypeSuffix::None;
+    TypeSuffix suffix = TypeSuffix::None; ///< TypeSuffix::Struct means look at structTypeName instead.
+    std::string structTypeName;    ///< Lowercased; meaningful only if suffix == Struct.
+    std::string structTypeSpelling;
     std::vector<std::unique_ptr<Expr>> dimensionSizes; ///< 1 or 2 entries.
 };
 
@@ -194,6 +211,38 @@ struct IndexAssignStmt : Stmt {
     std::string name;
     std::string spelling;
     std::vector<std::unique_ptr<Expr>> indices;
+    std::unique_ptr<Expr> value;
+};
+
+/// `Structure Name \n field.suffix \n ... \n EndStructure`. A field's own
+/// type follows the identical suffix-or-named-type rule as a variable
+/// (`suffix == Struct` means `structTypeName` names another, previously
+/// declared Structure - oracle-verified nesting, e.g. `topLeft.Point`
+/// inside `Rect`). No array fields, no `StructureUnion` yet.
+struct StructureDeclStmt : Stmt {
+    StructureDeclStmt() : Stmt(StmtKind::StructureDecl) {}
+    struct Field {
+        std::string name;
+        std::string spelling;
+        TypeSuffix suffix = TypeSuffix::None;
+        std::string structTypeName;
+        std::string structTypeSpelling;
+    };
+    std::string name;
+    std::string spelling;
+    std::vector<Field> fields;
+};
+
+/// `target\field = expr` where `target` is itself a field-access chain
+/// (possibly of length 1, e.g. `p\x = 3`) - the write counterpart to
+/// FieldAccessExpr, needed because PB's field access has no single
+/// "lvalue expression" form shared with plain assignment (see
+/// Parser::parseIdentifierStatement's own notes on why the parser builds
+/// the whole base+chain once and decides what kind of statement it is only
+/// after seeing whether `=` follows).
+struct FieldAssignStmt : Stmt {
+    FieldAssignStmt() : Stmt(StmtKind::FieldAssign) {}
+    std::unique_ptr<Expr> target; ///< Always a FieldAccessExpr.
     std::unique_ptr<Expr> value;
 };
 

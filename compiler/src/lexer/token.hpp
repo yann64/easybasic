@@ -51,6 +51,8 @@ enum class TokenKind {
     KwShared,
     KwProtected,
     KwDim,
+    KwStructure,
+    KwEndStructure,
     KwAnd,
     KwOr,
     KwNot,
@@ -74,6 +76,8 @@ enum class TokenKind {
     ShiftLeft,   ///< `<<`
     ShiftRight,  ///< `>>`
     Hash,        ///< `#` - constant-name sigil (`#MyConst`)
+    Backslash,   ///< `\` - structure field access (`var\field`), never division.
+    At,          ///< `@` - address-of (M3d, pointers).
     LParen,
     RParen,
     Comma,
@@ -96,6 +100,13 @@ enum class TypeSuffix {
     Double,    ///< .d
     String,    ///< .s
     Integer,   ///< .i
+    Struct,    ///< `.StructName` - a *named* Structure type, not a primitive
+               ///< (oracle-verified: `Define p.Point`, or a Structure field
+               ///< naming another Structure, e.g. `topLeft.Point`). The
+               ///< actual structure name is carried separately (see
+               ///< Token::structSuffix and every AST node with a matching
+               ///< `structTypeName` field) since it's an open-ended
+               ///< user-defined name, not one of the 11 fixed letters above.
 };
 
 struct Token {
@@ -104,6 +115,11 @@ struct Token {
                                      ///< its suffix, unescaped string
                                      ///< contents, or the literal digits).
     TypeSuffix suffix = TypeSuffix::None; ///< Only meaningful for Identifier.
+    /// Only meaningful when `suffix == TypeSuffix::Struct`: the named
+    /// Structure type's name, lowercased (`structSuffix`) and as originally
+    /// spelled (`structSuffixSpelling`, for diagnostics).
+    std::string structSuffix;
+    std::string structSuffixSpelling;
     long long intValue = 0;         ///< Only meaningful for IntegerLiteral.
     double floatValue = 0.0;        ///< Only meaningful for FloatLiteral.
     SourceLoc loc;
