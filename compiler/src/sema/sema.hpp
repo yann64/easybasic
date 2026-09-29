@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -183,6 +185,25 @@ public:
     /// this constructor's own registration into `procedures_`.
     static bool isStringLibBuiltinName(const std::string& lowerName);
 
+    /// True for the M4b Math-library functions (`Abs`, `Sqr`, `Pow`, `Sin`,
+    /// `Cos`, `Tan`, `ASin`, `ACos`, `ATan`, `ATan2`, `Exp`, `Log`, `Log10`,
+    /// `Round`, `Int`, `Random`, `RandomSeed`) - mirrors
+    /// `isStringLibBuiltinName`'s own role and registration mechanism
+    /// (`registerMathLibBuiltins`, called from the constructor alongside
+    /// `registerStringLibBuiltins`).
+    static bool isMathLibBuiltinName(const std::string& lowerName);
+
+    /// The literal Integer value of one of the handful of built-in `#PB_*`
+    /// constants Sema pre-declares (currently only `#PB_Round_Down` (0),
+    /// `#PB_Round_Up` (1), `#PB_Round_Nearest` (2), for `Round`'s own mode
+    /// argument - oracle-verified: a fourth, plausible-sounding
+    /// `#PB_Round_Truncate`, does not actually exist in real PB).  Returns
+    /// nullopt for any other name. Exposed so Codegen's `genExpr` can emit
+    /// the literal value directly for a `ConstRefExpr` naming one of these,
+    /// rather than a `k_<name>` global that (unlike a user's own `#Name`
+    /// constant) was never actually emitted anywhere.
+    static std::optional<std::int64_t> builtinConstantValue(const std::string& lowerName);
+
     /// A resolved type: either one of PB's 11 primitive suffixes, or -
     /// when `suffix == TypeSuffix::Struct` - a named Structure (looked up
     /// via `structureInfo(structName)`). Every variable, array element,
@@ -250,6 +271,15 @@ private:
     /// names are special, routing them to `easybasic::runtime::pb*` instead
     /// of emitting/calling an `f_<name>` function that was never declared.
     void registerStringLibBuiltins();
+    /// Same mechanism as `registerStringLibBuiltins`, for the M4b Math
+    /// library - every one of these (bar `Int`) is oracle-verified to
+    /// return a Double regardless of its argument's own type.
+    void registerMathLibBuiltins();
+    /// Pre-populates `constants_` (but deliberately NOT `constOrder_` - see
+    /// `Codegen::genExpr`'s `ConstRef` case) with the handful of built-in
+    /// `#PB_*` constants Sema recognizes (currently just `Round`'s own
+    /// three mode constants).
+    void registerBuiltinConstants();
     void visitStmt(ast::Stmt& stmt);
     void visitBlock(ast::Block& block);
     /// Like `visitBlock`, but for a body that is genuinely nested inside a

@@ -28,7 +28,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deferred to and closed by M3a/M3b; mutual recursion/`Declare`, call-argument type-checking, and constants in nested blocks deferred further, closed by a dedicated M2-closure pass (see its own notes) |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
-| **M4** | Core stdlib: String, Math, Memory, File, Date | In progress - core String library (M4a) done; Math/Memory (`Peek*`/`Poke*`)/File/Date still to come |
+| **M4** | Core stdlib: String, Math, Memory, File, Date | In progress - core String library (M4a) and core Math library (M4b) done; Memory (`Peek*`/`Poke*`)/File/Date still to come |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
@@ -822,4 +822,80 @@ above); full Unicode case-folding for `UCase`/`LCase` (ASCII-only, safe on arbit
 UTF-8 but not a correctness guarantee beyond ASCII); Math, Memory (`Peek*`/`Poke*` -
 the piece M3d's pointer work deferred here specifically), File, and Date - the rest of
 M4.
+
+## M4b Implementation Notes (core Math library)
+
+**Scope landed**: `Abs`, `Sqr`, `Pow`, `Sin`/`Cos`/`Tan`/`ASin`/`ACos`/`ATan`/`ATan2`,
+`Exp`/`Log`/`Log10`, `Round` (all three of its real modes), `Int`, `Random`/`RandomSeed`.
+`Min`/`Max` are not real PB functions at all (oracle-verified: "is not a function, array,
+list, map or macro.") - a plausible-sounding guess this project didn't make without
+checking first.
+
+**Every one of these (except `Int`) is oracle-verified to always return a Double,
+regardless of its argument's own type** - `Abs(-5)` with an *Integer* argument still
+prints via the Double debug-format (see next finding), not a plain Integer one. This
+reuses M4a's exact registration mechanism (`Sema::registerMathLibBuiltins`, a second
+`ProcedureInfo`-faking constructor call alongside `registerStringLibBuiltins`) with zero
+new Sema machinery - `Codegen` again is the only place that needs to know these names are
+special.
+
+**A real, previously-deferred gap this milestone was forced to actually fix: `Debug`ing a
+raw Double or Float uses its own distinct format, neither of which is `std::to_string`.**
+M4a's own notes already flagged this as still-open; M4b made it unavoidable, since every
+Math builtin's Double return value needs to print correctly to even write a working
+oracle test. Oracle-verified: a raw Double prints via a 16-character-wide, right-
+justified `%g`-style field (6 significant digits, scientific notation for extremes - e.g.
+`Debug 1000000.0` is `"           1e+06"`), while a raw Float prints via plain `%f` with
+exactly 6 decimals, no padding, no scientific notation. `Codegen`'s `Debug` case now asks
+`Sema::resolveType()` for the exact suffix (`Float` vs `Double`) whenever `classify()`
+says `FloatFamily`, routing to `pbDebugFormatFloat`/`pbDebugFormatDouble`
+(`runtime/include/.../debug.hpp`) accordingly; `resolveType()`'s existing Integer
+fallback (for a Binary/Unary expression it can't resolve, e.g. `Debug d + 1.0`) becomes
+"assume Double" in this one context, since the surrounding code already knows the
+expression is FloatFamily - the fallback only ever needs to pick *which* float format,
+never whether to use one at all.
+
+**`Round`'s `mode` argument introduced a new category this project didn't have yet:
+built-in `#PB_*` constants**, not something a user's own `#Name = expr`/`Enumeration`
+ever declares. Oracle-verified values: `#PB_Round_Down` = 0, `#PB_Round_Up` = 1,
+`#PB_Round_Nearest` = 2 - and a fourth, entirely plausible-sounding `#PB_Round_Truncate`
+does **not** exist ("Constant not found"), caught by checking rather than assuming the
+obvious symmetric name existed. `Sema::registerBuiltinConstants` pre-populates
+`constants_` (but deliberately *not* `constOrder_`, since there is no `ConstDeclStmt` in
+the AST for `Codegen::genGlobalConstants` to hoist) so `#PB_Round_Nearest` resolves and
+type-checks exactly like a real constant; `Codegen::genExpr`'s `ConstRef` case checks
+`Sema::builtinConstantValue` first and emits the literal value directly instead of a
+`k_<name>` that was never actually emitted anywhere.
+
+**`Round`'s `Nearest` mode is round-half-*away-from-zero*, genuinely different from this
+project's own established banker's-rounding rule for an *implicit* Float-to-Integer
+conversion** (e.g. a `Define x.i = someFloat` or a procedure call argument) - oracle-
+verified: `Round(2.5, #PB_Round_Nearest)` is `3`, `Round(-2.5, ...)` is `-3`, whereas the
+implicit-conversion rule established back in M0 gives `2` and `-2` for the same inputs.
+Real PB itself is internally inconsistent between these two rounding rules for what looks
+like "the same operation" - not a design choice this project gets to reconcile, just one
+to faithfully reproduce on each of its own two separate paths. Similarly, `Round`'s
+`Down`/`Up` modes are genuine mathematical floor/ceiling (`Round(-3.1, Down)` is `-4`, not
+`-3` - rounding toward zero is not what "Down" means), while `Int` truncates toward zero
+(`Int(-3.7)` is `-3`) - three visually-similar "make this a whole number" operations that
+are all subtly different from each other, each verified independently rather than
+assumed to share one behavior.
+
+**`Random`/`RandomSeed` are a deliberate, documented non-goal for oracle fidelity on
+exact values** - real PB's own generator algorithm is undocumented and not a reasonable
+reverse-engineering target for this project. `easybasic::runtime`'s own `Random`/
+`RandomSeed` use a plain `std::mt19937`, giving this implementation's own output
+reproducibility for a given seed (verified) and correct `[min, max]` range bounds
+(verified), but never the same *specific* values real PB's own seeded sequence would
+produce. The `random` e2e_diff test accordingly asserts only reproducibility and range
+(both hold identically for either compiler, via `If`/`Bool()`-wrapped comparisons that
+print `1`), never a captured raw value - the one test in this project's whole
+differential-testing suite that can't just capture the oracle's literal stdout as the
+expected fixture.
+
+**Deliberately deferred past M4b**: `Min`/`Max` don't exist as real PB functions at all
+(confirmed, not assumed - no gap to fill here); `Sinh`/`Cosh`/`Tanh` and other
+hyperbolic/inverse-hyperbolic variants; `Degree`/`Radian` conversion helpers; `Memory`
+(`Peek*`/`Poke*` - the piece M3d's pointer work deferred here specifically), File, and
+Date - the rest of M4.
 

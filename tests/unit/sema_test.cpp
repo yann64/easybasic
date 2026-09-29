@@ -861,3 +861,75 @@ TEST_CASE("Sema banker's-rounds a Float argument passed to Str", "[sema][stringl
     CHECK(sema.analyze(*module));
     CHECK_FALSE(diags.hasErrors());
 }
+
+// --- M4b: Math library builtins ---
+
+TEST_CASE("Sema classifies every Math-library builtin (bar Int) as returning Double",
+          "[sema][mathlib]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Debug Abs(-5)\nDebug Sqr(4)\nDebug Pow(2, 3)\nDebug Sin(0)\nDebug Int(3.7)", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    for (std::size_t i = 0; i < 4; ++i) {
+        auto* dbg = static_cast<ast::DebugStmt*>(module->statements[i].get());
+        CHECK(sema.resolveType(*dbg->value).suffix == TypeSuffix::Double);
+    }
+    auto* intDbg = static_cast<ast::DebugStmt*>(module->statements[4].get());
+    CHECK(sema.resolveType(*intDbg->value).suffix == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema resolves Round's #PB_Round_* constants without a user declaration", "[sema][mathlib]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Debug Round(3.5, #PB_Round_Nearest)\nDebug Round(3.5, #PB_Round_Down)\n"
+        "Debug Round(3.5, #PB_Round_Up)",
+        diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects an undeclared #PB_Round_Truncate", "[sema][mathlib]") {
+    // Oracle-verified: this constant does not actually exist in real PB.
+    DiagnosticEngine diags;
+    auto module = parse("Debug Round(3.5, #PB_Round_Truncate)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts Random's optional min argument being omitted", "[sema][mathlib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug Random(100)", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a String argument to a Math-library builtin", "[sema][mathlib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug Sqr(\"hi\")", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema recognizes the Math-library builtins by name", "[sema][mathlib]") {
+    CHECK(Sema::isMathLibBuiltinName("abs"));
+    CHECK(Sema::isMathLibBuiltinName("sqr"));
+    CHECK(Sema::isMathLibBuiltinName("pow"));
+    CHECK(Sema::isMathLibBuiltinName("round"));
+    CHECK(Sema::isMathLibBuiltinName("int"));
+    CHECK(Sema::isMathLibBuiltinName("random"));
+    CHECK(Sema::isMathLibBuiltinName("randomseed"));
+    CHECK_FALSE(Sema::isMathLibBuiltinName("somethingelse"));
+}
+
+TEST_CASE("Sema::builtinConstantValue resolves the Round mode constants", "[sema][mathlib]") {
+    CHECK(Sema::builtinConstantValue("pb_round_down") == 0);
+    CHECK(Sema::builtinConstantValue("pb_round_up") == 1);
+    CHECK(Sema::builtinConstantValue("pb_round_nearest") == 2);
+    CHECK_FALSE(Sema::builtinConstantValue("pb_round_truncate").has_value());
+}

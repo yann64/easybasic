@@ -6,6 +6,7 @@
 // its own.
 
 #include "debug.hpp"
+#include "mathlib.hpp"
 #include "pblist.hpp"
 #include "pbmap.hpp"
 #include "pbstring.hpp"

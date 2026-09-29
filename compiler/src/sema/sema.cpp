@@ -14,7 +14,11 @@ ValueKind familyOf(TypeSuffix suffix) {
     }
 }
 
-Sema::Sema(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) { registerStringLibBuiltins(); }
+Sema::Sema(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {
+    registerStringLibBuiltins();
+    registerMathLibBuiltins();
+    registerBuiltinConstants();
+}
 
 void Sema::registerStringLibBuiltins() {
     struct Signature {
@@ -60,6 +64,85 @@ bool Sema::isStringLibBuiltinName(const std::string& lowerName) {
         "rtrim", "str", "val", "strf", "valf", "chr", "asc",
     };
     return names.contains(lowerName);
+}
+
+void Sema::registerMathLibBuiltins() {
+    struct Signature {
+        const char* name;
+        TypeSuffix returnSuffix;
+        std::vector<TypeSuffix> paramSuffixes;
+        std::size_t requiredParamCount;
+    };
+    // `Round`'s `mode` and `Random`'s optional `min` both reuse the same
+    // "fewer call-site args than paramSuffixes.size()" mechanism as a real
+    // Procedure's own defaulted trailing parameters (see
+    // registerStringLibBuiltins's identical note on `Mid`/`StrF`) - except
+    // `Round` has no real default of its own (its mode argument is always
+    // required); only `Random`'s `min` is genuinely optional.
+    static const std::vector<Signature> signatures = {
+        {"abs", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"sqr", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"pow", TypeSuffix::Double, {TypeSuffix::Double, TypeSuffix::Double}, 2},
+        {"sin", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"cos", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"tan", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"asin", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"acos", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"atan", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"atan2", TypeSuffix::Double, {TypeSuffix::Double, TypeSuffix::Double}, 2},
+        {"exp", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"log", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"log10", TypeSuffix::Double, {TypeSuffix::Double}, 1},
+        {"round", TypeSuffix::Double, {TypeSuffix::Double, TypeSuffix::Integer}, 2},
+        {"int", TypeSuffix::Integer, {TypeSuffix::Double}, 1},
+        {"random", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"randomseed", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+    };
+    for (const auto& sig : signatures) {
+        ProcedureInfo info;
+        info.returnSuffix = sig.returnSuffix;
+        info.paramSuffixes = sig.paramSuffixes;
+        info.requiredParamCount = sig.requiredParamCount;
+        procedures_[sig.name] = info;
+    }
+}
+
+bool Sema::isMathLibBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "abs", "sqr", "pow", "sin", "cos", "tan", "asin", "acos", "atan",
+        "atan2", "exp", "log", "log10", "round", "int", "random", "randomseed",
+    };
+    return names.contains(lowerName);
+}
+
+namespace {
+const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
+    // Oracle-verified values (`pbcompilerc`): `#PB_Round_Down` = 0,
+    // `#PB_Round_Up` = 1, `#PB_Round_Nearest` = 2. A fourth, plausible-
+    // sounding `#PB_Round_Truncate` does NOT exist in real PB ("Constant
+    // not found").
+    static const std::unordered_map<std::string, std::int64_t> table = {
+        {"pb_round_down", 0},
+        {"pb_round_up", 1},
+        {"pb_round_nearest", 2},
+    };
+    return table;
+}
+} // namespace
+
+void Sema::registerBuiltinConstants() {
+    for (const auto& [name, value] : builtinConstantTable()) {
+        constants_[name] = TypeSuffix::Integer;
+    }
+}
+
+std::optional<std::int64_t> Sema::builtinConstantValue(const std::string& lowerName) {
+    const auto& table = builtinConstantTable();
+    auto it = table.find(lowerName);
+    if (it == table.end()) {
+        return std::nullopt;
+    }
+    return it->second;
 }
 
 void Sema::declare(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,

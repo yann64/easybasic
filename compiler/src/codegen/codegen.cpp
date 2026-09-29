@@ -74,6 +74,18 @@ std::string stringLibRuntimeName(const std::string& lowerName) {
     return "easybasic::runtime::" + names.at(lowerName);
 }
 
+/// As `stringLibRuntimeName`, for the M4b Math library.
+std::string mathLibRuntimeName(const std::string& lowerName) {
+    static const std::unordered_map<std::string, std::string> names = {
+        {"abs", "pbAbs"},     {"sqr", "pbSqr"},   {"pow", "pbPow"},     {"sin", "pbSin"},
+        {"cos", "pbCos"},     {"tan", "pbTan"},   {"asin", "pbASin"},   {"acos", "pbACos"},
+        {"atan", "pbATan"},   {"atan2", "pbATan2"}, {"exp", "pbExp"},   {"log", "pbLog"},
+        {"log10", "pbLog10"}, {"round", "pbRound"}, {"int", "pbInt"},
+        {"random", "pbRandom"}, {"randomseed", "pbRandomSeed"},
+    };
+    return "easybasic::runtime::" + names.at(lowerName);
+}
+
 } // namespace
 
 std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName) {
@@ -134,6 +146,15 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
         }
         case ast::ExprKind::ConstRef: {
             const auto& ref = static_cast<const ast::ConstRefExpr&>(expr);
+            // A handful of `#PB_*` constants (currently just `Round`'s own
+            // mode constants) are recognized by Sema but never actually
+            // emitted as a `k_<name>` global - unlike a user's own
+            // `#Name = expr`, there is no ConstDeclStmt/EnumerationStmt
+            // anywhere in the AST for Codegen to hoist, so the literal
+            // value is emitted directly here instead.
+            if (auto builtin = Sema::builtinConstantValue(ref.name)) {
+                return std::to_string(*builtin);
+            }
             return "k_" + ref.name;
         }
         case ast::ExprKind::FieldAccess: {
@@ -279,9 +300,15 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 return "v_" + call.name + ".at(" + genArrayIndexCode(call.name, call.args) + ")";
             }
             const Sema::ProcedureInfo* info = sema_.procedureInfo(call.name);
-            std::string code = (Sema::isStringLibBuiltinName(call.name) ? stringLibRuntimeName(call.name)
-                                                                         : "f_" + call.name) +
-                                "(";
+            std::string calleeName;
+            if (Sema::isStringLibBuiltinName(call.name)) {
+                calleeName = stringLibRuntimeName(call.name);
+            } else if (Sema::isMathLibBuiltinName(call.name)) {
+                calleeName = mathLibRuntimeName(call.name);
+            } else {
+                calleeName = "f_" + call.name;
+            }
+            std::string code = calleeName + "(";
             for (std::size_t i = 0; i < call.args.size(); ++i) {
                 if (i != 0) {
                     code += ", ";
@@ -643,10 +670,24 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
                 case ValueKind::StringFamily:
                     textCode = valueCode + ".bytes()";
                     break;
-                case ValueKind::FloatFamily:
-                    // A reasonable default, not yet PB's exact Str()
-                    // formatting rule for floats - that lands with the
-                    // String library (M4).
+                case ValueKind::FloatFamily: {
+                    // Oracle-verified: a raw Float and a raw Double each
+                    // print via their own, different format when Debug'd
+                    // directly (see pbDebugFormatFloat/Double's own doc
+                    // comments) - resolveType() correctly distinguishes
+                    // them for a VarRef/Call/FieldAccess (which covers
+                    // every M4b Math builtin, all Double-returning); an
+                    // arbitrary Binary/Unary expression it can't resolve
+                    // defaults to Integer, so falling back to the Double
+                    // format here (Double, not Integer's own format) is
+                    // the correct interpretation of that fallback given
+                    // `family` already says this is FloatFamily.
+                    TypeSuffix suffix = sema_.resolveType(*dbg.value).suffix;
+                    const char* formatter =
+                        suffix == TypeSuffix::Float ? "pbDebugFormatFloat" : "pbDebugFormatDouble";
+                    textCode = std::string("easybasic::runtime::") + formatter + "(" + valueCode + ")";
+                    break;
+                }
                 case ValueKind::IntegerFamily:
                     textCode = "std::to_string(" + valueCode + ")";
                     break;
