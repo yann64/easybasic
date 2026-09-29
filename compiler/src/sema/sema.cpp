@@ -96,6 +96,40 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             }
             break;
         }
+        case ast::StmtKind::Dim: {
+            auto& dim = static_cast<ast::DimStmt&>(stmt);
+            for (auto& size : dim.dimensionSizes) {
+                visitExpr(*size);
+            }
+            if (arrays_.contains(dim.name)) {
+                diagnostics_.error(dim.loc, "'" + dim.spelling + "' is already declared as an array");
+                break;
+            }
+            ArrayInfo info;
+            info.elementSuffix = dim.suffix == TypeSuffix::None ? TypeSuffix::Integer : dim.suffix;
+            info.dimensionCount = static_cast<int>(dim.dimensionSizes.size());
+            arrays_.emplace(dim.name, info);
+            arrayOrder_.emplace_back(dim.name, info);
+            break;
+        }
+        case ast::StmtKind::IndexAssign: {
+            auto& indexAssign = static_cast<ast::IndexAssignStmt&>(stmt);
+            for (auto& idx : indexAssign.indices) {
+                visitExpr(*idx);
+            }
+            visitExpr(*indexAssign.value);
+            const ArrayInfo* info = arrayInfo(indexAssign.name);
+            if (info == nullptr) {
+                diagnostics_.error(indexAssign.loc, "'" + indexAssign.spelling + "' is not a declared array");
+                break;
+            }
+            if (std::cmp_not_equal(indexAssign.indices.size(), info->dimensionCount)) {
+                diagnostics_.error(indexAssign.loc, "'" + indexAssign.spelling +
+                                                         "' indexed with the wrong number of dimensions");
+            }
+            checkAssignable(indexAssign.spelling, info->elementSuffix, *indexAssign.value, indexAssign.loc);
+            break;
+        }
         case ast::StmtKind::Assign: {
             auto& assign = static_cast<ast::AssignStmt&>(stmt);
             TypeSuffix suffix = assign.suffix == TypeSuffix::None ? typeOf(assign.name) : assign.suffix;
@@ -317,7 +351,20 @@ void Sema::visitExpr(ast::Expr& expr) {
         }
         case ast::ExprKind::Call: {
             auto& call = static_cast<ast::CallExpr&>(expr);
-            visitCall(call);
+            // `Name(args)` is ambiguous with a call at parse time - a
+            // `Dim`'d name always means an array read here (see ArrayInfo's
+            // own doc comment).
+            if (const ArrayInfo* info = arrayInfo(call.name)) {
+                if (std::cmp_not_equal(call.args.size(), info->dimensionCount)) {
+                    diagnostics_.error(call.loc,
+                                        "'" + call.spelling + "' indexed with the wrong number of dimensions");
+                }
+                for (auto& idx : call.args) {
+                    visitExpr(*idx);
+                }
+            } else {
+                visitCall(call);
+            }
             break;
         }
         case ast::ExprKind::IntLiteral:
@@ -449,8 +496,14 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
         }
         case ast::ExprKind::Call: {
             const auto& call = static_cast<const ast::CallExpr&>(expr);
-            const ProcedureInfo* info = procedureInfo(call.name);
-            ValueKind natural = info != nullptr ? familyOf(info->returnSuffix) : ValueKind::IntegerFamily;
+            const ArrayInfo* array = arrayInfo(call.name);
+            const ProcedureInfo* proc = array == nullptr ? procedureInfo(call.name) : nullptr;
+            ValueKind natural = ValueKind::IntegerFamily;
+            if (array != nullptr) {
+                natural = familyOf(array->elementSuffix);
+            } else if (proc != nullptr) {
+                natural = familyOf(proc->returnSuffix);
+            }
             if (natural == ValueKind::StringFamily) {
                 return ValueKind::StringFamily;
             }
@@ -521,6 +574,11 @@ TypeSuffix Sema::constTypeOf(const std::string& lowerName) const {
 const Sema::ProcedureInfo* Sema::procedureInfo(const std::string& lowerName) const {
     auto it = procedures_.find(lowerName);
     return it == procedures_.end() ? nullptr : &it->second;
+}
+
+const Sema::ArrayInfo* Sema::arrayInfo(const std::string& lowerName) const {
+    auto it = arrays_.find(lowerName);
+    return it == arrays_.end() ? nullptr : &it->second;
 }
 
 } // namespace easybasic

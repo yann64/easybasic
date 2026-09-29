@@ -27,7 +27,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | Done (see M0 notes below) |
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deliberately deferred to M3 |
-| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` done (see M3a notes below); `Structure`/pointers/`NewList`/`NewMap`/`Dim` still to come |
+| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` (M3a) and static `Dim` arrays, 1D/2D (M3b) done; `Structure`/pointers/`NewList`/`NewMap` still to come |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
@@ -313,4 +313,61 @@ real PB code that chasing it further wasn't worth the time against M3's remainin
 larger scope (`Structure`, pointers, `NewList`/`NewMap`, static `Dim` arrays). A `Global`
 declared *inside* a procedure body (as opposed to at module scope) is untested and not
 specifically supported - PB itself may or may not even allow this; not yet investigated.
+
+## M3b Implementation Notes (static `Dim` arrays)
+
+**Scope landed**: 1D and 2D static arrays (`Dim arr.i(4)`, `Dim grid.i(2, 2)`), indexed
+read and write, with sizes that can be arbitrary runtime expressions, not just
+compile-time constants (oracle-verified: `Dim dynamic.i(n)` where `n` is a variable
+works). Higher dimensions are a documented, deliberate gap - real PB code overwhelmingly
+uses 1D/2D.
+
+**The real parsing challenge: `name(args)` is genuinely ambiguous with a procedure call
+until Sema resolves it.** `arr(0)` (an array read) and `Add(3, 4)` (a procedure call)
+are exactly the same shape at the token level, and the parser has no symbol table to
+consult - it runs strictly before Sema. Rather than trying to thread lookahead or
+backtracking through the parser, both forms parse to the *same* `CallExpr` node, and
+Sema decides what it actually means by checking its `arrays_` table before falling back
+to `procedures_` (see `ArrayInfo`'s own doc comment). The equivalent problem exists for
+*assignment* (`arr(i) = expr` vs. a call used as a bare statement, `DoThing(1, 2)`) -
+`Parser::parseCallOrIndexAssignStatement` resolves it the same way procedurally: parse
+the full `Name(args)` once via the existing call-parsing logic, then look at whether `=`
+follows to decide whether to reinterpret the freshly-parsed `CallExpr` as an
+`IndexAssignStmt` or keep it as a call-statement.
+
+**Element access uses `std::vector::at()`, not `operator[]`** - a deliberate,
+essentially-free memory-safety choice (this project's whole reason for existing over a
+hand-rolled backend): an out-of-bounds PB array access now terminates via a well-defined
+`std::out_of_range` exception (verified: `arr(10)` on a 5-element array aborts cleanly
+with a clear message) rather than silently corrupting memory or invoking undefined
+behavior the way a raw C array or `operator[]` would. This is exactly the kind of
+correctness win the ASan/UBSan CI job (and Valgrind, once M6 lands it) exists to catch
+even when `.at()` *isn't* used somewhere - but here it's caught for free, at zero
+runtime cost beyond what bounds-checking always costs.
+
+**2D arrays are one flat, row-major `std::vector`, not a vector-of-vectors** - one
+allocation instead of one-per-row, with a hidden per-array `v_name_dim1` companion
+global (set by the `Dim` statement itself) supplying the row stride for the index
+arithmetic (`row * (dim1+1) + col`) both at the `Dim` site and at every subsequent
+read/write. This trades a small amount of indexing arithmetic for meaningfully simpler
+memory layout and fewer allocations - a reasonable choice for a first array
+implementation, revisit only if a real workload needs true jagged/ragged 2D arrays
+(which PB's own fixed-rectangular `Dim` semantics don't support anyway).
+
+**`Dim` (re-)sizes and resets the array at its own statement position** (via
+`std::vector::assign`, which resizes *and* fills with the element type's zero value in
+one call), matching PB's own timing - the size expression is evaluated exactly when the
+`Dim` statement executes, not at some earlier global-initialization point, since it may
+depend on runtime values computed just before it (as in the `Dim dynamic.i(n)` example
+above).
+
+**Deliberately deferred past M3b**: 3+ dimensional arrays; `ReDim` (resizing an existing
+array while preserving its contents - real PB has `ReDim`/`ReDim ... Preserve` as
+distinct forms, neither modeled yet, though `std::vector::resize` vs. the `assign`-based
+reset this milestone uses would be the natural building blocks); `ArraySize()` and other
+array-introspection builtins, whose special `name()` (empty-parens) argument syntax is
+its own small parsing wrinkle distinct from everything above, deferred alongside the
+rest of the standard library to M4; passing an array to a procedure (PB's
+`Array Name.type(N)` parameter syntax is a distinct feature from a plain scalar
+parameter, not yet supported).
 

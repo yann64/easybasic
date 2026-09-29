@@ -96,6 +96,27 @@ public:
     /// Returns nullptr if `lowerName` was never declared as a procedure.
     const ProcedureInfo* procedureInfo(const std::string& lowerName) const;
 
+    /// A declared array's element type and dimension count (1 or 2 - see
+    /// ast::DimStmt's own doc comment on the current dimension limit).
+    /// `name(args)` is ambiguous with a procedure call at parse time (both
+    /// are `Name(args)`) - Sema disambiguates by checking this table
+    /// first: a name declared via `Dim` is always an array reference, never
+    /// a call, even if a same-named procedure somehow also existed (PB's
+    /// own namespace rules for this collision aren't modeled - not
+    /// expected to come up in practice).
+    struct ArrayInfo {
+        TypeSuffix elementSuffix = TypeSuffix::Integer;
+        int dimensionCount = 1;
+    };
+    const ArrayInfo* arrayInfo(const std::string& lowerName) const;
+    /// Every declared array, in first-seen order, for Codegen to emit as a
+    /// global `std::vector` (plus a hidden dimension-size companion
+    /// variable for 2D arrays) - mirrors `declarationOrder`'s role for
+    /// plain scalar variables.
+    const std::vector<std::pair<std::string, ArrayInfo>>& arrayDeclarationOrder() const {
+        return arrayOrder_;
+    }
+
 private:
     void visitStmt(ast::Stmt& stmt);
     void visitBlock(ast::Block& block);
@@ -148,6 +169,8 @@ private:
     std::vector<std::pair<std::string, TypeSuffix>> constOrder_;
     bool explicitEnabled_ = false;
     std::unordered_map<std::string, ProcedureInfo> procedures_;
+    std::unordered_map<std::string, ArrayInfo> arrays_;
+    std::vector<std::pair<std::string, ArrayInfo>> arrayOrder_;
     /// The return suffix of the procedure whose body is currently being
     /// visited, used by a nested `ProcedureReturn`'s own type checking; only
     /// meaningful while `insideProcedure_` is true (PB procedures don't

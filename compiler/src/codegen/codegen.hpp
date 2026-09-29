@@ -56,6 +56,13 @@ private:
     /// (see parser.hpp's own notes), so they never need PB-value semantics
     /// (no PBString-typed comparison result, no banker's-rounding target).
     std::string genCondition(const ast::Expr& expr);
+    /// The flat-offset expression for indexing `v_name` given its (1 or 2)
+    /// index expressions - a 2D array is a single row-major `std::vector`
+    /// under the hood, using a hidden `v_name_dim1` companion variable (set
+    /// by the `Dim` statement itself) for the row stride, rather than a
+    /// vector-of-vectors (simpler indexing arithmetic, one allocation
+    /// instead of one-per-row).
+    std::string genArrayIndexCode(const std::string& name, const std::vector<std::unique_ptr<ast::Expr>>& indices);
     /// Wraps `exprCode` (whose family is `fromFamily`) in whatever
     /// conversion is needed to store it into a variable of `toSuffix`,
     /// applying PB's banker's-rounding float-to-integer rule where it

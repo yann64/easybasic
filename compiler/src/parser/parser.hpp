@@ -29,6 +29,13 @@ private:
     /// more than that).
     std::unique_ptr<ast::Stmt> parseDefine(bool isGlobal);
     std::unique_ptr<ast::Stmt> parseShared();
+    std::unique_ptr<ast::Stmt> parseDim();
+    /// Called once `Identifier(` has been seen at statement position -
+    /// parses the full `Name(args)`, then decides between an array-element
+    /// assignment (`Name(args) = expr`) and a call-as-statement based on
+    /// whether `=` follows (see ast::IndexAssignStmt's own doc comment for
+    /// why this can't be decided any earlier, at the token level alone).
+    std::unique_ptr<ast::Stmt> parseCallOrIndexAssignStatement();
     std::unique_ptr<ast::Stmt> parseDebug();
     std::unique_ptr<ast::Stmt> parseAssignmentOrConstDecl();
     std::unique_ptr<ast::Stmt> parseIf();

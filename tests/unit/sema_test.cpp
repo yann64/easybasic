@@ -225,3 +225,41 @@ TEST_CASE("Sema rejects Shared used outside a procedure", "[sema][scope]") {
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+TEST_CASE("Sema resolves a 1D array's element type and dimension count", "[sema][array]") {
+    DiagnosticEngine diags;
+    auto module = parse("Dim arr.s(4)", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    const auto* info = sema.arrayInfo("arr");
+    REQUIRE(info != nullptr);
+    CHECK(info->elementSuffix == TypeSuffix::String);
+    CHECK(info->dimensionCount == 1);
+}
+
+TEST_CASE("Sema disambiguates name(args) as an array read, not a call", "[sema][array]") {
+    // `arr(0)` is syntactically identical to a call at parse time - Sema
+    // must recognize `arr` as a Dim'd array and not require it to also be a
+    // declared procedure.
+    DiagnosticEngine diags;
+    auto module = parse("Dim arr.i(4)\nDebug arr(0)", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects an array indexed with the wrong number of dimensions", "[sema][array]") {
+    DiagnosticEngine diags;
+    auto module = parse("Dim grid.i(2, 2)\nDebug grid(0)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects assigning a String into a numeric array element", "[sema][array]") {
+    DiagnosticEngine diags;
+    auto module = parse("Dim arr.i(4)\narr(0) = \"nope\"", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

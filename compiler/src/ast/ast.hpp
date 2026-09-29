@@ -112,6 +112,7 @@ enum class StmtKind {
     If, Select, For, While, Repeat,
     Break, Continue, EnableExplicit, ConstDecl, Enumeration,
     ProcedureDecl, ProcedureReturn, ExprStmt, Shared,
+    Dim, IndexAssign,
 };
 
 /// Base of every statement node.
@@ -167,6 +168,33 @@ struct SharedStmt : Stmt {
         std::string spelling;
     };
     std::vector<Name> names;
+};
+
+/// `Dim name.suffix(size0[, size1])` - a static array declaration. Limited
+/// to 1 or 2 dimensions for now (higher dimensions deferred - see
+/// docs/architecture/roadmap.md's M3b notes); each size is the highest
+/// valid index (oracle-verified: `Dim arr.i(4)` makes a 5-element array,
+/// indices 0..4), and can be an arbitrary runtime expression, not just a
+/// compile-time constant - `pbcxx` backs this with a real `std::vector`
+/// sized at the Dim statement's own position, not a fixed-size C array.
+struct DimStmt : Stmt {
+    DimStmt() : Stmt(StmtKind::Dim) {}
+    std::string name;
+    std::string spelling;
+    TypeSuffix suffix = TypeSuffix::None;
+    std::vector<std::unique_ptr<Expr>> dimensionSizes; ///< 1 or 2 entries.
+};
+
+/// `name(index0[, index1]) = expr` - an array element assignment. Syntax is
+/// otherwise indistinguishable from a procedure call at parse time
+/// (`Name(args)`) - see Sema's own notes on how `name(args)` used as a
+/// plain *expression* (read, not assigned-to) is disambiguated instead.
+struct IndexAssignStmt : Stmt {
+    IndexAssignStmt() : Stmt(StmtKind::IndexAssign) {}
+    std::string name;
+    std::string spelling;
+    std::vector<std::unique_ptr<Expr>> indices;
+    std::unique_ptr<Expr> value;
 };
 
 /// `name[.suffix] = expr`.

@@ -74,6 +74,7 @@ const std::unordered_map<std::string, TokenKind>& keywordTable() {
         {"global", TokenKind::KwGlobal},
         {"shared", TokenKind::KwShared},
         {"protected", TokenKind::KwProtected},
+        {"dim", TokenKind::KwDim},
         {"and", TokenKind::KwAnd},
         {"or", TokenKind::KwOr},
         {"not", TokenKind::KwNot},
@@ -123,6 +124,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwGlobal: return "'Global'";
         case TokenKind::KwShared: return "'Shared'";
         case TokenKind::KwProtected: return "'Protected'";
+        case TokenKind::KwDim: return "'Dim'";
         case TokenKind::KwAnd: return "'And'";
         case TokenKind::KwOr: return "'Or'";
         case TokenKind::KwNot: return "'Not'";

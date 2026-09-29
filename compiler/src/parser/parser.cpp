@@ -162,14 +162,11 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwProcedureReturn)) {
         return parseProcedureReturn();
     }
+    if (check(TokenKind::KwDim)) {
+        return parseDim();
+    }
     if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::LParen) {
-        // `Name(args)` as a whole statement - a call, not an assignment
-        // (PB requires parens for a call; an assignment never starts this
-        // way, so a single token of lookahead disambiguates cleanly).
-        auto stmt = std::make_unique<ast::ExprStmt>();
-        stmt->loc = peek().loc;
-        stmt->expr = parsePrimary();
-        return stmt;
+        return parseCallOrIndexAssignStatement();
     }
     if (check(TokenKind::Identifier) || check(TokenKind::Hash)) {
         return parseAssignmentOrConstDecl();
@@ -212,6 +209,51 @@ std::unique_ptr<ast::Stmt> Parser::parseShared() {
         name.name = toLower(nameTok.text);
         stmt->names.push_back(std::move(name));
     } while (match(TokenKind::Comma));
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseDim() {
+    auto stmt = std::make_unique<ast::DimStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'Dim'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'Dim'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    stmt->suffix = nameTok.suffix;
+    expect(TokenKind::LParen, "after array name");
+    stmt->dimensionSizes.push_back(parseExpr());
+    while (match(TokenKind::Comma)) {
+        stmt->dimensionSizes.push_back(parseExpr());
+    }
+    expect(TokenKind::RParen, "to close 'Dim'");
+    if (stmt->dimensionSizes.size() > 2) {
+        diagnostics_.error(stmt->loc, "arrays with more than 2 dimensions are not yet supported");
+    }
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseCallOrIndexAssignStatement() {
+    // `Name(args)` as a whole statement is ambiguous between a call and an
+    // array-element assignment until we see whether `=` follows - both
+    // share the identical `Name(args)` prefix (see ast::IndexAssignStmt's
+    // own doc comment), so parse it once via parsePrimary (which already
+    // knows how to parse a parenthesized, comma-separated expression list)
+    // and reinterpret the result based on what comes next.
+    SourceLoc loc = peek().loc;
+    auto parsed = parsePrimary(); // yields an ast::CallExpr
+    if (match(TokenKind::Equal)) {
+        auto& call = static_cast<ast::CallExpr&>(*parsed);
+        auto stmt = std::make_unique<ast::IndexAssignStmt>();
+        stmt->loc = loc;
+        stmt->name = call.name;
+        stmt->spelling = call.spelling;
+        stmt->indices = std::move(call.args);
+        stmt->value = parseExpr();
+        return stmt;
+    }
+    auto stmt = std::make_unique<ast::ExprStmt>();
+    stmt->loc = loc;
+    stmt->expr = std::move(parsed);
     return stmt;
 }
 

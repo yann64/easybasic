@@ -50,6 +50,7 @@ enum class TokenKind {
     KwGlobal,
     KwShared,
     KwProtected,
+    KwDim,
     KwAnd,
     KwOr,
     KwNot,

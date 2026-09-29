@@ -105,6 +105,9 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
         }
         case ast::ExprKind::Call: {
             const auto& call = static_cast<const ast::CallExpr&>(expr);
+            if (sema_.arrayInfo(call.name) != nullptr) {
+                return "v_" + call.name + ".at(" + genArrayIndexCode(call.name, call.args) + ")";
+            }
             const Sema::ProcedureInfo* info = sema_.procedureInfo(call.name);
             std::string code = "f_" + call.name + "(";
             for (std::size_t i = 0; i < call.args.size(); ++i) {
@@ -200,6 +203,20 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
         }
     }
     return "0"; // unreachable for a well-formed AST
+}
+
+std::string Codegen::genArrayIndexCode(const std::string& name,
+                                        const std::vector<std::unique_ptr<ast::Expr>>& indices) {
+    if (indices.size() == 1) {
+        return genExpr(*indices[0], false); // Array indices are always Integer-family.
+    }
+    // 2D: row-major flattening via the hidden `v_name_dim1` companion
+    // variable the Dim statement itself sets (see this method's own header
+    // comment) - referencing the stored variable rather than re-emitting
+    // the dimension-1 size expression a second time here.
+    std::string idx0 = genExpr(*indices[0], false);
+    std::string idx1 = genExpr(*indices[1], false);
+    return "((" + idx0 + ") * (v_" + name + "_dim1 + 1) + (" + idx1 + "))";
 }
 
 std::string Codegen::genCondition(const ast::Expr& expr) {
@@ -512,6 +529,39 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             // Codegen sees a VarRef inside this body, it just emits `v_name`
             // like any other reference, which already means the right thing.
             break;
+        case ast::StmtKind::Dim: {
+            const auto& dim = static_cast<const ast::DimStmt&>(stmt);
+            const Sema::ArrayInfo* info = sema_.arrayInfo(dim.name);
+            TypeSuffix elemSuffix = info != nullptr ? info->elementSuffix : TypeSuffix::Integer;
+            std::string sizeExpr0 = genExpr(*dim.dimensionSizes[0], false);
+            if (dim.dimensionSizes.size() == 1) {
+                // `Dim` (re-)sizes and resets the array at this exact
+                // statement position, not at global-init time - the size
+                // expression may depend on runtime values computed earlier
+                // (oracle-verified: PB allows an arbitrary expression here,
+                // not just a compile-time constant).
+                out_ += "    v_" + dim.name + ".assign(static_cast<std::size_t>(" + sizeExpr0 + ") + 1, " +
+                        defaultValueLiteral(elemSuffix) + ");\n";
+            } else {
+                std::string sizeExpr1 = genExpr(*dim.dimensionSizes[1], false);
+                out_ += "    v_" + dim.name + "_dim1 = " + sizeExpr1 + ";\n";
+                out_ += "    v_" + dim.name + ".assign(static_cast<std::size_t>(" + sizeExpr0 +
+                        " + 1) * static_cast<std::size_t>(v_" + dim.name + "_dim1 + 1), " +
+                        defaultValueLiteral(elemSuffix) + ");\n";
+            }
+            break;
+        }
+        case ast::StmtKind::IndexAssign: {
+            const auto& indexAssign = static_cast<const ast::IndexAssignStmt&>(stmt);
+            const Sema::ArrayInfo* info = sema_.arrayInfo(indexAssign.name);
+            TypeSuffix elemSuffix = info != nullptr ? info->elementSuffix : TypeSuffix::Integer;
+            bool floatCtx = familyOf(elemSuffix) == ValueKind::FloatFamily;
+            std::string valueCode = convert(genExpr(*indexAssign.value, floatCtx),
+                                             sema_.classify(*indexAssign.value, floatCtx), elemSuffix);
+            out_ += "    v_" + indexAssign.name + ".at(" +
+                    genArrayIndexCode(indexAssign.name, indexAssign.indices) + ") = " + valueCode + ";\n";
+            break;
+        }
     }
 }
 
@@ -521,11 +571,18 @@ std::string Codegen::generate() {
     out_ += "#include <cstdint>\n";
     out_ += "#include <cmath>\n";
     out_ += "#include <string>\n";
+    out_ += "#include <vector>\n";
     out_ += "#include <easybasic/runtime/runtime.hpp>\n\n";
 
     genGlobalConstants();
     for (const auto& [name, suffix] : sema_.declarationOrder()) {
         out_ += std::string("static ") + cppTypeFor(suffix) + " v_" + name + "{};\n";
+    }
+    for (const auto& [name, info] : sema_.arrayDeclarationOrder()) {
+        out_ += std::string("static std::vector<") + cppTypeFor(info.elementSuffix) + "> v_" + name + ";\n";
+        if (info.dimensionCount == 2) {
+            out_ += "static std::int64_t v_" + name + "_dim1 = 0;\n";
+        }
     }
     out_ += "\n";
     // Global variable declarations MUST come before procedure definitions:
