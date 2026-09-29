@@ -1,5 +1,6 @@
 build/
 build-*/
+docs/html/
 *.o
 *.obj
 *.gch

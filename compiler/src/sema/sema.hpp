@@ -124,6 +124,30 @@ public:
         return arrayOrder_;
     }
 
+    /// A declared List's element type (M3e). `name()` - a zero-arg
+    /// `Name(args)` - is ambiguous at parse time between an array read
+    /// (M3b), a procedure call, and (new here) reading/writing a List's
+    /// *current element*, or naming the list itself as an argument to a
+    /// list built-in (`AddElement(name())` etc.) - Sema disambiguates by
+    /// checking this table, exactly like `ArrayInfo` does for arrays.
+    struct ListInfo {
+        TypeSuffix elementSuffix = TypeSuffix::Integer; ///< Struct means look at elementStructName instead.
+        std::string elementStructName; ///< Lowercased; meaningful only if elementSuffix == Struct.
+    };
+    const ListInfo* listInfo(const std::string& lowerName) const;
+    /// Every declared List, in first-seen order, for Codegen to emit as a
+    /// global `easybasic::runtime::PBList<T>` - mirrors
+    /// `arrayDeclarationOrder`'s role for arrays.
+    const std::vector<std::pair<std::string, ListInfo>>& listDeclarationOrder() const { return listOrder_; }
+
+    /// True for the List built-ins recognized by name (`AddElement`,
+    /// `InsertElement`, `DeleteElement`, `ClearList`, `FirstElement`,
+    /// `LastElement`, `NextElement`, `PreviousElement`, `ListSize`,
+    /// `SelectElement`, `ListIndex`) - mirrors `isPointerBuiltinName`'s own
+    /// role, exposed so Codegen's `genExpr` can special-case them the same
+    /// way Sema's own `visitExpr` does.
+    static bool isListBuiltinName(const std::string& lowerName);
+
     /// A resolved type: either one of PB's 11 primitive suffixes, or -
     /// when `suffix == TypeSuffix::Struct` - a named Structure (looked up
     /// via `structureInfo(structName)`). Every variable, array element,
@@ -238,6 +262,19 @@ private:
     /// visited as an expression - doing so would implicitly declare a
     /// bogus variable named after the type.
     bool visitPointerBuiltinCall(ast::CallExpr& call);
+    /// Handles one of the names `isListBuiltinName` recognizes, returning
+    /// true if `call.name` was one of them. Every one of these takes a bare
+    /// `name()` (a declared List) as its first argument - naming the list
+    /// itself, not reading its current element - so that argument is
+    /// validated (must be a zero-arg `CallExpr` naming a declared List) but
+    /// deliberately not visited as an ordinary expression; `SelectElement`'s
+    /// second argument (an index) *is* visited normally.
+    bool visitListBuiltinCall(ast::CallExpr& call);
+    /// Looks up `lowerName` in `lists_`, reporting a diagnostic and
+    /// returning nullptr if it doesn't name a declared List - shared by
+    /// `visitListBuiltinCall` (after checking its argument is a bare,
+    /// zero-arg `name()`) and by `ForEachStmt`'s own handling.
+    const ListInfo* requireList(const std::string& lowerName, const std::string& spelling, SourceLoc loc) const;
     /// Validates and builds the `ResolvedType` a pointer declaration's own
     /// pointee-describing fields (`suffix`/`structTypeName`/
     /// `structTypeSpelling`, shared field names between
@@ -261,6 +298,8 @@ private:
     std::unordered_map<std::string, ProcedureInfo> procedures_;
     std::unordered_map<std::string, ArrayInfo> arrays_;
     std::vector<std::pair<std::string, ArrayInfo>> arrayOrder_;
+    std::unordered_map<std::string, ListInfo> lists_;
+    std::vector<std::pair<std::string, ListInfo>> listOrder_;
     /// A declared variable's Structure type name, keyed by the variable's
     /// lowercased name, present only when that variable's entry in
     /// `symbols_` is `TypeSuffix::Struct`.

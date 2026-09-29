@@ -138,6 +138,7 @@ enum class StmtKind {
     Break, Continue, EnableExplicit, ConstDecl, Enumeration,
     ProcedureDecl, ProcedureReturn, ExprStmt, Shared,
     Dim, IndexAssign, StructureDecl, FieldAssign,
+    NewList, ForEach,
 };
 
 /// Base of every statement node.
@@ -226,6 +227,25 @@ struct DimStmt : Stmt {
     std::string structTypeName;    ///< Lowercased; meaningful only if suffix == Struct.
     std::string structTypeSpelling;
     std::vector<std::unique_ptr<Expr>> dimensionSizes; ///< 1 or 2 entries.
+};
+
+/// `NewList name.type()` - declares a List (M3e). Oracle-verified: unlike
+/// `Define`, only a *single* list can be declared per statement (`NewList
+/// a.i(), b.i()` is rejected as "Garbage at the end of the line"), so this
+/// carries one declaration directly rather than a `declarators` vector.
+/// `name()` used elsewhere (as an expression, an assignment target, or an
+/// argument to a list built-in like `AddElement`) is a plain, already-
+/// existing `CallExpr` with zero args - Sema disambiguates it from an array
+/// read/procedure call the same way it already disambiguates those two (see
+/// `Sema::ListInfo`'s own doc comment), so no new expression-level AST node
+/// is needed for that part.
+struct NewListStmt : Stmt {
+    NewListStmt() : Stmt(StmtKind::NewList) {}
+    std::string name;
+    std::string spelling;
+    TypeSuffix suffix = TypeSuffix::None; ///< TypeSuffix::Struct means look at structTypeName instead.
+    std::string structTypeName;    ///< Lowercased; meaningful only if suffix == Struct.
+    std::string structTypeSpelling;
 };
 
 /// `name(index0[, index1]) = expr` - an array element assignment. Syntax is
@@ -342,6 +362,18 @@ struct RepeatStmt : Stmt {
     RepeatStmt() : Stmt(StmtKind::Repeat) {}
     Block body;
     std::unique_ptr<Expr> untilCondition;
+};
+
+/// `ForEach name() ... Next` - iterates every element of a List (M3e; a Map
+/// is a future increment). Oracle-verified: the header is always a bare
+/// `name()` naming a declared List, never an arbitrary expression, so this
+/// stores the name directly rather than a generic `Expr` - matching
+/// `ForStmt`'s own name/spelling fields.
+struct ForEachStmt : Stmt {
+    ForEachStmt() : Stmt(StmtKind::ForEach) {}
+    std::string name;
+    std::string spelling;
+    Block body;
 };
 
 struct BreakStmt : Stmt {

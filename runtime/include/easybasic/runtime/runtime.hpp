@@ -6,4 +6,5 @@
 // its own.
 
 #include "debug.hpp"
+#include "pblist.hpp"
 #include "pbstring.hpp"

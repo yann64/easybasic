@@ -176,6 +176,47 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 return "(delete reinterpret_cast<" + typeName + "*>(" + genExpr(ptrArg, false) +
                        "), static_cast<std::int64_t>(0))";
             }
+            if (Sema::isListBuiltinName(call.name)) {
+                const auto& listCall = static_cast<const ast::CallExpr&>(*call.args.front());
+                std::string listVar = cppVarName(listCall.name);
+                if (call.name == "addelement") {
+                    return "(" + listVar + ".addElement(), static_cast<std::int64_t>(0))";
+                }
+                if (call.name == "insertelement") {
+                    return "(" + listVar + ".insertElement(), static_cast<std::int64_t>(0))";
+                }
+                if (call.name == "deleteelement") {
+                    return "(" + listVar + ".deleteElement(), static_cast<std::int64_t>(0))";
+                }
+                if (call.name == "clearlist") {
+                    return "(" + listVar + ".clear(), static_cast<std::int64_t>(0))";
+                }
+                if (call.name == "firstelement") {
+                    return "static_cast<std::int64_t>(" + listVar + ".firstElement())";
+                }
+                if (call.name == "lastelement") {
+                    return "static_cast<std::int64_t>(" + listVar + ".lastElement())";
+                }
+                if (call.name == "nextelement") {
+                    return "static_cast<std::int64_t>(" + listVar + ".nextElement())";
+                }
+                if (call.name == "previouselement") {
+                    return "static_cast<std::int64_t>(" + listVar + ".previousElement())";
+                }
+                if (call.name == "listsize") {
+                    return listVar + ".size()";
+                }
+                if (call.name == "listindex") {
+                    return listVar + ".listIndex()";
+                }
+                // selectelement
+                return "static_cast<std::int64_t>(" + listVar + ".selectElement(" +
+                       genExpr(*call.args[1], false) + "))";
+            }
+            if (sema_.listInfo(call.name) != nullptr) {
+                // `name()` reads the List's current element (M3e).
+                return cppVarName(call.name) + ".current()";
+            }
             if (sema_.arrayInfo(call.name) != nullptr) {
                 return "v_" + call.name + ".at(" + genArrayIndexCode(call.name, call.args) + ")";
             }
@@ -640,6 +681,17 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
         }
         case ast::StmtKind::IndexAssign: {
             const auto& indexAssign = static_cast<const ast::IndexAssignStmt&>(stmt);
+            if (indexAssign.indices.empty()) {
+                if (const Sema::ListInfo* listInfo = sema_.listInfo(indexAssign.name)) {
+                    // `name() = expr` - sets the List's current element (M3e).
+                    bool floatCtx = familyOf(listInfo->elementSuffix) == ValueKind::FloatFamily;
+                    std::string valueCode = convert(genExpr(*indexAssign.value, floatCtx),
+                                                     sema_.classify(*indexAssign.value, floatCtx),
+                                                     listInfo->elementSuffix);
+                    out_ += "    " + cppVarName(indexAssign.name) + ".current() = " + valueCode + ";\n";
+                    break;
+                }
+            }
             const Sema::ArrayInfo* info = sema_.arrayInfo(indexAssign.name);
             TypeSuffix elemSuffix = info != nullptr ? info->elementSuffix : TypeSuffix::Integer;
             bool floatCtx = familyOf(elemSuffix) == ValueKind::FloatFamily;
@@ -651,6 +703,19 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
         }
         case ast::StmtKind::StructureDecl:
             break; // Already emitted as a real C++ struct by genStructures().
+        case ast::StmtKind::NewList: // NOLINT(bugprone-branch-clone) - already emitted by generate() itself.
+            break;
+        case ast::StmtKind::ForEach: {
+            const auto& forEach = static_cast<const ast::ForEachStmt&>(stmt);
+            std::string listVar = cppVarName(forEach.name);
+            // Mirrors real PB's own generated code exactly:
+            // `PB_ResetList(...); while (PB_NextElement(...)) { ... }`.
+            out_ += "    " + listVar + ".resetForEach();\n";
+            out_ += "    while (" + listVar + ".nextElement()) {\n";
+            genBlock(forEach.body);
+            out_ += "    }\n";
+            break;
+        }
         case ast::StmtKind::FieldAssign: {
             const auto& fieldAssign = static_cast<const ast::FieldAssignStmt&>(stmt);
             Sema::ResolvedType targetType = sema_.resolveType(*fieldAssign.target);
@@ -688,6 +753,12 @@ std::string Codegen::generate() {
         if (info.dimensionCount == 2) {
             out_ += "static std::int64_t v_" + name + "_dim1 = 0;\n";
         }
+    }
+    for (const auto& [name, info] : sema_.listDeclarationOrder()) {
+        std::string elemType = info.elementSuffix == TypeSuffix::Struct
+                                    ? cppTypeFor(info.elementSuffix, info.elementStructName)
+                                    : cppTypeFor(info.elementSuffix);
+        out_ += "static easybasic::runtime::PBList<" + elemType + "> " + cppVarName(name) + ";\n";
     }
     out_ += "\n";
     // Global variable declarations MUST come before procedure definitions:

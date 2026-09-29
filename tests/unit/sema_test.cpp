@@ -431,3 +431,120 @@ TEST_CASE("Sema rejects AllocateStructure given an undeclared Structure name", "
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+TEST_CASE("Sema defaults a bare NewList to an Integer element type", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewList n()", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    const auto* info = sema.listInfo("n");
+    REQUIRE(info != nullptr);
+    CHECK(info->elementSuffix == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema resolves a String-typed NewList's element type", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewList names.s()", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    const auto* info = sema.listInfo("names");
+    REQUIRE(info != nullptr);
+    CHECK(info->elementSuffix == TypeSuffix::String);
+}
+
+TEST_CASE("Sema rejects redeclaring the same List name", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewList n.i()\nNewList n.s()", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves a bare name() as the List's element type", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewList n.i()\nAddElement(n())\nDebug n()", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    auto* dbg = static_cast<ast::DebugStmt*>(module->statements[2].get());
+    CHECK(sema.classify(*dbg->value, false) == ValueKind::IntegerFamily);
+}
+
+TEST_CASE("Sema accepts name() = expr as setting a List's current element", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewList n.i()\nAddElement(n())\nn() = 5", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects assigning a String into an Integer List's current element", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewList n.i()\nAddElement(n())\nn() = \"nope\"", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves a field access through a List of Structures", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Structure Point\nx.i\nEndStructure\n"
+        "NewList pts.Point()\nAddElement(pts())\npts()\\x = 3\nDebug pts()\\x",
+        diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a List built-in given a non-List argument", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define x.i = 5\nAddElement(x)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects ForEach on an undeclared name", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse("ForEach nope()\nDebug 1\nNext", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts ForEach over a declared List and resolves its body", "[sema][list]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewList n.i()\nAddElement(n())\nn() = 1\nForEach n()\nDebug n()\nNext", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema recognizes the List built-ins by name", "[sema][list]") {
+    CHECK(Sema::isListBuiltinName("addelement"));
+    CHECK(Sema::isListBuiltinName("insertelement"));
+    CHECK(Sema::isListBuiltinName("deleteelement"));
+    CHECK(Sema::isListBuiltinName("clearlist"));
+    CHECK(Sema::isListBuiltinName("firstelement"));
+    CHECK(Sema::isListBuiltinName("lastelement"));
+    CHECK(Sema::isListBuiltinName("nextelement"));
+    CHECK(Sema::isListBuiltinName("previouselement"));
+    CHECK(Sema::isListBuiltinName("listsize"));
+    CHECK(Sema::isListBuiltinName("selectelement"));
+    CHECK(Sema::isListBuiltinName("listindex"));
+    CHECK_FALSE(Sema::isListBuiltinName("somethingelse"));
+}
+
+TEST_CASE("Sema visits SelectElement's index argument as an ordinary expression", "[sema][list]") {
+    DiagnosticEngine diags;
+    // The undeclared `idx` inside SelectElement's index argument must still
+    // be caught under EnableExplicit - proving it's visited normally, not
+    // skipped like the List-naming argument is.
+    auto module = parse("EnableExplicit\nNewList n.i()\nSelectElement(n(), idx)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

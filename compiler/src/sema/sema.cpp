@@ -143,12 +143,49 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             arrayOrder_.emplace_back(dim.name, info);
             break;
         }
+        case ast::StmtKind::NewList: {
+            auto& newList = static_cast<ast::NewListStmt&>(stmt);
+            if (lists_.contains(newList.name)) {
+                diagnostics_.error(newList.loc, "'" + newList.spelling + "' is already declared as a List");
+                break;
+            }
+            ListInfo info;
+            info.elementSuffix = newList.suffix == TypeSuffix::None ? TypeSuffix::Integer : newList.suffix;
+            if (info.elementSuffix == TypeSuffix::Struct) {
+                if (!structures_.contains(newList.structTypeName)) {
+                    diagnostics_.error(newList.loc, "'" + newList.structTypeSpelling + "' is not a declared Structure");
+                }
+                info.elementStructName = newList.structTypeName;
+            }
+            lists_.emplace(newList.name, info);
+            listOrder_.emplace_back(newList.name, info);
+            break;
+        }
+        case ast::StmtKind::ForEach: {
+            auto& forEach = static_cast<ast::ForEachStmt&>(stmt);
+            requireList(forEach.name, forEach.spelling, forEach.loc);
+            visitBlock(forEach.body);
+            break;
+        }
         case ast::StmtKind::IndexAssign: {
             auto& indexAssign = static_cast<ast::IndexAssignStmt&>(stmt);
             for (auto& idx : indexAssign.indices) {
                 visitExpr(*idx);
             }
             visitExpr(*indexAssign.value);
+            if (indexAssign.indices.empty()) {
+                if (const ListInfo* listInfoPtr = listInfo(indexAssign.name)) {
+                    if (listInfoPtr->elementSuffix == TypeSuffix::Struct) {
+                        diagnostics_.error(indexAssign.loc,
+                                            "cannot assign directly to '" + indexAssign.spelling +
+                                                "()', a Structure element - assign to one of its own fields instead");
+                    } else {
+                        checkAssignable(indexAssign.spelling, listInfoPtr->elementSuffix, *indexAssign.value,
+                                         indexAssign.loc);
+                    }
+                    break;
+                }
+            }
             const ArrayInfo* info = arrayInfo(indexAssign.name);
             if (info == nullptr) {
                 diagnostics_.error(indexAssign.loc, "'" + indexAssign.spelling + "' is not a declared array");
@@ -458,6 +495,17 @@ void Sema::visitExpr(ast::Expr& expr) {
             if (visitPointerBuiltinCall(call)) {
                 break;
             }
+            if (visitListBuiltinCall(call)) {
+                break;
+            }
+            if (listInfo(call.name) != nullptr) {
+                // `name()` reads the List's current element (M3e) - no args
+                // to visit (see Sema::ListInfo's own doc comment).
+                if (!call.args.empty()) {
+                    diagnostics_.error(call.loc, "'" + call.spelling + "' is a List and takes no arguments here");
+                }
+                break;
+            }
             // `Name(args)` is ambiguous with a call at parse time - a
             // `Dim`'d name always means an array read here (see ArrayInfo's
             // own doc comment).
@@ -620,10 +668,13 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
         }
         case ast::ExprKind::Call: {
             const auto& call = static_cast<const ast::CallExpr&>(expr);
-            const ArrayInfo* array = arrayInfo(call.name);
-            const ProcedureInfo* proc = array == nullptr ? procedureInfo(call.name) : nullptr;
+            const ListInfo* list = listInfo(call.name);
+            const ArrayInfo* array = list == nullptr ? arrayInfo(call.name) : nullptr;
+            const ProcedureInfo* proc = (list == nullptr && array == nullptr) ? procedureInfo(call.name) : nullptr;
             ValueKind natural = ValueKind::IntegerFamily;
-            if (array != nullptr) {
+            if (list != nullptr) {
+                natural = familyOf(list->elementSuffix);
+            } else if (array != nullptr) {
                 natural = familyOf(array->elementSuffix);
             } else if (proc != nullptr) {
                 natural = familyOf(proc->returnSuffix);
@@ -716,6 +767,63 @@ const Sema::ArrayInfo* Sema::arrayInfo(const std::string& lowerName) const {
     return it == arrays_.end() ? nullptr : &it->second;
 }
 
+const Sema::ListInfo* Sema::listInfo(const std::string& lowerName) const {
+    auto it = lists_.find(lowerName);
+    return it == lists_.end() ? nullptr : &it->second;
+}
+
+const Sema::ListInfo* Sema::requireList(const std::string& lowerName, const std::string& spelling,
+                                        SourceLoc loc) const {
+    const ListInfo* info = listInfo(lowerName);
+    if (info == nullptr) {
+        diagnostics_.error(loc, "'" + spelling + "' is not a declared List");
+    }
+    return info;
+}
+
+bool Sema::isListBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "addelement",  "insertelement", "deleteelement", "clearlist",     "firstelement",
+        "lastelement", "nextelement",   "previouselement", "listsize",   "selectelement", "listindex",
+    };
+    return names.contains(lowerName);
+}
+
+bool Sema::visitListBuiltinCall(ast::CallExpr& call) {
+    if (!isListBuiltinName(call.name)) {
+        return false;
+    }
+    if (call.args.empty()) {
+        diagnostics_.error(call.loc, "'" + call.spelling + "' expects a List argument");
+        return true;
+    }
+    // Every one of these takes a bare `name()` as its first argument -
+    // naming the List itself, not reading its current element - so it's
+    // validated directly rather than visited as an ordinary expression (see
+    // this method's own doc comment).
+    const ast::Expr& listArg = *call.args.front();
+    if (listArg.kind == ast::ExprKind::Call) {
+        const auto& listCall = static_cast<const ast::CallExpr&>(listArg);
+        if (listCall.args.empty()) {
+            requireList(listCall.name, listCall.spelling, call.loc);
+        } else {
+            diagnostics_.error(call.loc, "'" + call.spelling + "' expects a bare 'name()' List argument");
+        }
+    } else {
+        diagnostics_.error(call.loc, "'" + call.spelling + "' expects a bare 'name()' List argument");
+    }
+    if (call.name == "selectelement") {
+        if (call.args.size() != 2) {
+            diagnostics_.error(call.loc, "'SelectElement' expects a List and an index argument");
+        } else {
+            visitExpr(*call.args[1]);
+        }
+    } else if (call.args.size() != 1) {
+        diagnostics_.error(call.loc, "'" + call.spelling + "' expects exactly one List argument");
+    }
+    return true;
+}
+
 const Sema::StructureInfo* Sema::structureInfo(const std::string& lowerName) const {
     auto it = structures_.find(lowerName);
     return it == structures_.end() ? nullptr : &it->second;
@@ -761,6 +869,14 @@ Sema::ResolvedType Sema::resolveType(const ast::Expr& expr) const {
         }
         case ast::ExprKind::Call: {
             const auto& call = static_cast<const ast::CallExpr&>(expr);
+            if (const ListInfo* lst = listInfo(call.name)) {
+                ResolvedType result;
+                result.suffix = lst->elementSuffix;
+                if (lst->elementSuffix == TypeSuffix::Struct) {
+                    result.structName = lst->elementStructName;
+                }
+                return result;
+            }
             if (const ArrayInfo* arr = arrayInfo(call.name)) {
                 ResolvedType result;
                 result.suffix = arr->elementSuffix;

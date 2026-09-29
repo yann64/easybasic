@@ -27,7 +27,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | Done (see M0 notes below) |
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deliberately deferred to M3 |
-| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), and pointers (M3d) done; `NewList`/`NewMap` still to come |
+| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), and `NewList` (M3e) done; `NewMap` still to come |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
@@ -526,4 +526,69 @@ miscompile of anything actually exercised.
 **Deliberately deferred past M3d**: the Memory library's `Peek*`/`Poke*` functions
 (needed to make an *untyped* pointer's own dereference actually useful - M4); pointers to
 arrays or to other pointers; `NewList`/`NewMap` (the remaining, unrelated piece of M3).
+
+## M3e Implementation Notes (`NewList`)
+
+**Scope landed**: `NewList name.type()` declarations (primitive or Structure element
+types), `AddElement`/`InsertElement`/`DeleteElement`, `ForEach name() ... Next`,
+`FirstElement`/`LastElement`/`NextElement`/`PreviousElement`, `ListSize`,
+`SelectElement`/`ListIndex`, `ClearList`, and reading/writing the current element via a
+bare `name()` (including through a `\field` chain for a List of Structures, reusing
+M3c/M3d's field-access machinery directly, the same way M3d's pointer dereference did).
+
+**The parser needed almost no new grammar at all - `name()` (zero args) already parsed
+correctly, for free, as a side effect of M3b's array/call disambiguation.** `Name(args)`
+already parses to a generic `CallExpr` regardless of argument count, including zero, and
+`Name() = expr` already parses to an `IndexAssignStmt` with an empty `indices` vector,
+also for free - `parseIdentifierStatement`'s array/call-disambiguation logic from M3b
+never assumed at least one argument anywhere. The only genuinely new grammar this
+milestone added was two new statement headers (`NewList name.type()` and `ForEach
+name() ... Next`, the latter closed by the already-existing `Next` keyword `For` also
+uses) - everything else (`name()` read, `name() = expr` write, `name()` as an argument to
+a list built-in, `name()\field`) is the *identical* `CallExpr`/`IndexAssignStmt`/
+`FieldAccessExpr` shape M3b/M3c already produce, disambiguated in Sema by checking a new
+`lists_` table before falling through to the existing array/procedure checks - exactly
+the same layered-disambiguation pattern `ArrayInfo` already established, extended by one
+more layer rather than redesigned.
+
+**Oracle-derived cursor semantics, verified through several rounds of targeted
+probing** (see `docs/developer/oracle-testing.md`'s methodology): `AddElement`/
+`InsertElement` insert after/before the cursor respectively and move the cursor to the
+new element (an empty list is a degenerate case of both); a *failed* `FirstElement`/
+`LastElement`/`NextElement`/`PreviousElement` never disturbs the current cursor (verified
+by inserting immediately after a `ForEach` loop exhausts - the insertion landed right
+before the *last* element, proving the loop's own final, failing `NextElement` call left
+the cursor sitting on the last element rather than invalidating it); `DeleteElement`
+moves the cursor to the *previous* element if one exists, else the *next* one (verified
+by deleting the first element of a 3-element list and observing the cursor land on the
+new first element, not become invalid). `PBList<T>` (`runtime/include/.../pblist.hpp`),
+a `std::list<T>` plus an explicit cursor, encodes exactly this rule set - see its own doc
+comments for the one genuinely deliberate simplification: real PB's debugger raises "The
+LinkedList has no current element" if `DeleteElement` empties a list and a later
+operation is attempted without re-establishing the cursor; `PBList` simply leaves the
+cursor invalid instead of reproducing that debug-build-only crash.
+
+**`ForEach` lowers to exactly the two-line pattern real PB's own generated C already
+uses** (confirmed by reading `pbcompilerc`'s own `-c` output): `v_name.resetForEach();
+while (v_name.nextElement()) { ... }` - `resetForEach()` just invalidates the cursor
+without touching the list's contents, so the loop's first `nextElement()` call falls into
+the same "invalid cursor, non-empty list -> move to the first element" case
+`FirstElement` uses, and every subsequent call is a plain advance-or-fail. No separate
+"before the beginning" sentinel state was needed beyond the one `hasCursor_` flag
+`PBList` already needed for everything else.
+
+**Lists reuse `ArrayInfo`'s existing, previously-undocumented scoping simplification
+rather than getting their own, more careful treatment**: `lists_`/`listOrder_` (like
+`arrays_`/`arrayOrder_` before them) are never part of a `ProcedureDecl`'s `symbols_`/
+`order_` save-swap-restore, so a `NewList` declared inside a procedure body is - like a
+`Dim`'d array inside one - emitted as a genuine C++ global, not a true per-call-isolated
+local. Not a new gap this milestone introduces; simply inherited as-is rather than fixed
+in passing, consistent with `arrays_`'s own precedent.
+
+**Deliberately deferred past M3e**: `NewMap`/`AddMapElement`/`FindMapElement`/`MapKey`
+and the rest of the Map family (a separate, not-yet-designed data structure, even though
+it shares `ForEach` and much of the cursor vocabulary conceptually); passing a List to a
+procedure (PB's `List Name.type()` parameter syntax, distinct from a plain scalar
+parameter - the same kind of gap M3b already left open for arrays); `CopyList`/
+`SwapList`/`MergeLists`; `ArrayList`/`ArrayToList`-style conversions.
 

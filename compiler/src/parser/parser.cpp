@@ -168,6 +168,12 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwStructure)) {
         return parseStructureDecl();
     }
+    if (check(TokenKind::KwNewList)) {
+        return parseNewList();
+    }
+    if (check(TokenKind::KwForEach)) {
+        return parseForEach();
+    }
     if (check(TokenKind::Hash)) {
         return parseConstDecl();
     }
@@ -243,6 +249,36 @@ std::unique_ptr<ast::Stmt> Parser::parseDim() {
     if (stmt->dimensionSizes.size() > 2) {
         diagnostics_.error(stmt->loc, "arrays with more than 2 dimensions are not yet supported");
     }
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseNewList() {
+    auto stmt = std::make_unique<ast::NewListStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'NewList'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'NewList'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    stmt->suffix = nameTok.suffix;
+    stmt->structTypeName = nameTok.structSuffix;
+    stmt->structTypeSpelling = nameTok.structSuffixSpelling;
+    expect(TokenKind::LParen, "after list name");
+    expect(TokenKind::RParen, "to close 'NewList' (oracle-verified: only a single list per statement)");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseForEach() {
+    auto stmt = std::make_unique<ast::ForEachStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'ForEach'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'ForEach'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    expect(TokenKind::LParen, "after list name");
+    expect(TokenKind::RParen, "to close 'ForEach's list reference");
+    stmt->body = parseBlockUntil({TokenKind::KwNext});
+    expect(TokenKind::KwNext, "to close 'ForEach'");
+    match(TokenKind::Identifier); // optional `Next <var>`, same as ForStmt's own.
     return stmt;
 }
 

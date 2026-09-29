@@ -31,6 +31,11 @@ private:
     std::unique_ptr<ast::Stmt> parseShared();
     std::unique_ptr<ast::Stmt> parseDim();
     std::unique_ptr<ast::Stmt> parseStructureDecl();
+    std::unique_ptr<ast::Stmt> parseNewList();
+    /// `ForEach name() ... Next` - `name` is always a bare, already-declared
+    /// List (see ast::ForEachStmt's own doc comment), so this parses a plain
+    /// identifier and requires the `()`, rather than a general expression.
+    std::unique_ptr<ast::Stmt> parseForEach();
     /// Called at statement position on a bare `Identifier` - parses a
     /// single unified "base" (a plain variable, or `Name(args)` which is
     /// ambiguous between a call and an array index until Sema resolves it -
