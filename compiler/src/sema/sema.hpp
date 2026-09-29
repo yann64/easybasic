@@ -193,6 +193,15 @@ public:
     /// `registerStringLibBuiltins`).
     static bool isMathLibBuiltinName(const std::string& lowerName);
 
+    /// True for the M4c Memory-library functions (`PeekB`/`PeekA`/`PeekC`/
+    /// `PeekW`/`PeekU`/`PeekL`/`PeekQ`/`PeekF`/`PeekD`/`PeekS` and their
+    /// `Poke*` counterparts) - mirrors `isMathLibBuiltinName`'s own role and
+    /// registration mechanism (`registerMemoryLibBuiltins`). Closes the gap
+    /// M3d's pointer work deliberately deferred: an *untyped* pointer
+    /// (`Define *ptr`, no Structure type) was only ever useful as a plain
+    /// address before this - these are what actually read/write through it.
+    static bool isMemoryLibBuiltinName(const std::string& lowerName);
+
     /// The literal Integer value of one of the handful of built-in `#PB_*`
     /// constants Sema pre-declares (currently only `#PB_Round_Down` (0),
     /// `#PB_Round_Up` (1), `#PB_Round_Nearest` (2), for `Round`'s own mode
@@ -275,6 +284,12 @@ private:
     /// library - every one of these (bar `Int`) is oracle-verified to
     /// return a Double regardless of its argument's own type.
     void registerMathLibBuiltins();
+    /// Same mechanism again, for the M4c Memory library (`Peek*`/`Poke*`) -
+    /// every argument/return value here is a plain Integer address or
+    /// primitive value, so - like the string/Math libraries, and unlike the
+    /// M3d pointer builtins (`AllocateMemory` etc.) - no special-cased
+    /// argument handling is needed in Sema at all.
+    void registerMemoryLibBuiltins();
     /// Pre-populates `constants_` (but deliberately NOT `constOrder_` - see
     /// `Codegen::genExpr`'s `ConstRef` case) with the handful of built-in
     /// `#PB_*` constants Sema recognizes (currently just `Round`'s own

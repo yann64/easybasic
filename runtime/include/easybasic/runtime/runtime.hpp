@@ -7,6 +7,7 @@
 
 #include "debug.hpp"
 #include "mathlib.hpp"
+#include "memorylib.hpp"
 #include "pblist.hpp"
 #include "pbmap.hpp"
 #include "pbstring.hpp"

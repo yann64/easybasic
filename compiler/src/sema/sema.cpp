@@ -17,6 +17,7 @@ ValueKind familyOf(TypeSuffix suffix) {
 Sema::Sema(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {
     registerStringLibBuiltins();
     registerMathLibBuiltins();
+    registerMemoryLibBuiltins();
     registerBuiltinConstants();
 }
 
@@ -111,6 +112,59 @@ bool Sema::isMathLibBuiltinName(const std::string& lowerName) {
     static const std::unordered_set<std::string> names = {
         "abs", "sqr", "pow", "sin", "cos", "tan", "asin", "acos", "atan",
         "atan2", "exp", "log", "log10", "round", "int", "random", "randomseed",
+    };
+    return names.contains(lowerName);
+}
+
+void Sema::registerMemoryLibBuiltins() {
+    struct Signature {
+        const char* name;
+        TypeSuffix returnSuffix;
+        std::vector<TypeSuffix> paramSuffixes;
+        std::size_t requiredParamCount;
+    };
+    // Every Peek* takes one Integer address and returns the matching
+    // primitive type; every Poke* takes that same address plus the value to
+    // write, returning an Integer (see registerMemoryLibBuiltins's own
+    // runtime-side doc comment on why that return value is a placeholder,
+    // not an oracle-verified one). `PeekS`'s optional length argument reuses
+    // the same "fewer call-site args than paramSuffixes.size()" default-
+    // parameter mechanism the String/Math libraries already use.
+    static const std::vector<Signature> signatures = {
+        {"peekb", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"peeka", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"peekc", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"peekw", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"peeku", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"peekl", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"peekq", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"peekf", TypeSuffix::Float, {TypeSuffix::Integer}, 1},
+        {"peekd", TypeSuffix::Double, {TypeSuffix::Integer}, 1},
+        {"peeks", TypeSuffix::String, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"pokeb", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"pokea", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"pokec", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"pokew", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"pokeu", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"pokel", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"pokeq", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"pokef", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Float}, 2},
+        {"poked", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Double}, 2},
+        {"pokes", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+    };
+    for (const auto& sig : signatures) {
+        ProcedureInfo info;
+        info.returnSuffix = sig.returnSuffix;
+        info.paramSuffixes = sig.paramSuffixes;
+        info.requiredParamCount = sig.requiredParamCount;
+        procedures_[sig.name] = info;
+    }
+}
+
+bool Sema::isMemoryLibBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "peekb", "peeka", "peekc", "peekw", "peeku", "peekl", "peekq", "peekf", "peekd", "peeks",
+        "pokeb", "pokea", "pokec", "pokew", "pokeu", "pokel", "pokeq", "pokef", "poked", "pokes",
     };
     return names.contains(lowerName);
 }

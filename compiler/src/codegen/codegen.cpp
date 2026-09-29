@@ -86,6 +86,18 @@ std::string mathLibRuntimeName(const std::string& lowerName) {
     return "easybasic::runtime::" + names.at(lowerName);
 }
 
+/// As `stringLibRuntimeName`, for the M4c Memory library.
+std::string memoryLibRuntimeName(const std::string& lowerName) {
+    static const std::unordered_map<std::string, std::string> names = {
+        {"peekb", "pbPeekB"}, {"peeka", "pbPeekA"}, {"peekc", "pbPeekC"}, {"peekw", "pbPeekW"},
+        {"peeku", "pbPeekU"}, {"peekl", "pbPeekL"}, {"peekq", "pbPeekQ"}, {"peekf", "pbPeekF"},
+        {"peekd", "pbPeekD"}, {"peeks", "pbPeekS"}, {"pokeb", "pbPokeB"}, {"pokea", "pbPokeA"},
+        {"pokec", "pbPokeC"}, {"pokew", "pbPokeW"}, {"pokeu", "pbPokeU"}, {"pokel", "pbPokeL"},
+        {"pokeq", "pbPokeQ"}, {"pokef", "pbPokeF"}, {"poked", "pbPokeD"}, {"pokes", "pbPokeS"},
+    };
+    return "easybasic::runtime::" + names.at(lowerName);
+}
+
 } // namespace
 
 std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName) {
@@ -305,6 +317,8 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 calleeName = stringLibRuntimeName(call.name);
             } else if (Sema::isMathLibBuiltinName(call.name)) {
                 calleeName = mathLibRuntimeName(call.name);
+            } else if (Sema::isMemoryLibBuiltinName(call.name)) {
+                calleeName = memoryLibRuntimeName(call.name);
             } else {
                 calleeName = "f_" + call.name;
             }

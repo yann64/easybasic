@@ -933,3 +933,55 @@ TEST_CASE("Sema::builtinConstantValue resolves the Round mode constants", "[sema
     CHECK(Sema::builtinConstantValue("pb_round_nearest") == 2);
     CHECK_FALSE(Sema::builtinConstantValue("pb_round_truncate").has_value());
 }
+
+// --- M4c: Memory library builtins (Peek*/Poke*) ---
+
+TEST_CASE("Sema resolves each Peek's declared return type", "[sema][memorylib]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Define a.i\nDebug PeekL(@a)\nDebug PeekF(@a)\nDebug PeekD(@a)\nDebug PeekS(@a)", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    auto* peekL = static_cast<ast::DebugStmt*>(module->statements[1].get());
+    auto* peekF = static_cast<ast::DebugStmt*>(module->statements[2].get());
+    auto* peekD = static_cast<ast::DebugStmt*>(module->statements[3].get());
+    auto* peekS = static_cast<ast::DebugStmt*>(module->statements[4].get());
+    CHECK(sema.classify(*peekL->value, false) == ValueKind::IntegerFamily);
+    CHECK(sema.classify(*peekF->value, false) == ValueKind::FloatFamily);
+    CHECK(sema.resolveType(*peekF->value).suffix == TypeSuffix::Float);
+    CHECK(sema.resolveType(*peekD->value).suffix == TypeSuffix::Double);
+    CHECK(sema.classify(*peekS->value, false) == ValueKind::StringFamily);
+}
+
+TEST_CASE("Sema accepts PeekS's optional length argument being omitted", "[sema][memorylib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define a.i\nDebug PeekS(@a)\nDebug PeekS(@a, 5)", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a String argument to a numeric Peek/Poke parameter", "[sema][memorylib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug PeekL(\"nope\")", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a Poke called with too few arguments", "[sema][memorylib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define a.i\nPokeL(@a)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema recognizes the Memory-library builtins by name", "[sema][memorylib]") {
+    CHECK(Sema::isMemoryLibBuiltinName("peekb"));
+    CHECK(Sema::isMemoryLibBuiltinName("peeks"));
+    CHECK(Sema::isMemoryLibBuiltinName("pokeq"));
+    CHECK(Sema::isMemoryLibBuiltinName("pokes"));
+    CHECK_FALSE(Sema::isMemoryLibBuiltinName("somethingelse"));
+}

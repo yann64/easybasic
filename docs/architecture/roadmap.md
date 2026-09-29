@@ -28,7 +28,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deferred to and closed by M3a/M3b; mutual recursion/`Declare`, call-argument type-checking, and constants in nested blocks deferred further, closed by a dedicated M2-closure pass (see its own notes) |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
-| **M4** | Core stdlib: String, Math, Memory, File, Date | In progress - core String library (M4a) and core Math library (M4b) done; Memory (`Peek*`/`Poke*`)/File/Date still to come |
+| **M4** | Core stdlib: String, Math, Memory, File, Date | In progress - core String (M4a), Math (M4b), and Memory (M4c) libraries done; File/Date still to come |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
@@ -898,4 +898,88 @@ expected fixture.
 hyperbolic/inverse-hyperbolic variants; `Degree`/`Radian` conversion helpers; `Memory`
 (`Peek*`/`Poke*` - the piece M3d's pointer work deferred here specifically), File, and
 Date - the rest of M4.
+
+## M4c Implementation Notes (core Memory library, `Peek*`/`Poke*`)
+
+**Scope landed**: `PeekB`/`PeekA`/`PeekC`/`PeekW`/`PeekU`/`PeekL`/`PeekQ`/`PeekF`/`PeekD`/
+`PeekS` and their `Poke*` counterparts, against a plain Integer address - this is the
+piece M3d's own pointer work explicitly deferred ("needed to make an *untyped* pointer's
+own dereference actually useful"), now closed: `Define *ptr` with no Structure type was
+only ever usable as a bare address value before this.
+
+**These needed even less new Sema machinery than the String/Math libraries did** - every
+argument and return value here is a plain Integer address or primitive value (no special
+"must be a bare `name()`" argument shape the way the M3d pointer/List/Map built-ins
+needed), so `registerMemoryLibBuiltins` is a third, near-identical call to the exact same
+fake-`ProcedureInfo`-registration mechanism `registerStringLibBuiltins`/
+`registerMathLibBuiltins` already established, with zero new per-argument validation
+logic anywhere.
+
+**A real memory-safety bug this project's own testing requirements exist to catch, found
+and fixed before it shipped**: a `Peek*`/`Poke*` call can legally target any byte offset
+in real PB, with no guarantee of natural alignment for the type being read/written
+(`PokeL(*blk + 1, ...)` is completely ordinary PB code) - the first implementation used a
+plain `*reinterpret_cast<int32_t*>(address)` dereference, which is undefined behavior for
+a misaligned address even though it happens to produce the correct answer on x86 in
+practice. A **targeted UBSan run of this project's own generated code** (not caught by
+the regular `ctest` sanitizer job, which only builds `pbcxx` itself with sanitizers, not
+the C++ programs it generates - compiling a generated program directly with
+`-fsanitize=address,undefined` was necessary to catch this) reported "store to misaligned
+address ... requires 4 byte alignment" on exactly this pattern. Fixed by routing every
+`Peek*`/`Poke*` through a `memcpy`-based `unalignedLoad`/`unalignedStore` helper pair
+instead (`runtime/include/.../memorylib.hpp`) - verified both against a re-run of the
+same targeted UBSan check (clean) and against the oracle (real PB tolerates the same
+misaligned access identically, giving the same answer pbcxx now does, both by relying on
+the underlying hardware's own tolerance for it - x86 permits misaligned access, just less
+efficiently, whereas the C++ *language* itself still calls dereferencing a misaligned
+typed pointer undefined behavior regardless of what the hardware permits). Worth noting
+as a gap in this project's *testing infrastructure*, not just this one bug: the
+established `ctest`-driven ASan/UBSan job has never covered code path executed only
+inside a *generated* PB program, which is exactly where a runtime-library bug like this
+one lives - a manual, one-off compile-with-sanitizers-directly step was the only way
+this was actually caught, and doing that systematically for e2e-tested `.pb` programs is
+a worthwhile future improvement this milestone surfaced but didn't build.
+
+**`PeekS`/`PokeS` needed a genuine UTF-16LE encode/decode step, not a raw byte copy -
+real PB's default Unicode compile mode uses 2 bytes per character in memory, verified by
+directly inspecting the bytes `PokeS` wrote** (`PokeS(*blk, "Hi")` produces the byte
+sequence `[72, 0, 105, 0, 0, 0]` - `'H'`, `'i'`, then a 2-byte null terminator - read back
+byte-by-byte with `PeekB`, not assumed from documentation). Since `PBString` is
+deliberately UTF-8 internally (the same M0 architectural decision M4a's own notes already
+discuss), `pbPokeS`/`pbPeekS` convert explicitly between UTF-8 and UTF-16LE bytes at the
+point memory is actually touched, astral code points becoming a real surrogate pair on
+the wire - the correct layout for interoperating with anything that reads/writes memory
+at the byte level (`Peek*`/`Poke*`'s entire reason to exist), at the cost of being
+noticeably more code than "just `memcpy` the string's own buffer" would have been.
+
+**A related case deliberately left unsupported, not silently broken: `PeekS(@someString
+Var)`.** Oracle-verified, `PeekS(@s)` for a String *variable* `s` correctly reads its
+character data directly - meaning real PB's own String variables are internally a
+pointer to a persistent UTF-16 character buffer, and `@` on a String specifically yields
+a pointer to *that buffer*, not to the variable's own storage slot (unlike `@` on every
+other type, which does give the address of the variable's own storage). `pbcxx`'s
+`AddressOfExpr` codegen has no equivalent special case - `@s` for a `PBString`-typed
+`v_s` yields the address of the `PBString` C++ object itself (a ref-counted wrapper, not
+a raw character buffer), so `PeekS(@s)` on a variable does not currently produce the
+right answer (verified to fail, not assumed to fail: `Debug PeekS(@s)` for `s.s =
+"Hello"` printed garbage). Properly closing this would mean giving `PBString` a lazily-
+materialized, cached UTF-16LE buffer purely for `@` to point at - a real architecture
+change to the type this project's own `PBString`-is-UTF-8-internally decision (M0) didn't
+anticipate needing, and out of scope for this milestone. `Peek*`/`Poke*` against an
+explicitly `AllocateMemory`'d block - the idiomatic, primary use case - works correctly
+and is what every test in this milestone actually exercises; this is a narrower,
+documented gap, not a general "Peek/Poke is unreliable" finding.
+
+**`Poke*`'s own return value is a documented placeholder (`0`), not an oracle-matched
+one** - a real `Poke*` call appears to return some address-derived value (observed:
+`PokeL(*blk, 42)` printed a large, address-looking number rather than anything
+meaningful like `0` or the written value), but every real PB example calls `Poke*` as a
+bare statement, discarding it, so chasing the exact formula wasn't judged worth the
+effort for a return value this project has never seen an actual program depend on.
+
+**Deliberately deferred past M4c**: `CopyMemory`/`FillMemory`/`CompareMemory`/
+`MemoryStringLength`; `AllocateMemory`'s own optional flags argument; `Peek*`/`Poke*`
+paired with a Structure pointer's fields (only a bare address argument is supported, not
+"the address of this specific Structure field"); `@stringVar` (see above) - the rest of
+M4 (File, Date) remains after this.
 

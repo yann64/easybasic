@@ -4,6 +4,7 @@ add_executable(easybasic_unit_tests
     runtime_pbstring_test.cpp
     runtime_stringlib_test.cpp
     runtime_mathlib_test.cpp
+    runtime_memorylib_test.cpp
     ${CMAKE_SOURCE_DIR}/compiler/src/sema/sema.cpp
 )
 target_link_libraries(easybasic_unit_tests PRIVATE
