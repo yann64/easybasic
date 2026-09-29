@@ -173,6 +173,16 @@ public:
     /// own role.
     static bool isMapBuiltinName(const std::string& lowerName);
 
+    /// True for the M4 String-library functions (`Len`, `Left`, `Right`,
+    /// `Mid`, `UCase`, `LCase`, `Trim`, `LTrim`, `RTrim`, `Str`, `Val`,
+    /// `StrF`, `ValF`, `Chr`, `Asc`) - exposed so Codegen's `genExpr` knows
+    /// to route a call to one of these to its `easybasic::runtime::pb*`
+    /// implementation instead of the generic `f_<name>(...)` a user-defined
+    /// procedure call lowers to. Unlike the pointer/List/Map built-ins,
+    /// these need no special-cased argument handling in Sema at all - see
+    /// this constructor's own registration into `procedures_`.
+    static bool isStringLibBuiltinName(const std::string& lowerName);
+
     /// A resolved type: either one of PB's 11 primitive suffixes, or -
     /// when `suffix == TypeSuffix::Struct` - a named Structure (looked up
     /// via `structureInfo(structName)`). Every variable, array element,
@@ -230,6 +240,16 @@ public:
     static bool isPointerBuiltinName(const std::string& lowerName);
 
 private:
+    /// Pre-populates `procedures_` with each String-library function's
+    /// signature, called once from the constructor - after this, a call to
+    /// `Len`/`Left`/etc. is resolved, arity/type-checked, and argument-
+    /// converted (including `Str`'s own banker's-rounding of a Float
+    /// argument, oracle-verified: `Str(2.5)` is `2`, `Str(3.5)` is `4`) by
+    /// exactly the same code path as a call to a real user-defined
+    /// procedure - `Codegen` is the only place that needs to know these
+    /// names are special, routing them to `easybasic::runtime::pb*` instead
+    /// of emitting/calling an `f_<name>` function that was never declared.
+    void registerStringLibBuiltins();
     void visitStmt(ast::Stmt& stmt);
     void visitBlock(ast::Block& block);
     /// Like `visitBlock`, but for a body that is genuinely nested inside a

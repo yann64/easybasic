@@ -28,7 +28,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deferred to and closed by M3a/M3b; mutual recursion/`Declare`, call-argument type-checking, and constants in nested blocks deferred further, closed by a dedicated M2-closure pass (see its own notes) |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
-| **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
+| **M4** | Core stdlib: String, Math, Memory, File, Date | In progress - core String library (M4a) done; Math/Memory (`Peek*`/`Poke*`)/File/Date still to come |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
@@ -732,4 +732,94 @@ parameter type, number expected instead of string." (or, for the reverse directi
 argument's family against its corresponding declared parameter's, once arity itself has
 already been validated, reusing the existing per-argument `visitExpr` loop rather than
 adding a second pass over `call.args`.
+
+## M4a Implementation Notes (core String library)
+
+**Scope landed**: `Len`, `Left`, `Right`, `Mid`, `UCase`, `LCase`, `Trim`/`LTrim`/`RTrim`,
+`Str`/`Val`, `StrF`/`ValF`, `Chr`/`Asc` - the highest-value subset of PB's String library.
+`FindString`/`ReplaceString`/`StringField` (genuinely more involved search/split logic)
+and a custom trim character (`Trim(s, char)`) are deliberately deferred to a follow-up
+slice.
+
+**These builtins needed almost no new Sema machinery at all - registering them as fake
+`ProcedureInfo` entries reuses the *entire* existing call-checking pipeline verbatim.**
+`Sema::registerStringLibBuiltins()` (called once from the constructor) inserts each
+function's signature directly into the same `procedures_` table a real `Procedure`
+populates; from that point on, `Len(s)`/`Left(s, n)`/etc. are - as far as
+`Sema::visitCall`, `classify`, and `resolveType` are concerned - indistinguishable from a
+call to a user-defined procedure, getting arity checking, the M2-closure per-argument
+String-vs-numeric type check, and (for `Str`'s Float argument) the exact same banker's-
+rounding target-typed conversion every other call site already gets, all for free.
+`Codegen` is the *only* place that needs to know these names are special
+(`Sema::isStringLibBuiltinName`), routing a call to one of them to its
+`easybasic::runtime::pb*` implementation instead of an `f_<name>` that was never
+declared - `Mid`'s optional `count` and `StrF`'s optional `decimals` reuse the same
+"fewer call-site arguments than `paramSuffixes.size()`" mechanism a real Procedure's own
+default-valued trailing parameters already use, backed by a genuine C++ default
+parameter on the runtime function itself (`pbMid`'s `count = INT64_MAX`, relying on
+`pbUtf16Slice`'s own end-of-string clamping rather than a value that depends on the
+specific string passed, which couldn't be a compile-time-constant C++ default).
+
+**A major, oracle-driven correction made mid-implementation: `pbcompilerc` does not
+UTF-8-decode multi-byte literal text embedded directly in a `.pb` source file.**
+`s.s = "café"` (the source file itself UTF-8-encoded, `é` as its usual 2-byte sequence)
+gave `Len(s)` = 5, not 4, and `Right(s, 1)` produced a single mis-decoded byte, not `é` -
+real PB's compiler reads source text as raw bytes/Latin-1 for string literals, assigning
+each individual byte its own internal UTF-16 code unit, rather than decoding UTF-8
+multi-byte sequences into single Unicode code points. Building the *same* string via
+`s.s = "caf" + Chr(233)` instead gives the correct `Len(s)` = 4 and `Right(s,1)` = `"é"` -
+proving PB's own *internal* string handling is genuinely Unicode-correct; the divergence
+is purely in how the compiler's source-file reader treats literal text. Given `PBString`
+is deliberately UTF-8 internally (an M0 decision that explicitly flagged and accepted
+this exact risk "for any non-ASCII/non-BMP string"), and that matching PB's byte-
+shredding quirk for raw source literals would require *also* not-UTF-8-decoding this
+project's own `.pb` source files (a worse, more confusing default for a new tool doing
+Unicode "properly"), the implementation keeps genuine UTF-8-decoding for `Len`/`Left`/
+`Right`/`Mid`/`Chr`/`Asc` and explicitly does not chase the oracle for this one narrow,
+legacy-encoding-specific case - documented here as a deliberate, understood divergence,
+not an unnoticed gap. Every String-library e2e/differential test consequently sticks to
+ASCII literals plus `Chr()`-constructed Unicode text (which agrees with the oracle
+exactly), never a raw non-ASCII byte embedded directly in a `.pb` file.
+
+**A second, related finding, not yet acted on**: real `Chr()` itself rejects any code
+point outside the Basic Multilingual Plane minus the surrogate range ("Invalid value for
+Chr(), should be between 0 and $D7FF or between $E000 and $FFFF") - meaning a genuine
+UTF-16 surrogate pair is essentially unreachable through legitimate PB code at all (not
+just unlikely in practice). `pbChr`/`pbUtf16Length`/`pbUtf16Slice` still handle an astral
+code point generally (encoding/counting it as a surrogate pair) purely for this
+implementation's own internal consistency - not because any real, valid PB program could
+ever ask for it. `pbChr`'s own missing range validation is a known, minor gap.
+
+**A second, unrelated real regression caught by testing before it shipped**:
+`pbUtf16Slice`'s first implementation detected "the requested slice is already empty"
+one whole code point too late - `Left("Hi", 0)` came back `"H"` instead of `""`, because
+the loop's own "have we reached the end" check only ran *after* unconditionally
+consuming the next code point. Fixed with an upfront `if (endExclusive <= start) return
+{};` guard before the per-code-point loop even starts, verified against exactly this
+case (and the oracle) afterward.
+
+**`Str`'s Float-to-Integer conversion uses the *same* banker's-rounding rule as
+everywhere else in this project - oracle-verified, not assumed to carry over.**
+`Str(2.5)` is `"2"`, `Str(3.5)` is `"4"`, `Str(-2.5)` is `"-2"` - round-half-to-even,
+exactly matching the M0-established rule for every other Float-to-Integer target-typed
+conversion. This is what let `Str`'s builtin registration simply declare its parameter as
+`TypeSuffix::Integer` and get correct rounding for free through the existing `convert()`
+machinery, rather than needing any Str-specific logic.
+
+**`StrF`'s argument is a Float (single precision), not a Double - confirmed by a
+precision-loss artifact, not PB documentation.** `StrF(3.14159)` with no explicit
+decimal count printed `"3.1415901184"` (10 digits, the oracle-verified default decimal
+count) - the trailing digits are exactly what you'd expect from `3.14159` first being
+narrowed to a 32-bit float (losing precision beyond ~7 significant digits) and *then*
+formatted to 10 decimal places, not from the literal's own full double-precision value.
+
+**Deliberately deferred past M4a**: `FindString`/`ReplaceString`/`StringField` (their
+own, more involved search/split semantics, including optional start-position and
+case-sensitivity arguments not yet oracle-verified); a custom trim character for
+`Trim`/`LTrim`/`RTrim` (default space-only trimming verified, the optional second
+argument naming a different character is not); `Chr`'s own BMP-range validation (see
+above); full Unicode case-folding for `UCase`/`LCase` (ASCII-only, safe on arbitrary
+UTF-8 but not a correctness guarantee beyond ASCII); Math, Memory (`Peek*`/`Poke*` -
+the piece M3d's pointer work deferred here specifically), File, and Date - the rest of
+M4.
 

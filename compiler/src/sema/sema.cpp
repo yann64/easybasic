@@ -14,7 +14,53 @@ ValueKind familyOf(TypeSuffix suffix) {
     }
 }
 
-Sema::Sema(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {}
+Sema::Sema(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) { registerStringLibBuiltins(); }
+
+void Sema::registerStringLibBuiltins() {
+    struct Signature {
+        const char* name;
+        TypeSuffix returnSuffix;
+        std::vector<TypeSuffix> paramSuffixes;
+        std::size_t requiredParamCount;
+    };
+    // `Mid`'s optional `count` and `StrF`'s optional `decimals` reuse the
+    // exact same "fewer args than paramSuffixes.size() means the trailing
+    // ones were defaulted" mechanism a real Procedure's own default-valued
+    // parameters already use - Codegen relies on the runtime function
+    // itself supplying the C++-level default (see stringlib.hpp).
+    static const std::vector<Signature> signatures = {
+        {"len", TypeSuffix::Integer, {TypeSuffix::String}, 1},
+        {"left", TypeSuffix::String, {TypeSuffix::String, TypeSuffix::Integer}, 2},
+        {"right", TypeSuffix::String, {TypeSuffix::String, TypeSuffix::Integer}, 2},
+        {"mid", TypeSuffix::String, {TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"ucase", TypeSuffix::String, {TypeSuffix::String}, 1},
+        {"lcase", TypeSuffix::String, {TypeSuffix::String}, 1},
+        {"trim", TypeSuffix::String, {TypeSuffix::String}, 1},
+        {"ltrim", TypeSuffix::String, {TypeSuffix::String}, 1},
+        {"rtrim", TypeSuffix::String, {TypeSuffix::String}, 1},
+        {"str", TypeSuffix::String, {TypeSuffix::Integer}, 1},
+        {"val", TypeSuffix::Integer, {TypeSuffix::String}, 1},
+        {"strf", TypeSuffix::String, {TypeSuffix::Float, TypeSuffix::Integer}, 1},
+        {"valf", TypeSuffix::Float, {TypeSuffix::String}, 1},
+        {"chr", TypeSuffix::String, {TypeSuffix::Integer}, 1},
+        {"asc", TypeSuffix::Integer, {TypeSuffix::String}, 1},
+    };
+    for (const auto& sig : signatures) {
+        ProcedureInfo info;
+        info.returnSuffix = sig.returnSuffix;
+        info.paramSuffixes = sig.paramSuffixes;
+        info.requiredParamCount = sig.requiredParamCount;
+        procedures_[sig.name] = info;
+    }
+}
+
+bool Sema::isStringLibBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "len", "left", "right", "mid", "ucase", "lcase", "trim", "ltrim",
+        "rtrim", "str", "val", "strf", "valf", "chr", "asc",
+    };
+    return names.contains(lowerName);
+}
 
 void Sema::declare(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
                     SourceLoc loc) {

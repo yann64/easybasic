@@ -793,3 +793,71 @@ TEST_CASE("Sema rejects a Procedure declared inside another Procedure", "[sema][
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+// --- M4a: String library builtins ---
+
+TEST_CASE("Sema resolves each String-library builtin's declared return type", "[sema][stringlib]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Define s.s = \"hi\"\n"
+        "Debug Len(s)\nDebug Left(s, 1)\nDebug Val(s)\nDebug ValF(s)\nDebug Str(1)",
+        diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    auto* len = static_cast<ast::DebugStmt*>(module->statements[1].get());
+    auto* left = static_cast<ast::DebugStmt*>(module->statements[2].get());
+    auto* val = static_cast<ast::DebugStmt*>(module->statements[3].get());
+    auto* valf = static_cast<ast::DebugStmt*>(module->statements[4].get());
+    auto* str = static_cast<ast::DebugStmt*>(module->statements[5].get());
+    CHECK(sema.classify(*len->value, false) == ValueKind::IntegerFamily);
+    CHECK(sema.classify(*left->value, false) == ValueKind::StringFamily);
+    CHECK(sema.classify(*val->value, false) == ValueKind::IntegerFamily);
+    CHECK(sema.classify(*valf->value, false) == ValueKind::FloatFamily);
+    CHECK(sema.classify(*str->value, false) == ValueKind::StringFamily);
+}
+
+TEST_CASE("Sema rejects a String-library builtin called with too few arguments", "[sema][stringlib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug Left(\"hi\")", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts Mid's optional count argument being omitted", "[sema][stringlib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug Mid(\"hi\", 1)", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a numeric argument passed to a String-library String parameter", "[sema][stringlib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug Len(5)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a String argument passed to a String-library numeric parameter", "[sema][stringlib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug Left(\"hi\", \"nope\")", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema banker's-rounds a Float argument passed to Str", "[sema][stringlib]") {
+    // Str's parameter is Integer-typed, so a Float argument goes through the
+    // same target-typed conversion as everywhere else (Codegen actually
+    // performs the rounding; this just confirms Sema accepts the call and
+    // classifies it as String, oracle-verified end-to-end via the
+    // stringlib e2e_diff test: Str(2.5) is "2", Str(3.5) is "4").
+    DiagnosticEngine diags;
+    auto module = parse("Debug Str(2.5)", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}

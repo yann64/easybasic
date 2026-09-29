@@ -2,6 +2,7 @@
 
 #include <iomanip>
 #include <sstream>
+#include <unordered_map>
 
 namespace easybasic {
 
@@ -56,6 +57,21 @@ std::string formatFloatLiteral(double value) {
     std::ostringstream oss;
     oss << std::setprecision(17) << value;
     return oss.str();
+}
+
+/// Maps a String-library builtin's lowercased PB name to its
+/// `easybasic::runtime::` implementation, e.g. `"left"` -> `"easybasic::
+/// runtime::pbLeft"` - the one place that needs to know each function's
+/// exact capitalization, since `Sema::isStringLibBuiltinName`'s own table
+/// only needs the lowercased form for lookup.
+std::string stringLibRuntimeName(const std::string& lowerName) {
+    static const std::unordered_map<std::string, std::string> names = {
+        {"len", "pbLen"},     {"left", "pbLeft"},   {"right", "pbRight"}, {"mid", "pbMid"},
+        {"ucase", "pbUCase"}, {"lcase", "pbLCase"}, {"trim", "pbTrim"},   {"ltrim", "pbLTrim"},
+        {"rtrim", "pbRTrim"}, {"str", "pbStr"},     {"val", "pbVal"},     {"strf", "pbStrF"},
+        {"valf", "pbValF"},   {"chr", "pbChr"},     {"asc", "pbAsc"},
+    };
+    return "easybasic::runtime::" + names.at(lowerName);
 }
 
 } // namespace
@@ -263,7 +279,9 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 return "v_" + call.name + ".at(" + genArrayIndexCode(call.name, call.args) + ")";
             }
             const Sema::ProcedureInfo* info = sema_.procedureInfo(call.name);
-            std::string code = "f_" + call.name + "(";
+            std::string code = (Sema::isStringLibBuiltinName(call.name) ? stringLibRuntimeName(call.name)
+                                                                         : "f_" + call.name) +
+                                "(";
             for (std::size_t i = 0; i < call.args.size(); ++i) {
                 if (i != 0) {
                     code += ", ";
