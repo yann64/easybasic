@@ -506,6 +506,12 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             out_ += "    " + genExpr(*exprStmt.expr, false) + ";\n";
             break;
         }
+        case ast::StmtKind::Shared:
+            // Nothing to generate: Sema already resolved each shared name
+            // to the real outer `v_name` (see its own notes) - by the time
+            // Codegen sees a VarRef inside this body, it just emits `v_name`
+            // like any other reference, which already means the right thing.
+            break;
     }
 }
 
@@ -518,11 +524,17 @@ std::string Codegen::generate() {
     out_ += "#include <easybasic/runtime/runtime.hpp>\n\n";
 
     genGlobalConstants();
-    out_ += "\n";
-    genProcedures();
     for (const auto& [name, suffix] : sema_.declarationOrder()) {
         out_ += std::string("static ") + cppTypeFor(suffix) + " v_" + name + "{};\n";
     }
+    out_ += "\n";
+    // Global variable declarations MUST come before procedure definitions:
+    // a `Global`/`Shared`-accessed name is emitted by a procedure body as a
+    // direct reference to this same file-scope `v_name` (see Sema's own
+    // notes on how Global/Shared pre-populate a procedure's local scope
+    // without adding to its locals list) - C++ needs the declaration
+    // visible first, unlike PB itself which has no such ordering concern.
+    genProcedures();
     out_ += "\nint main() {\n";
     for (const auto& stmt : module_.statements) {
         genStmt(*stmt);

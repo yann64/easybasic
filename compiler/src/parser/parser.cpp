@@ -111,8 +111,14 @@ ast::Block Parser::parseBlockUntil(std::initializer_list<TokenKind> terminators)
 }
 
 std::unique_ptr<ast::Stmt> Parser::parseStatement() {
-    if (check(TokenKind::KwDefine)) {
-        return parseDefine();
+    if (check(TokenKind::KwDefine) || check(TokenKind::KwProtected)) {
+        return parseDefine(/*isGlobal=*/false);
+    }
+    if (check(TokenKind::KwGlobal)) {
+        return parseDefine(/*isGlobal=*/true);
+    }
+    if (check(TokenKind::KwShared)) {
+        return parseShared();
     }
     if (check(TokenKind::KwDebug)) {
         return parseDebug();
@@ -174,13 +180,14 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     return nullptr;
 }
 
-std::unique_ptr<ast::Stmt> Parser::parseDefine() {
+std::unique_ptr<ast::Stmt> Parser::parseDefine(bool isGlobal) {
     auto stmt = std::make_unique<ast::DefineStmt>();
     stmt->loc = peek().loc;
-    advance(); // 'Define'
+    stmt->isGlobal = isGlobal;
+    advance(); // 'Define' / 'Global' / 'Protected'
 
     do {
-        const Token& nameTok = expect(TokenKind::Identifier, "after 'Define'");
+        const Token& nameTok = expect(TokenKind::Identifier, "in declaration");
         ast::DefineStmt::Declarator decl;
         decl.spelling = nameTok.text;
         decl.name = toLower(nameTok.text);
@@ -191,6 +198,20 @@ std::unique_ptr<ast::Stmt> Parser::parseDefine() {
         stmt->declarators.push_back(std::move(decl));
     } while (match(TokenKind::Comma));
 
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseShared() {
+    auto stmt = std::make_unique<ast::SharedStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'Shared'
+    do {
+        const Token& nameTok = expect(TokenKind::Identifier, "after 'Shared'");
+        ast::SharedStmt::Name name;
+        name.spelling = nameTok.text;
+        name.name = toLower(nameTok.text);
+        stmt->names.push_back(std::move(name));
+    } while (match(TokenKind::Comma));
     return stmt;
 }
 

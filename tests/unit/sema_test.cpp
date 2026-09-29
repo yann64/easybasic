@@ -188,3 +188,40 @@ TEST_CASE("Sema gives a procedure body its own isolated scope", "[sema][procedur
     // procedure body's unrelated, isolated local of the same name.
     CHECK(sema.typeOf("outer") == TypeSuffix::String);
 }
+
+TEST_CASE("Sema makes a Global variable visible in a procedure with no Shared", "[sema][scope]") {
+    // Oracle-verified: unlike a plain Define, a Global doesn't need Shared
+    // at all - a procedure referencing it resolves to the real outer type.
+    DiagnosticEngine diags;
+    auto module =
+        parse("Global g.s = \"hi\"\nProcedure Touch()\nDebug g\nEndProcedure", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    CHECK(sema.typeOf("g") == TypeSuffix::String);
+}
+
+TEST_CASE("Sema's Shared pulls in a plain Define'd variable's real type", "[sema][scope]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Define d.s = \"hi\"\nProcedure Touch()\nShared d\nDebug d\nEndProcedure", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects Shared for a name that was never declared", "[sema][scope]") {
+    DiagnosticEngine diags;
+    auto module = parse("Procedure Touch()\nShared nope\nDebug nope\nEndProcedure", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects Shared used outside a procedure", "[sema][scope]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define d.i = 1\nShared d", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

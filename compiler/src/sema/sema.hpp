@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -128,6 +129,17 @@ private:
     /// error (with a recovery fallback so later statements still resolve
     /// sensibly) if `name` was never declared.
     void visitCall(ast::CallExpr& call);
+    /// Pulls an outer-scope (`outerScope`) name into the *current* (already
+    /// swapped-in, procedure-local) `symbols_` for type resolution, without
+    /// adding it to `order_` - see ast::DefineStmt::isGlobal's and
+    /// ast::SharedStmt's own doc comments for why this is exactly what both
+    /// `Global` auto-visibility and `Shared` need, and why deliberately
+    /// *not* adding it to `order_` is what makes Codegen reference the real
+    /// outer C++ variable instead of declaring a shadowing procedure-local
+    /// copy (see Codegen::genProcedureDecl's own notes).
+    void bringIntoScope(const std::unordered_map<std::string, TypeSuffix>& outerScope,
+                         const std::string& lowerName, const std::string& spelling, SourceLoc loc,
+                         const char* directiveNameForError);
 
     DiagnosticEngine& diagnostics_;
     std::unordered_map<std::string, TypeSuffix> symbols_;
@@ -142,6 +154,17 @@ private:
     /// nest, so a single flag - not a stack - is enough).
     TypeSuffix currentProcedureReturnSuffix_ = TypeSuffix::Integer;
     bool insideProcedure_ = false;
+    /// Every `Global`-declared name seen so far (module scope only - PB
+    /// requires declare-before-use even for procedures, oracle-verified, so
+    /// "seen so far" is the right set to pre-populate a procedure's scope
+    /// with). Names only; the type itself lives in the outer `symbols_`
+    /// captured at the time a `ProcedureDecl` is processed.
+    std::unordered_set<std::string> globalNames_;
+    /// The module-level scope, valid only while a `ProcedureDecl`'s body is
+    /// being visited (i.e. while `symbols_`/`order_` hold the swapped-in
+    /// local scope) - what a `Shared` statement inside that body resolves
+    /// names against. Null outside that window.
+    const std::unordered_map<std::string, TypeSuffix>* outerScopeForShared_ = nullptr;
 };
 
 } // namespace easybasic

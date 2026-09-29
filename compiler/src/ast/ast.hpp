@@ -111,7 +111,7 @@ enum class StmtKind {
     Define, Assign, Debug,
     If, Select, For, While, Repeat,
     Break, Continue, EnableExplicit, ConstDecl, Enumeration,
-    ProcedureDecl, ProcedureReturn, ExprStmt,
+    ProcedureDecl, ProcedureReturn, ExprStmt, Shared,
 };
 
 /// Base of every statement node.
@@ -133,7 +133,11 @@ using Block = std::vector<std::unique_ptr<Stmt>>;
 
 /// One `Define a.i[, b.s = "x", ...]` statement. PB allows several
 /// comma-separated declarators per Define, each with its own optional
-/// initializer.
+/// initializer. `Protected` parses to this same node (`isGlobal` stays
+/// false) - oracle-verified to behave just like an ordinary local `Define`
+/// in every case actually tested (see docs/architecture/roadmap.md's M3
+/// notes for the one, deliberately-unexplored edge case: a `Protected`
+/// meant to shadow an existing same-named `Global`).
 struct DefineStmt : Stmt {
     DefineStmt() : Stmt(StmtKind::Define) {}
     struct Declarator {
@@ -143,6 +147,26 @@ struct DefineStmt : Stmt {
         std::unique_ptr<Expr> init; ///< May be null (default-initialized).
     };
     std::vector<Declarator> declarators;
+    /// `Global a.i[, ...]` - oracle-verified: unlike a plain top-level
+    /// `Define`, a `Global` variable is automatically visible and writable
+    /// from *any* procedure with no `Shared` needed at all (see Sema's own
+    /// notes on how this is modeled without any Codegen-level distinction
+    /// between Global and plain top-level variables).
+    bool isGlobal = false;
+};
+
+/// `Shared name[, name2, ...]` inside a procedure body - opts that specific
+/// procedure into accessing an otherwise-invisible top-level `Define`d (or
+/// `Global`) variable by its real name, aliasing the same underlying
+/// storage (oracle-verified: mutations through the shared name are visible
+/// to the caller afterward).
+struct SharedStmt : Stmt {
+    SharedStmt() : Stmt(StmtKind::Shared) {}
+    struct Name {
+        std::string name;
+        std::string spelling;
+    };
+    std::vector<Name> names;
 };
 
 /// `name[.suffix] = expr`.

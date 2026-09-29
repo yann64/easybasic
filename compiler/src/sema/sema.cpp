@@ -75,9 +75,23 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             for (auto& decl : def.declarators) {
                 TypeSuffix suffix = decl.suffix == TypeSuffix::None ? TypeSuffix::Integer : decl.suffix;
                 declare(decl.name, decl.spelling, suffix, def.loc);
+                if (def.isGlobal) {
+                    globalNames_.insert(decl.name);
+                }
                 if (decl.init) {
                     visitExpr(*decl.init);
                     checkAssignable(decl.spelling, suffix, *decl.init, def.loc);
+                }
+            }
+            break;
+        }
+        case ast::StmtKind::Shared: {
+            auto& shared = static_cast<ast::SharedStmt&>(stmt);
+            for (auto& name : shared.names) {
+                if (outerScopeForShared_ != nullptr) {
+                    bringIntoScope(*outerScopeForShared_, name.name, name.spelling, shared.loc, "Shared");
+                } else {
+                    diagnostics_.error(shared.loc, "'Shared' is only valid inside a procedure");
                 }
             }
             break;
@@ -221,15 +235,33 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 declare(param.name, param.spelling, paramSuffix, proc.loc);
             }
 
+            // `Global` variables are auto-visible in every procedure with no
+            // `Shared` needed (oracle-verified) - pre-populate for type
+            // resolution, but never overwrite a same-named parameter, and
+            // deliberately without adding to `order_` (see
+            // Sema::bringIntoScope's own doc comment for why).
+            for (const auto& globalName : globalNames_) {
+                if (symbols_.contains(globalName)) {
+                    continue;
+                }
+                auto globalIt = savedSymbols.find(globalName);
+                if (globalIt != savedSymbols.end()) {
+                    symbols_[globalName] = globalIt->second;
+                }
+            }
+
             bool savedInside = insideProcedure_;
             TypeSuffix savedReturnSuffix = currentProcedureReturnSuffix_;
+            const std::unordered_map<std::string, TypeSuffix>* savedOuterForShared = outerScopeForShared_;
             insideProcedure_ = true;
             currentProcedureReturnSuffix_ = returnSuffix;
+            outerScopeForShared_ = &savedSymbols;
 
             visitBlock(proc.body);
 
             insideProcedure_ = savedInside;
             currentProcedureReturnSuffix_ = savedReturnSuffix;
+            outerScopeForShared_ = savedOuterForShared;
 
             procedures_[proc.name].locals = order_; // params first, then any body-internal locals
 
@@ -293,6 +325,20 @@ void Sema::visitExpr(ast::Expr& expr) {
         case ast::ExprKind::StringLiteral:
             break;
     }
+}
+
+void Sema::bringIntoScope(const std::unordered_map<std::string, TypeSuffix>& outerScope,
+                           const std::string& lowerName, const std::string& spelling, SourceLoc loc,
+                           const char* directiveNameForError) {
+    auto it = outerScope.find(lowerName);
+    TypeSuffix suffix = TypeSuffix::Integer;
+    if (it == outerScope.end()) {
+        diagnostics_.error(loc, "'" + spelling + "' is not declared, cannot be used with '" +
+                                     directiveNameForError + "'");
+    } else {
+        suffix = it->second;
+    }
+    symbols_[lowerName] = suffix; // Deliberately NOT added to order_ - see this method's own doc comment.
 }
 
 void Sema::visitCall(ast::CallExpr& call) {

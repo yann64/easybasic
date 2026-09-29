@@ -23,7 +23,12 @@ public:
 private:
     // --- statements ---
     std::unique_ptr<ast::Stmt> parseStatement();
-    std::unique_ptr<ast::Stmt> parseDefine();
+    /// `isGlobal` is true only for the `Global` keyword - `Define` and
+    /// `Protected` both parse to the same node with `isGlobal` false (see
+    /// ast::DefineStmt's own doc comment for why `Protected` needs nothing
+    /// more than that).
+    std::unique_ptr<ast::Stmt> parseDefine(bool isGlobal);
+    std::unique_ptr<ast::Stmt> parseShared();
     std::unique_ptr<ast::Stmt> parseDebug();
     std::unique_ptr<ast::Stmt> parseAssignmentOrConstDecl();
     std::unique_ptr<ast::Stmt> parseIf();

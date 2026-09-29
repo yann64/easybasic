@@ -27,7 +27,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | Done (see M0 notes below) |
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deliberately deferred to M3 |
-| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Not started |
+| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` done (see M3a notes below); `Structure`/pointers/`NewList`/`NewMap`/`Dim` still to come |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
@@ -259,4 +259,58 @@ for call arguments is a follow-up); a constant or procedure declared *inside* an
 If/For/While/Repeat body is unsupported by `Codegen` (same top-level-only limitation as
 constants, see M1's notes) and is additionally not even fully specified by PB itself,
 since procedures can't nest in the first place.
+
+## M3a Implementation Notes (Global/Shared/Protected)
+
+**Scope landed**: `Global` (module-scope variables automatically visible/writable from
+every procedure), `Shared` (opts a specific procedure into an otherwise-invisible
+top-level `Define`d - or `Global` - variable by name), and `Protected` (parses to the
+same node as `Define`, since every case actually tested behaved identically to an
+ordinary procedure-local `Define`).
+
+**The key oracle-verified surprise: `Global` needs no `Shared` at all - it's
+unconditionally visible everywhere.** Before testing this, the natural assumption
+(carried over from `Shared`'s name) was that `Global` declares the variable but
+`Shared` is still required inside each procedure that wants to touch it. Verified
+otherwise directly: a procedure incrementing a `Global g.i` with no `Shared` declaration
+in sight still mutated the real outer `g` (`10` -> `11`, visible from the caller
+afterward) - `Shared` turned out to be for a *different* case entirely: opting into a
+plain top-level `Define`'d variable (which M2 already established procedures cannot see
+by default) using the *same* underlying storage, confirmed separately (a `Shared d`
+inside a procedure incrementing a plain `Define d.i = 100` also correctly mutated the
+outer `d`).
+
+**This has a pleasant consequence for the implementation**: since every top-level
+variable - `Define`'d or `Global`'d - already becomes a real, ordinary C++ file-scope
+global in `pbcxx`'s generated output (`Codegen` has never distinguished PB-level
+visibility rules at the storage level, only Sema enforces them), **`Global` and `Shared`
+need zero `Codegen` changes** - only `Sema` needs to know which names a given procedure
+body is allowed to *resolve* without triggering its usual "unshared name gets a fresh,
+isolated local" behavior (M2's `declareImplicit`/scope-swap). Concretely:
+`Sema::bringIntoScope` inserts the resolved name+type directly into the procedure's
+already-swapped-in local `symbols_` map, but **deliberately never adds it to `order_`**
+(the list `Codegen` turns into a function's own local variable declarations) - so
+`Codegen` naturally just emits a direct `v_name` reference inside the procedure body,
+which - now that global variable declarations are emitted *before* procedure
+definitions in the generated C++ (reordered specifically for this) - correctly resolves
+to the real, single, shared C++ global rather than shadowing it with a fresh
+zero-initialized local. `Global`'s auto-visibility is implemented as a simple
+pre-population of every currently-known `Global` name (tracked in `globalNames_`) into a
+procedure's scope right after its parameters are declared (params take precedence -
+never overwritten); `Shared name` triggers the identical `bringIntoScope` lookup against
+the outer scope captured (as a raw, appropriately-scoped-lifetime pointer,
+`outerScopeForShared_`) at the moment that specific procedure's body started being
+visited.
+
+**Deliberately not chased down**: the exact interaction between `Protected` and an
+already-existing same-named `Global` (does `Protected x` inside a procedure create a
+genuinely separate local that shadows a `Global x`, the way a plain `Define x` inside
+that same procedure implicitly *would* under M2's model, since `Global` pre-population
+only happens for names not already occupied by a parameter - not, as written, checked
+against a `Protected`/`Define` collision specifically)? Every scenario actually tested
+behaved identically for `Protected` and `Define`, and this edge case is rare enough in
+real PB code that chasing it further wasn't worth the time against M3's remaining, much
+larger scope (`Structure`, pointers, `NewList`/`NewMap`, static `Dim` arrays). A `Global`
+declared *inside* a procedure body (as opposed to at module scope) is untested and not
+specifically supported - PB itself may or may not even allow this; not yet investigated.
 
