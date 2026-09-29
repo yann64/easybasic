@@ -217,6 +217,48 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 // `name()` reads the List's current element (M3e).
                 return cppVarName(call.name) + ".current()";
             }
+            if (Sema::isMapBuiltinName(call.name)) {
+                const auto& mapCall = static_cast<const ast::CallExpr&>(*call.args.front());
+                std::string mapVar = cppVarName(mapCall.name);
+                if (call.name == "addmapelement") {
+                    return "(" + mapVar + ".addMapElement(" + genExpr(*call.args[1], false) +
+                           "), static_cast<std::int64_t>(0))";
+                }
+                if (call.name == "deletemapelement") {
+                    if (call.args.size() == 2) {
+                        return "(" + mapVar + ".deleteKey(" + genExpr(*call.args[1], false) +
+                               "), static_cast<std::int64_t>(0))";
+                    }
+                    return "(" + mapVar + ".deleteCurrent(), static_cast<std::int64_t>(0))";
+                }
+                if (call.name == "clearmap") {
+                    return "(" + mapVar + ".clear(), static_cast<std::int64_t>(0))";
+                }
+                if (call.name == "mapsize") {
+                    return mapVar + ".size()";
+                }
+                if (call.name == "mapkey") {
+                    return mapVar + ".mapKey()";
+                }
+                if (call.name == "resetmap") {
+                    return "(" + mapVar + ".resetForEach(), static_cast<std::int64_t>(0))";
+                }
+                if (call.name == "nextmapelement") {
+                    return "static_cast<std::int64_t>(" + mapVar + ".nextElement())";
+                }
+                // findmapelement
+                return "static_cast<std::int64_t>(" + mapVar + ".findMapElement(" +
+                       genExpr(*call.args[1], false) + "))";
+            }
+            if (sema_.mapInfo(call.name) != nullptr) {
+                // `name()` reads the Map's current element; `name(key)`
+                // reads/auto-creates by key (M3f).
+                std::string mapVar = cppVarName(call.name);
+                if (call.args.empty()) {
+                    return mapVar + ".current()";
+                }
+                return mapVar + ".access(" + genExpr(*call.args.front(), false) + ")";
+            }
             if (sema_.arrayInfo(call.name) != nullptr) {
                 return "v_" + call.name + ".at(" + genArrayIndexCode(call.name, call.args) + ")";
             }
@@ -691,6 +733,28 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
                     out_ += "    " + cppVarName(indexAssign.name) + ".current() = " + valueCode + ";\n";
                     break;
                 }
+                // `name() = expr` also sets a Map's *current* element (M3f).
+                if (const Sema::MapInfo* mapInfo = sema_.mapInfo(indexAssign.name)) {
+                    bool floatCtx = familyOf(mapInfo->elementSuffix) == ValueKind::FloatFamily;
+                    std::string valueCode = convert(genExpr(*indexAssign.value, floatCtx),
+                                                     sema_.classify(*indexAssign.value, floatCtx),
+                                                     mapInfo->elementSuffix);
+                    out_ += "    " + cppVarName(indexAssign.name) + ".current() = " + valueCode + ";\n";
+                    break;
+                }
+            }
+            if (indexAssign.indices.size() == 1) {
+                if (const Sema::MapInfo* mapInfo = sema_.mapInfo(indexAssign.name)) {
+                    // `name(key) = expr` - writes (auto-creating if absent)
+                    // the Map's element at `key` (M3f).
+                    bool floatCtx = familyOf(mapInfo->elementSuffix) == ValueKind::FloatFamily;
+                    std::string valueCode = convert(genExpr(*indexAssign.value, floatCtx),
+                                                     sema_.classify(*indexAssign.value, floatCtx),
+                                                     mapInfo->elementSuffix);
+                    out_ += "    " + cppVarName(indexAssign.name) + ".access(" +
+                            genExpr(*indexAssign.indices.front(), false) + ") = " + valueCode + ";\n";
+                    break;
+                }
             }
             const Sema::ArrayInfo* info = sema_.arrayInfo(indexAssign.name);
             TypeSuffix elemSuffix = info != nullptr ? info->elementSuffix : TypeSuffix::Integer;
@@ -701,9 +765,11 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
                     genArrayIndexCode(indexAssign.name, indexAssign.indices) + ") = " + valueCode + ";\n";
             break;
         }
-        case ast::StmtKind::StructureDecl:
-            break; // Already emitted as a real C++ struct by genStructures().
+        case ast::StmtKind::StructureDecl: // NOLINT(bugprone-branch-clone) - already emitted by genStructures().
+            break;
         case ast::StmtKind::NewList: // NOLINT(bugprone-branch-clone) - already emitted by generate() itself.
+            break;
+        case ast::StmtKind::NewMap: // NOLINT(bugprone-branch-clone) - already emitted by generate() itself.
             break;
         case ast::StmtKind::ForEach: {
             const auto& forEach = static_cast<const ast::ForEachStmt&>(stmt);
@@ -759,6 +825,12 @@ std::string Codegen::generate() {
                                     ? cppTypeFor(info.elementSuffix, info.elementStructName)
                                     : cppTypeFor(info.elementSuffix);
         out_ += "static easybasic::runtime::PBList<" + elemType + "> " + cppVarName(name) + ";\n";
+    }
+    for (const auto& [name, info] : sema_.mapDeclarationOrder()) {
+        std::string elemType = info.elementSuffix == TypeSuffix::Struct
+                                    ? cppTypeFor(info.elementSuffix, info.elementStructName)
+                                    : cppTypeFor(info.elementSuffix);
+        out_ += "static easybasic::runtime::PBMap<" + elemType + "> " + cppVarName(name) + ";\n";
     }
     out_ += "\n";
     // Global variable declarations MUST come before procedure definitions:

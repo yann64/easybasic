@@ -171,6 +171,9 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwNewList)) {
         return parseNewList();
     }
+    if (check(TokenKind::KwNewMap)) {
+        return parseNewMap();
+    }
     if (check(TokenKind::KwForEach)) {
         return parseForEach();
     }
@@ -264,6 +267,21 @@ std::unique_ptr<ast::Stmt> Parser::parseNewList() {
     stmt->structTypeSpelling = nameTok.structSuffixSpelling;
     expect(TokenKind::LParen, "after list name");
     expect(TokenKind::RParen, "to close 'NewList' (oracle-verified: only a single list per statement)");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseNewMap() {
+    auto stmt = std::make_unique<ast::NewMapStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'NewMap'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'NewMap'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    stmt->suffix = nameTok.suffix;
+    stmt->structTypeName = nameTok.structSuffix;
+    stmt->structTypeSpelling = nameTok.structSuffixSpelling;
+    expect(TokenKind::LParen, "after map name");
+    expect(TokenKind::RParen, "to close 'NewMap' (oracle-verified: only a single map per statement)");
     return stmt;
 }
 

@@ -54,7 +54,8 @@ enum class TokenKind {
     KwStructure,
     KwEndStructure,
     KwNewList,   ///< `NewList name.type()` - declares a List (M3e).
-    KwForEach,   ///< `ForEach name() ... Next` - iterates a List/Map (M3e).
+    KwNewMap,    ///< `NewMap name.type()` - declares a Map (M3f).
+    KwForEach,   ///< `ForEach name() ... Next` - iterates a List/Map (M3e/M3f).
     KwAnd,
     KwOr,
     KwNot,

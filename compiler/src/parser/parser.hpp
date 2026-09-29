@@ -32,6 +32,7 @@ private:
     std::unique_ptr<ast::Stmt> parseDim();
     std::unique_ptr<ast::Stmt> parseStructureDecl();
     std::unique_ptr<ast::Stmt> parseNewList();
+    std::unique_ptr<ast::Stmt> parseNewMap();
     /// `ForEach name() ... Next` - `name` is always a bare, already-declared
     /// List (see ast::ForEachStmt's own doc comment), so this parses a plain
     /// identifier and requires the `()`, rather than a general expression.

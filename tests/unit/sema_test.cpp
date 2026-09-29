@@ -548,3 +548,123 @@ TEST_CASE("Sema visits SelectElement's index argument as an ordinary expression"
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+TEST_CASE("Sema defaults a bare NewMap to an Integer element type", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m()", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    const auto* info = sema.mapInfo("m");
+    REQUIRE(info != nullptr);
+    CHECK(info->elementSuffix == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema rejects redeclaring the same Map name", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m.i()\nNewMap m.s()", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts name(key) as reading a Map's element type", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m.i()\nDebug m(\"x\")", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    auto* dbg = static_cast<ast::DebugStmt*>(module->statements[1].get());
+    CHECK(sema.classify(*dbg->value, false) == ValueKind::IntegerFamily);
+}
+
+TEST_CASE("Sema accepts name() = expr as setting a Map's current element", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m.i()\nAddMapElement(m(), \"x\")\nm() = 5", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts name(key) = expr as a Map write, auto-creating the key", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m.i()\nm(\"x\") = 5", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a non-String Map key, exactly like real PB", "[sema][map]") {
+    // Oracle-verified (`pbcompilerc`): "Error: ... A string expression is
+    // expected ('number' not allowed)." for `m(5) = 1`.
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m.i()\nm(5) = 1", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves MapKey(...) as a String-family expression", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m.i()\nAddMapElement(m(), \"x\")\nDebug MapKey(m())", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    auto* dbg = static_cast<ast::DebugStmt*>(module->statements[2].get());
+    CHECK(sema.classify(*dbg->value, false) == ValueKind::StringFamily);
+}
+
+TEST_CASE("Sema resolves a field access through a Map of Structures", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Structure Point\nx.i\nEndStructure\n"
+        "NewMap pts.Point()\npts(\"a\")\\x = 3\nDebug pts(\"a\")\\x",
+        diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a Map built-in given a non-Map argument", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define x.i = 5\nAddMapElement(x, \"k\")", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts ForEach over a declared Map and resolves its body", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m.i()\nm(\"x\") = 1\nForEach m()\nDebug m()\nNext", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema recognizes the Map built-ins by name", "[sema][map]") {
+    CHECK(Sema::isMapBuiltinName("addmapelement"));
+    CHECK(Sema::isMapBuiltinName("deletemapelement"));
+    CHECK(Sema::isMapBuiltinName("clearmap"));
+    CHECK(Sema::isMapBuiltinName("mapsize"));
+    CHECK(Sema::isMapBuiltinName("mapkey"));
+    CHECK(Sema::isMapBuiltinName("resetmap"));
+    CHECK(Sema::isMapBuiltinName("nextmapelement"));
+    CHECK(Sema::isMapBuiltinName("findmapelement"));
+    CHECK_FALSE(Sema::isMapBuiltinName("somethingelse"));
+}
+
+TEST_CASE("Sema accepts DeleteMapElement's 1-arg and 2-arg forms", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m.i()\nm(\"x\") = 1\nDeleteMapElement(m())\nDeleteMapElement(m(), \"x\")", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a non-String key argument to FindMapElement", "[sema][map]") {
+    DiagnosticEngine diags;
+    auto module = parse("NewMap m.i()\nFindMapElement(m(), 5)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

@@ -27,7 +27,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M0** | Repo/CMake/CI skeleton; minimal lexer+parser+codegen for `Define`, `Debug`, integer/float/string literals, assignment, `+ - * / %`; trivial Sema; `PBString` skeleton | Done (see M0 notes below) |
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deliberately deferred to M3 |
-| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | In progress - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), and `NewList` (M3e) done; `NewMap` still to come |
+| **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Not started |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
@@ -591,4 +591,67 @@ it shares `ForEach` and much of the cursor vocabulary conceptually); passing a L
 procedure (PB's `List Name.type()` parameter syntax, distinct from a plain scalar
 parameter - the same kind of gap M3b already left open for arrays); `CopyList`/
 `SwapList`/`MergeLists`; `ArrayList`/`ArrayToList`-style conversions.
+
+## M3f Implementation Notes (`NewMap`) - M3 complete
+
+**Scope landed**: `NewMap name.type()` declarations (primitive or Structure element
+types), direct-by-key access `name(key)` (read/write, auto-creating the key if absent),
+`name()` (the current cursor's element, identical in shape to a List's own), `ForEach
+name() ... Next`, `AddMapElement`/`FindMapElement`/`DeleteMapElement` (both its 1-arg
+cursor and 2-arg by-key forms)/`ClearMap`/`MapSize`/`MapKey`/`ResetMap`/`NextMapElement`.
+This is the last piece of M3 - `Structure`, pointers, static `Dim` arrays, `Global`/
+`Shared`/`Protected`, `NewList`, and now `NewMap` are all done.
+
+**A Map genuinely has *two* element-access shapes sharing one disambiguation problem
+each with something else already in the language** - oracle-verified by testing, not
+assumed: `name()` (zero args) is identical in shape to a List's own current-element
+access (extending the same `listInfo`-then-`mapInfo` check already used for `ForEach`'s
+own target), while `name(key)` (exactly one arg) is genuinely ambiguous with a 1D array
+read at parse time - the exact same `Name(args)` shape `ArrayInfo` already disambiguates
+against a procedure call (M3b). Both share the same layered-lookup pattern: `mapInfo`
+is checked before `arrayInfo` in `visitExpr`'s `Call` case, `resolveType`'s `Call` case,
+and `classify`'s `Call` case (in that priority order alongside `listInfo`), and in
+`IndexAssignStmt`'s handling for the write side. No new AST node was needed for either
+form - `CallExpr`/`IndexAssignStmt` already cover both arities.
+
+**A wrong assumption caught immediately by probing before implementing anything**: `-k`
+(syntax-check-only) accepts *any* `Identifier(args)` shape, including a function that
+doesn't exist at all (verified: `TotallyBogusFunctionXYZ(m())` syntax-checks fine) - so
+an early pass at confirming which Map iteration functions are real by just running `-k`
+against candidate names was worthless. The only reliable check is a full `-d` compile
+and *run*, which is what caught that `FirstMapElement`/`LastMapElement`/
+`PreviousMapElement` are **not real PB functions** (real error: "... is not a function,
+array, list, map or macro.") - a Map only supports forward iteration via
+`NextMapElement`, unlike a List's full First/Last/Next/Previous set, because a hash map
+has no well-ordered "previous" or "last" to speak of. Recorded here as a reusable lesson
+for future oracle work, not just a M3f-specific fact: `-k` verifies grammar, never that a
+called name is real.
+
+**`AddMapElement` has a genuinely surprising, oracle-verified quirk that plain
+`name(key)` access does *not* share**: `AddMapElement(map(), key)` always resets the
+target key's value to zero, *even when the key already existed* (verified: setting a key
+to 1, then calling `AddMapElement` on that same key again, then reading it back gives 0,
+not 1) - whereas `name(key)` on an existing key preserves its current value (a standard
+"auto-vivifying" access, verified separately). `PBMap::addMapElement` vs. `PBMap::access`
+(`runtime/include/.../pbmap.hpp`) encode this exact distinction; getting it backwards
+would have been an easy, plausible-looking bug this project's oracle-first methodology
+caught before it shipped.
+
+**`PBMap<T>` is a `std::list<Entry>` plus an `unordered_map<string, iterator>` index,
+not `std::unordered_map` directly** - real PB's own Map iteration order is hash-bucket-
+dependent and explicitly not something this project set out to replicate bit-for-bit (a
+well-formed PB program has no business depending on it either); giving *this*
+implementation's own `ForEach`/`NextMapElement` iteration a stable, deterministic
+(insertion) order instead is strictly more useful for testing, at the cost of one extra
+pointer indirection per lookup - a good trade. Cursor semantics (`resetForEach`/
+`nextElement`/`current`) are written to be textually interchangeable with `PBList`'s own
+so `Codegen::genStmt`'s `ForEach` case needs zero Map-specific logic: it already just
+calls those two method names on whatever `cppVarName` resolves to, List or Map alike.
+
+**Deliberately deferred past M3f (and hence past all of M3)**: passing a Map to a
+procedure (the same kind of gap M3b left open for arrays and M3e left open for Lists);
+`CopyMap`/`RenameMapElement`; `PolymorphicListElement`-family constructs (rare, tied to
+PB's OOP-adjacent features this project doesn't model); a Map key type other than String
+(not supported by real PB itself, so nothing was actually deferred here - confirmed
+oracle-verified, not assumed).
 

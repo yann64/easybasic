@@ -148,6 +148,31 @@ public:
     /// way Sema's own `visitExpr` does.
     static bool isListBuiltinName(const std::string& lowerName);
 
+    /// A declared Map's element type (M3f). Unlike a List, a Map supports
+    /// *two* element-access shapes: `name()` (the current cursor's value,
+    /// identical to a List) and `name(key)` (direct access by a String key -
+    /// oracle-verified: auto-creates the key with a zero value if absent,
+    /// else keeps its existing value; either way moves the cursor to it,
+    /// same as `FindMapElement`). Both are still just a `CallExpr` (zero or
+    /// one arg respectively) - the one-arg form is genuinely ambiguous with
+    /// a 1D array read at parse time, disambiguated by checking this table
+    /// before `ArrayInfo`.
+    struct MapInfo {
+        TypeSuffix elementSuffix = TypeSuffix::Integer; ///< Struct means look at elementStructName instead.
+        std::string elementStructName; ///< Lowercased; meaningful only if elementSuffix == Struct.
+    };
+    const MapInfo* mapInfo(const std::string& lowerName) const;
+    /// Every declared Map, in first-seen order, for Codegen to emit as a
+    /// global `easybasic::runtime::PBMap<T>` - mirrors `listDeclarationOrder`'s
+    /// role for Lists.
+    const std::vector<std::pair<std::string, MapInfo>>& mapDeclarationOrder() const { return mapOrder_; }
+
+    /// True for the Map built-ins recognized by name (`AddMapElement`,
+    /// `DeleteMapElement`, `ClearMap`, `MapSize`, `MapKey`, `ResetMap`,
+    /// `NextMapElement`, `FindMapElement`) - mirrors `isListBuiltinName`'s
+    /// own role.
+    static bool isMapBuiltinName(const std::string& lowerName);
+
     /// A resolved type: either one of PB's 11 primitive suffixes, or -
     /// when `suffix == TypeSuffix::Struct` - a named Structure (looked up
     /// via `structureInfo(structName)`). Every variable, array element,
@@ -228,6 +253,10 @@ private:
     /// without an explicit Str()/Val() conversion (not modeled yet - M4).
     void checkAssignable(const std::string& targetSpelling, TypeSuffix targetSuffix,
                           const ast::Expr& value, SourceLoc loc);
+    /// A Map's key must be a String expression (oracle-verified error text:
+    /// "A string expression is expected"). `keyExpr` is assumed to already
+    /// have been visited (for implicit-declaration purposes) by the caller.
+    void checkMapKey(const ast::Expr& keyExpr, SourceLoc loc) const;
     /// Walks a condition expression (If/While/Until), flagging logical
     /// `XOr` - see BinaryOp::LogicalXOr's own doc comment for why it's not
     /// yet trusted - and resolving/declaring any variables it references.
@@ -275,6 +304,15 @@ private:
     /// `visitListBuiltinCall` (after checking its argument is a bare,
     /// zero-arg `name()`) and by `ForEachStmt`'s own handling.
     const ListInfo* requireList(const std::string& lowerName, const std::string& spelling, SourceLoc loc) const;
+    /// Handles one of the names `isMapBuiltinName` recognizes, returning
+    /// true if `call.name` was one of them. Every one of these takes a bare
+    /// `name()` as its first argument (naming the Map itself, exactly like
+    /// `visitListBuiltinCall`'s own first argument); `AddMapElement`/
+    /// `FindMapElement`/the 2-arg form of `DeleteMapElement` additionally
+    /// take a key argument, visited normally and required to classify as
+    /// String-family (oracle-verified: `m(5) = 1` is rejected with "A
+    /// string expression is expected").
+    bool visitMapBuiltinCall(ast::CallExpr& call);
     /// Validates and builds the `ResolvedType` a pointer declaration's own
     /// pointee-describing fields (`suffix`/`structTypeName`/
     /// `structTypeSpelling`, shared field names between
@@ -300,6 +338,8 @@ private:
     std::vector<std::pair<std::string, ArrayInfo>> arrayOrder_;
     std::unordered_map<std::string, ListInfo> lists_;
     std::vector<std::pair<std::string, ListInfo>> listOrder_;
+    std::unordered_map<std::string, MapInfo> maps_;
+    std::vector<std::pair<std::string, MapInfo>> mapOrder_;
     /// A declared variable's Structure type name, keyed by the variable's
     /// lowercased name, present only when that variable's entry in
     /// `symbols_` is `TypeSuffix::Struct`.

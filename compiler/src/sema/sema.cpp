@@ -161,9 +161,29 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             listOrder_.emplace_back(newList.name, info);
             break;
         }
+        case ast::StmtKind::NewMap: {
+            auto& newMap = static_cast<ast::NewMapStmt&>(stmt);
+            if (maps_.contains(newMap.name)) {
+                diagnostics_.error(newMap.loc, "'" + newMap.spelling + "' is already declared as a Map");
+                break;
+            }
+            MapInfo info;
+            info.elementSuffix = newMap.suffix == TypeSuffix::None ? TypeSuffix::Integer : newMap.suffix;
+            if (info.elementSuffix == TypeSuffix::Struct) {
+                if (!structures_.contains(newMap.structTypeName)) {
+                    diagnostics_.error(newMap.loc, "'" + newMap.structTypeSpelling + "' is not a declared Structure");
+                }
+                info.elementStructName = newMap.structTypeName;
+            }
+            maps_.emplace(newMap.name, info);
+            mapOrder_.emplace_back(newMap.name, info);
+            break;
+        }
         case ast::StmtKind::ForEach: {
             auto& forEach = static_cast<ast::ForEachStmt&>(stmt);
-            requireList(forEach.name, forEach.spelling, forEach.loc);
+            if (listInfo(forEach.name) == nullptr && mapInfo(forEach.name) == nullptr) {
+                diagnostics_.error(forEach.loc, "'" + forEach.spelling + "' is not a declared List or Map");
+            }
             visitBlock(forEach.body);
             break;
         }
@@ -181,6 +201,33 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                                                 "()', a Structure element - assign to one of its own fields instead");
                     } else {
                         checkAssignable(indexAssign.spelling, listInfoPtr->elementSuffix, *indexAssign.value,
+                                         indexAssign.loc);
+                    }
+                    break;
+                }
+                // `name() = expr` is also how a Map's *current* element is
+                // set (M3f) - identical shape to a List's own zero-arg form.
+                if (const MapInfo* mapInfoPtr = mapInfo(indexAssign.name)) {
+                    if (mapInfoPtr->elementSuffix == TypeSuffix::Struct) {
+                        diagnostics_.error(indexAssign.loc,
+                                            "cannot assign directly to '" + indexAssign.spelling +
+                                                "()', a Structure element - assign to one of its own fields instead");
+                    } else {
+                        checkAssignable(indexAssign.spelling, mapInfoPtr->elementSuffix, *indexAssign.value,
+                                         indexAssign.loc);
+                    }
+                    break;
+                }
+            }
+            if (indexAssign.indices.size() == 1) {
+                if (const MapInfo* mapInfoPtr = mapInfo(indexAssign.name)) {
+                    checkMapKey(*indexAssign.indices.front(), indexAssign.loc);
+                    if (mapInfoPtr->elementSuffix == TypeSuffix::Struct) {
+                        diagnostics_.error(indexAssign.loc,
+                                            "cannot assign directly to '" + indexAssign.spelling +
+                                                "(...)', a Structure element - assign to one of its own fields instead");
+                    } else {
+                        checkAssignable(indexAssign.spelling, mapInfoPtr->elementSuffix, *indexAssign.value,
                                          indexAssign.loc);
                     }
                     break;
@@ -498,11 +545,26 @@ void Sema::visitExpr(ast::Expr& expr) {
             if (visitListBuiltinCall(call)) {
                 break;
             }
+            if (visitMapBuiltinCall(call)) {
+                break;
+            }
             if (listInfo(call.name) != nullptr) {
                 // `name()` reads the List's current element (M3e) - no args
                 // to visit (see Sema::ListInfo's own doc comment).
                 if (!call.args.empty()) {
                     diagnostics_.error(call.loc, "'" + call.spelling + "' is a List and takes no arguments here");
+                }
+                break;
+            }
+            if (mapInfo(call.name) != nullptr) {
+                // `name()` reads the Map's current element; `name(key)`
+                // reads (and auto-creates) by key (M3f - see Sema::MapInfo's
+                // own doc comment).
+                if (call.args.size() == 1) {
+                    visitExpr(*call.args.front());
+                    checkMapKey(*call.args.front(), call.loc);
+                } else if (!call.args.empty()) {
+                    diagnostics_.error(call.loc, "'" + call.spelling + "' takes at most one key argument");
                 }
                 break;
             }
@@ -629,6 +691,12 @@ void Sema::checkAssignable(const std::string& targetSpelling, TypeSuffix targetS
     }
 }
 
+void Sema::checkMapKey(const ast::Expr& keyExpr, SourceLoc loc) const {
+    if (familyOfExpr(keyExpr) != ValueKind::StringFamily) {
+        diagnostics_.error(loc, "A string expression is expected");
+    }
+}
+
 TypeSuffix Sema::typeOf(const std::string& lowerName) const {
     auto it = symbols_.find(lowerName);
     return it == symbols_.end() ? TypeSuffix::Integer : it->second;
@@ -668,12 +736,26 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
         }
         case ast::ExprKind::Call: {
             const auto& call = static_cast<const ast::CallExpr&>(expr);
+            if (call.name == "mapkey") {
+                // The one List/Map/pointer built-in that returns something
+                // other than a plain Integer status code - MapKey(map())
+                // yields the current element's String key (oracle-verified:
+                // it's used directly as a String value, e.g. `Debug
+                // MapKey(m())`) - so unlike every other builtin here, it
+                // can't rely on the generic "unrecognized Call defaults to
+                // Integer" fallback below.
+                return ValueKind::StringFamily;
+            }
             const ListInfo* list = listInfo(call.name);
-            const ArrayInfo* array = list == nullptr ? arrayInfo(call.name) : nullptr;
-            const ProcedureInfo* proc = (list == nullptr && array == nullptr) ? procedureInfo(call.name) : nullptr;
+            const MapInfo* map = list == nullptr ? mapInfo(call.name) : nullptr;
+            const ArrayInfo* array = (list == nullptr && map == nullptr) ? arrayInfo(call.name) : nullptr;
+            const ProcedureInfo* proc =
+                (list == nullptr && map == nullptr && array == nullptr) ? procedureInfo(call.name) : nullptr;
             ValueKind natural = ValueKind::IntegerFamily;
             if (list != nullptr) {
                 natural = familyOf(list->elementSuffix);
+            } else if (map != nullptr) {
+                natural = familyOf(map->elementSuffix);
             } else if (array != nullptr) {
                 natural = familyOf(array->elementSuffix);
             } else if (proc != nullptr) {
@@ -824,6 +906,64 @@ bool Sema::visitListBuiltinCall(ast::CallExpr& call) {
     return true;
 }
 
+const Sema::MapInfo* Sema::mapInfo(const std::string& lowerName) const {
+    auto it = maps_.find(lowerName);
+    return it == maps_.end() ? nullptr : &it->second;
+}
+
+bool Sema::isMapBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "addmapelement", "deletemapelement", "clearmap", "mapsize",
+        "mapkey",        "resetmap",         "nextmapelement", "findmapelement",
+    };
+    return names.contains(lowerName);
+}
+
+bool Sema::visitMapBuiltinCall(ast::CallExpr& call) {
+    if (!isMapBuiltinName(call.name)) {
+        return false;
+    }
+    if (call.args.empty()) {
+        diagnostics_.error(call.loc, "'" + call.spelling + "' expects a Map argument");
+        return true;
+    }
+    // As with visitListBuiltinCall, the first argument names the Map itself
+    // (a bare `name()`) rather than being visited as an ordinary expression.
+    const ast::Expr& mapArg = *call.args.front();
+    if (mapArg.kind == ast::ExprKind::Call) {
+        const auto& mapCall = static_cast<const ast::CallExpr&>(mapArg);
+        if (mapCall.args.empty()) {
+            if (mapInfo(mapCall.name) == nullptr) {
+                diagnostics_.error(call.loc, "'" + mapCall.spelling + "' is not a declared Map");
+            }
+        } else {
+            diagnostics_.error(call.loc, "'" + call.spelling + "' expects a bare 'name()' Map argument");
+        }
+    } else {
+        diagnostics_.error(call.loc, "'" + call.spelling + "' expects a bare 'name()' Map argument");
+    }
+    if (call.name == "addmapelement" || call.name == "findmapelement") {
+        if (call.args.size() != 2) {
+            diagnostics_.error(call.loc, "'" + call.spelling + "' expects a Map and a key argument");
+        } else {
+            visitExpr(*call.args[1]);
+            checkMapKey(*call.args[1], call.loc);
+        }
+    } else if (call.name == "deletemapelement") {
+        // Oracle-verified: DeleteMapElement accepts either 1 arg (deletes
+        // the current cursor element) or 2 (deletes by key).
+        if (call.args.size() == 2) {
+            visitExpr(*call.args[1]);
+            checkMapKey(*call.args[1], call.loc);
+        } else if (call.args.size() != 1) {
+            diagnostics_.error(call.loc, "'DeleteMapElement' expects a Map, and optionally a key, argument");
+        }
+    } else if (call.args.size() != 1) {
+        diagnostics_.error(call.loc, "'" + call.spelling + "' expects exactly one Map argument");
+    }
+    return true;
+}
+
 const Sema::StructureInfo* Sema::structureInfo(const std::string& lowerName) const {
     auto it = structures_.find(lowerName);
     return it == structures_.end() ? nullptr : &it->second;
@@ -874,6 +1014,14 @@ Sema::ResolvedType Sema::resolveType(const ast::Expr& expr) const {
                 result.suffix = lst->elementSuffix;
                 if (lst->elementSuffix == TypeSuffix::Struct) {
                     result.structName = lst->elementStructName;
+                }
+                return result;
+            }
+            if (const MapInfo* map = mapInfo(call.name)) {
+                ResolvedType result;
+                result.suffix = map->elementSuffix;
+                if (map->elementSuffix == TypeSuffix::Struct) {
+                    result.structName = map->elementStructName;
                 }
                 return result;
             }

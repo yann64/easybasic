@@ -138,7 +138,7 @@ enum class StmtKind {
     Break, Continue, EnableExplicit, ConstDecl, Enumeration,
     ProcedureDecl, ProcedureReturn, ExprStmt, Shared,
     Dim, IndexAssign, StructureDecl, FieldAssign,
-    NewList, ForEach,
+    NewList, ForEach, NewMap,
 };
 
 /// Base of every statement node.
@@ -369,11 +369,31 @@ struct RepeatStmt : Stmt {
 /// `name()` naming a declared List, never an arbitrary expression, so this
 /// stores the name directly rather than a generic `Expr` - matching
 /// `ForStmt`'s own name/spelling fields.
+/// `ForEach name() ... Next` where `name` was declared with `ForEach`'s own
+/// doc comment covers a List; `name` may equally be a Map (M3f) - both
+/// iterate their elements in the same cursor-based way, so Sema's own
+/// handling (not this node) is what tells them apart.
 struct ForEachStmt : Stmt {
     ForEachStmt() : Stmt(StmtKind::ForEach) {}
     std::string name;
     std::string spelling;
     Block body;
+};
+
+/// `NewMap name.type()` - declares a Map (M3f). Structurally identical to
+/// `NewListStmt` (see its own doc comment for why only one declaration is
+/// allowed per statement); kept as its own node/StmtKind rather than a
+/// shared one with a `isMap` flag purely so Codegen's dispatch stays
+/// symmetric and searchable, matching how every other declaration form in
+/// this compiler (`Dim`, `Structure`, `NewList`) gets its own kind despite
+/// some structural overlap.
+struct NewMapStmt : Stmt {
+    NewMapStmt() : Stmt(StmtKind::NewMap) {}
+    std::string name;
+    std::string spelling;
+    TypeSuffix suffix = TypeSuffix::None; ///< TypeSuffix::Struct means look at structTypeName instead.
+    std::string structTypeName;    ///< Lowercased; meaningful only if suffix == Struct.
+    std::string structTypeSpelling;
 };
 
 struct BreakStmt : Stmt {
