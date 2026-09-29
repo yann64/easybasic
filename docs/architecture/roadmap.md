@@ -28,7 +28,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deferred to and closed by M3a/M3b; mutual recursion/`Declare`, call-argument type-checking, and constants in nested blocks deferred further, closed by a dedicated M2-closure pass (see its own notes) |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
-| **M4** | Core stdlib: String, Math, Memory, File, Date | In progress - core String (M4a), Math (M4b), and Memory (M4c) libraries done; File/Date still to come |
+| **M4** | Core stdlib: String, Math, Memory, File, Date | In progress - core String (M4a), Math (M4b), Memory (M4c), and File (M4d) libraries done; Date still to come |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
@@ -982,4 +982,68 @@ effort for a return value this project has never seen an actual program depend o
 paired with a Structure pointer's fields (only a bare address argument is supported, not
 "the address of this specific Structure field"); `@stringVar` (see above) - the rest of
 M4 (File, Date) remains after this.
+
+## M4d Implementation Notes (core File library)
+
+**Scope landed**: `CreateFile`/`OpenFile`/`ReadFile`/`CloseFile`, `WriteString`/
+`WriteStringN`/`ReadString`, `Eof`, `FileSize`/`DeleteFile`/`RenameFile`, and
+`FileSeek`/`Loc`/`Lof` - a complete enough set to create, read, write-in-place, and
+manage files, all oracle-verified rather than assumed from memory of the PB API (several
+guesses below turned out right, but were still checked, not shipped on faith).
+
+**A file "number" is a plain Integer the PB program itself picks, not a handle PB hands
+back - oracle-verified with a *variable*, not just a literal, as the number.** This
+mirrors classic BASIC's own numbered-file model exactly, and - like the M4c Memory
+library's plain address arguments - needed no special argument-shape handling in Sema at
+all: `registerFileLibBuiltins` is a fourth near-identical call to the same fake-
+`ProcedureInfo` mechanism the String/Math/Memory libraries already established.
+
+**`std::FILE*` (C stdio), not `std::fstream`, is the deliberate implementation choice -
+because `Lof`/`Loc` are oracle-verified to work even on a `CreateFile` handle**, which
+looks write-only at the PB source level (`If CreateFile(0, ...) ... Debug Lof(0)`
+correctly reports the file's length). `ftell`/`fseek` on a C `FILE*` behave uniformly
+regardless of the mode it was opened with; `std::iostream`'s own get/put positioning is
+only fully guaranteed by the standard for a stream opened with `ios::in`, an unnecessary
+portability risk for something this project could sidestep entirely by picking the other
+standard I/O API. Every handle is still wrapped in a `std::unique_ptr<FILE, FileCloser>`
+(a small custom deleter calling `fclose`), so a PB program that forgets to `CloseFile`
+before exiting still doesn't leak the underlying file descriptor - verified directly (not
+assumed) by compiling a generated program with `-fsanitize=address` (which includes leak
+detection) and confirming a clean exit.
+
+**`OpenFile` gives a read+write handle positioned at the start, letting a subsequent
+write overwrite bytes in place rather than append or truncate** - oracle-verified:
+`OpenFile` then `WriteString` after a `FileSeek` correctly overwrites just the targeted
+bytes, leaving the rest of the file (and its overall length) unchanged. `CreateFile`
+truncates/creates; `ReadFile` is read-only and fails (returns `0`, oracle-verified, not a
+crash) if the file doesn't exist yet - the three real fopen modes (`"wb+"`, `"rb+"`,
+`"rb"`) this project's own three open functions map to directly.
+
+**`WriteStringN`'s line terminator is a plain `\n`, confirmed by measuring `FileSize`
+after two lines, not assumed from the host platform's own text-mode convention** - every
+file handle here is opened in *binary* mode specifically so the C library's own text-mode
+newline translation (which would silently turn `\n` into `\r\n` on a non-Linux target)
+can never make this project's own file I/O diverge from itself across platforms, even
+though this specific fact was only checked on Linux.
+
+**`FileSize` returning `-1` for a file that doesn't exist (not a crash, not `0`) is
+exactly the kind of "checked, not assumed" fact this project's whole oracle-driven
+approach exists to nail down** - a plausible-but-wrong alternative (`0`, indistinguishable
+from a genuinely empty file) would have been an easy, silent correctness bug to ship
+without the oracle catching it immediately.
+
+**A real regression this milestone's own testing setup nearly reintroduced**: the first
+draft of the combined e2e/e2e_diff test left `CreateFile`d files on disk without deleting
+them, which would have made a second run of the *same* test see stale leftover state from
+the first (e.g. `RenameFile`'s target already existing) - fixed by having the `.pb`
+program itself `DeleteFile` both at the very start (idempotent even on a first run, since
+deleting a nonexistent file is a harmless no-op) and again at the end, verified by running
+the installed e2e test twice in a row rather than just once.
+
+**Deliberately deferred past M4d**: `ReadData`/`WriteData` and the typed binary
+`ReadLong`/`WriteLong`/etc. family (distinct from `Peek*`/`Poke*`, which already cover the
+same ground against an in-memory buffer rather than a file - not judged worth a second,
+file-specific implementation of the identical idea for this pass); `ExamineDirectory`/
+`NextDirectoryEntry` and other directory-listing functions; `FileBufferSize`; file
+locking/sharing-mode flags; `Date` - the last piece of M4.
 

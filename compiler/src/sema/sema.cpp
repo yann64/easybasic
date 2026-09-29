@@ -18,6 +18,7 @@ Sema::Sema(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {
     registerStringLibBuiltins();
     registerMathLibBuiltins();
     registerMemoryLibBuiltins();
+    registerFileLibBuiltins();
     registerBuiltinConstants();
 }
 
@@ -165,6 +166,50 @@ bool Sema::isMemoryLibBuiltinName(const std::string& lowerName) {
     static const std::unordered_set<std::string> names = {
         "peekb", "peeka", "peekc", "peekw", "peeku", "peekl", "peekq", "peekf", "peekd", "peeks",
         "pokeb", "pokea", "pokec", "pokew", "pokeu", "pokel", "pokeq", "pokef", "poked", "pokes",
+    };
+    return names.contains(lowerName);
+}
+
+void Sema::registerFileLibBuiltins() {
+    struct Signature {
+        const char* name;
+        TypeSuffix returnSuffix;
+        std::vector<TypeSuffix> paramSuffixes;
+        std::size_t requiredParamCount;
+    };
+    // A file "number" is a plain Integer the PB program itself picks
+    // (oracle-verified), not a handle PB hands back - so every one of
+    // these is just an ordinary Integer/String parameter, exactly like the
+    // Memory library's addresses.
+    static const std::vector<Signature> signatures = {
+        {"createfile", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"openfile", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"readfile", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"closefile", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"writestring", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"writestringn", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"readstring", TypeSuffix::String, {TypeSuffix::Integer}, 1},
+        {"eof", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"filesize", TypeSuffix::Integer, {TypeSuffix::String}, 1},
+        {"deletefile", TypeSuffix::Integer, {TypeSuffix::String}, 1},
+        {"renamefile", TypeSuffix::Integer, {TypeSuffix::String, TypeSuffix::String}, 2},
+        {"fileseek", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"loc", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"lof", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+    };
+    for (const auto& sig : signatures) {
+        ProcedureInfo info;
+        info.returnSuffix = sig.returnSuffix;
+        info.paramSuffixes = sig.paramSuffixes;
+        info.requiredParamCount = sig.requiredParamCount;
+        procedures_[sig.name] = info;
+    }
+}
+
+bool Sema::isFileLibBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "createfile", "openfile", "readfile", "closefile", "writestring", "writestringn",
+        "readstring", "eof", "filesize", "deletefile", "renamefile", "fileseek", "loc", "lof",
     };
     return names.contains(lowerName);
 }

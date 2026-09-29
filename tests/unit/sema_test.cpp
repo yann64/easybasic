@@ -985,3 +985,56 @@ TEST_CASE("Sema recognizes the Memory-library builtins by name", "[sema][memoryl
     CHECK(Sema::isMemoryLibBuiltinName("pokes"));
     CHECK_FALSE(Sema::isMemoryLibBuiltinName("somethingelse"));
 }
+
+// --- M4d: File library builtins ---
+
+TEST_CASE("Sema resolves each File-library builtin's declared return type", "[sema][filelib]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Debug CreateFile(0, \"x\")\nDebug ReadString(0)\nDebug Eof(0)\nDebug FileSize(\"x\")", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    auto* createFile = static_cast<ast::DebugStmt*>(module->statements[0].get());
+    auto* readString = static_cast<ast::DebugStmt*>(module->statements[1].get());
+    auto* eof = static_cast<ast::DebugStmt*>(module->statements[2].get());
+    auto* fileSize = static_cast<ast::DebugStmt*>(module->statements[3].get());
+    CHECK(sema.classify(*createFile->value, false) == ValueKind::IntegerFamily);
+    CHECK(sema.classify(*readString->value, false) == ValueKind::StringFamily);
+    CHECK(sema.classify(*eof->value, false) == ValueKind::IntegerFamily);
+    CHECK(sema.classify(*fileSize->value, false) == ValueKind::IntegerFamily);
+}
+
+TEST_CASE("Sema accepts a variable (not just literal) file number", "[sema][filelib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define n.i = 5\nDebug CreateFile(n, \"x\")\nCloseFile(n)", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a File-library builtin called with too few arguments", "[sema][filelib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug CreateFile(0)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a numeric argument passed to a File-library String parameter", "[sema][filelib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug CreateFile(0, 5)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema recognizes the File-library builtins by name", "[sema][filelib]") {
+    CHECK(Sema::isFileLibBuiltinName("createfile"));
+    CHECK(Sema::isFileLibBuiltinName("openfile"));
+    CHECK(Sema::isFileLibBuiltinName("readfile"));
+    CHECK(Sema::isFileLibBuiltinName("writestringn"));
+    CHECK(Sema::isFileLibBuiltinName("loc"));
+    CHECK(Sema::isFileLibBuiltinName("lof"));
+    CHECK_FALSE(Sema::isFileLibBuiltinName("somethingelse"));
+}

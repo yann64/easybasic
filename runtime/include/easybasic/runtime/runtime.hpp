@@ -6,6 +6,7 @@
 // its own.
 
 #include "debug.hpp"
+#include "filelib.hpp"
 #include "mathlib.hpp"
 #include "memorylib.hpp"
 #include "pblist.hpp"

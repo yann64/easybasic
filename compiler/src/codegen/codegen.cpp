@@ -98,6 +98,18 @@ std::string memoryLibRuntimeName(const std::string& lowerName) {
     return "easybasic::runtime::" + names.at(lowerName);
 }
 
+/// As `stringLibRuntimeName`, for the M4d File library.
+std::string fileLibRuntimeName(const std::string& lowerName) {
+    static const std::unordered_map<std::string, std::string> names = {
+        {"createfile", "pbCreateFile"}, {"openfile", "pbOpenFile"},   {"readfile", "pbReadFile"},
+        {"closefile", "pbCloseFile"},   {"writestring", "pbWriteString"},
+        {"writestringn", "pbWriteStringN"}, {"readstring", "pbReadString"}, {"eof", "pbEof"},
+        {"filesize", "pbFileSize"},     {"deletefile", "pbDeleteFile"}, {"renamefile", "pbRenameFile"},
+        {"fileseek", "pbFileSeek"},     {"loc", "pbLoc"},              {"lof", "pbLof"},
+    };
+    return "easybasic::runtime::" + names.at(lowerName);
+}
+
 } // namespace
 
 std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName) {
@@ -319,6 +331,8 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 calleeName = mathLibRuntimeName(call.name);
             } else if (Sema::isMemoryLibBuiltinName(call.name)) {
                 calleeName = memoryLibRuntimeName(call.name);
+            } else if (Sema::isFileLibBuiltinName(call.name)) {
+                calleeName = fileLibRuntimeName(call.name);
             } else {
                 calleeName = "f_" + call.name;
             }

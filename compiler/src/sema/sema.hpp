@@ -202,6 +202,17 @@ public:
     /// address before this - these are what actually read/write through it.
     static bool isMemoryLibBuiltinName(const std::string& lowerName);
 
+    /// True for the M4d File-library functions (`CreateFile`, `OpenFile`,
+    /// `ReadFile`, `CloseFile`, `WriteString`, `WriteStringN`, `ReadString`,
+    /// `Eof`, `FileSize`, `DeleteFile`, `RenameFile`, `FileSeek`, `Loc`,
+    /// `Lof`) - mirrors `isMemoryLibBuiltinName`'s own role and registration
+    /// mechanism (`registerFileLibBuiltins`). A file "number" is a plain
+    /// Integer the PB program itself picks (oracle-verified: a literal, a
+    /// variable, or any Integer expression), not a handle PB hands back -
+    /// so, like the Memory library, no special argument-shape handling is
+    /// needed here either.
+    static bool isFileLibBuiltinName(const std::string& lowerName);
+
     /// The literal Integer value of one of the handful of built-in `#PB_*`
     /// constants Sema pre-declares (currently only `#PB_Round_Down` (0),
     /// `#PB_Round_Up` (1), `#PB_Round_Nearest` (2), for `Round`'s own mode
@@ -290,6 +301,8 @@ private:
     /// M3d pointer builtins (`AllocateMemory` etc.) - no special-cased
     /// argument handling is needed in Sema at all.
     void registerMemoryLibBuiltins();
+    /// Same mechanism again, for the M4d File library.
+    void registerFileLibBuiltins();
     /// Pre-populates `constants_` (but deliberately NOT `constOrder_` - see
     /// `Codegen::genExpr`'s `ConstRef` case) with the handful of built-in
     /// `#PB_*` constants Sema recognizes (currently just `Round`'s own
