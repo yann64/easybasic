@@ -91,6 +91,13 @@ jobs:
         #     local `current` that shadows the unrelated PBList::current()
         #     member function - harmless (the local is never meant to call
         #     the method), just a coincidental name reuse.
+        #   - localMutex: a false positive in threadlib.hpp's pbLockMutex -
+        #     cppcheck's check assumes a mutex locked in the same scope it
+        #     was declared is pointless (a genuinely local, stack-only
+        #     mutex can't synchronize anything across threads), but `mutex`
+        #     here is a raw pointer *to* a std::recursive_mutex that lives
+        #     persistently in the global mutexTable(), not a local object -
+        #     cppcheck's syntactic check doesn't trace that distinction.
         # `compiler/src` is passed as a plain directory (cppcheck's normal
         # mode: scan each .cpp, pulling in its own headers via #include, so
         # a header's usage is seen in context) - but runtime/include's own
@@ -108,7 +115,7 @@ jobs:
           cppcheck --enable=style,warning,performance,portability --inconclusive --error-exitcode=1 \
             --suppress=useStlAlgorithm --suppress=constVariableReference \
             --suppress=unusedFunction --suppress=duplicateAssignExpression \
-            --suppress=shadowFunction \
+            --suppress=shadowFunction --suppress=localMutex \
             --suppress=noExplicitConstructor -I compiler/src -I runtime/include --std=c++20 \
             compiler/src $(find runtime/include -name '*.hpp')
 

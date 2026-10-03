@@ -27,8 +27,17 @@ trap 'rm -rf "$WORKDIR"' EXIT
 # build strips every Debug statement to nothing, so -d is what makes the
 # comparison meaningful at all. Both also print PB's own oracle-verified
 # "[Debugger]  <value>" prefix, so no output normalization is needed.
+# `-t`/`--thread` (ThreadSafe mode) is passed unconditionally too - oracle-
+# verified to change nothing for a program that uses no threads at all
+# (confirmed: hello_world's own output is byte-identical with or without
+# it), but without it the real compiler prints an extra "[Debugger
+# Warning]  ThreadSafe mode should be enabled when using threads." pair of
+# lines for any program that actually does (M7a's own threads.pb) - pbcxx
+# has no equivalent internal-debugger-state concern to warn about (see
+# threadlib.hpp's own notes), so this is the right flag to pass rather
+# than something to special-case in the diff itself.
 cp "$PROGRAM" "$WORKDIR/program.pb"
-( cd "$WORKDIR" && "$PBCOMPILERC" program.pb -d -o oracle_bin ) > "$WORKDIR/oracle_compile.log" 2>&1
+( cd "$WORKDIR" && "$PBCOMPILERC" program.pb -t -d -o oracle_bin ) > "$WORKDIR/oracle_compile.log" 2>&1
 ORACLE_COMPILE_RC=$?
 if [ $ORACLE_COMPILE_RC -ne 0 ]; then
     echo "FAIL: $PROGRAM - pbcompilerc itself failed to compile the program"

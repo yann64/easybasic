@@ -230,6 +230,24 @@ public:
     /// with a clean PB-style diagnostic, safely rejected either way).
     static bool isDateLibBuiltinName(const std::string& lowerName);
 
+    /// True for the M7a thread-library functions (`CreateThread`,
+    /// `IsThread`, `WaitThread`, `CreateMutex`, `LockMutex`, `UnlockMutex`,
+    /// `TryLockMutex`, `FreeMutex`, `CreateSemaphore`, `SignalSemaphore`,
+    /// `WaitSemaphore`, `TrySemaphore`, `FreeSemaphore`) - mirrors
+    /// `isDateLibBuiltinName`'s own role and registration mechanism
+    /// (`registerThreadLibBuiltins`). `CreateThread`'s first argument is
+    /// `@Procedure()` (an `AddressOfExpr`, handled by its own dedicated
+    /// Sema/Codegen logic - see `ast::AddressOfExpr`'s own notes), which
+    /// already resolves to a plain Integer like any other address-of
+    /// expression, so no special per-argument handling is needed here
+    /// beyond the usual registration. `KillThread`/`PauseThread`/
+    /// `ResumeThread`/`ThreadID` are deliberately not included - see the
+    /// M7a roadmap notes for why. Also bundles `Delay`/`ElapsedMilliseconds`
+    /// - not thread-specific commands in real PB, but needed immediately by
+    /// any real thread-timing test, and not worth a separate single-purpose
+    /// registration mechanism for just two functions.
+    static bool isThreadLibBuiltinName(const std::string& lowerName);
+
     /// The literal Integer value of one of the handful of built-in `#PB_*`
     /// constants Sema pre-declares (currently only `#PB_Round_Down` (0),
     /// `#PB_Round_Up` (1), `#PB_Round_Nearest` (2), for `Round`'s own mode
@@ -324,6 +342,9 @@ private:
     /// `isDateLibBuiltinName`'s own doc comment for the one wrinkle
     /// (`Date`'s bimodal arity) this mechanism doesn't capture exactly.
     void registerDateLibBuiltins();
+    /// Same mechanism again, for the M7a thread library (`CreateThread` and
+    /// friends) - see `isThreadLibBuiltinName`'s own doc comment.
+    void registerThreadLibBuiltins();
     /// Pre-populates `constants_` (but deliberately NOT `constOrder_` - see
     /// `Codegen::genExpr`'s `ConstRef` case) with the handful of built-in
     /// `#PB_*` constants Sema recognizes (currently just `Round`'s own

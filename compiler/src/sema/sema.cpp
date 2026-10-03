@@ -20,6 +20,7 @@ Sema::Sema(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {
     registerMemoryLibBuiltins();
     registerFileLibBuiltins();
     registerDateLibBuiltins();
+    registerThreadLibBuiltins();
     registerBuiltinConstants();
 }
 
@@ -252,6 +253,59 @@ void Sema::registerDateLibBuiltins() {
 bool Sema::isDateLibBuiltinName(const std::string& lowerName) {
     static const std::unordered_set<std::string> names = {
         "date", "year", "month", "day", "hour", "minute", "second", "dayofweek", "formatdate", "adddate",
+    };
+    return names.contains(lowerName);
+}
+
+void Sema::registerThreadLibBuiltins() {
+    struct Signature {
+        const char* name;
+        TypeSuffix returnSuffix;
+        std::vector<TypeSuffix> paramSuffixes;
+        std::size_t requiredParamCount;
+    };
+    static const std::vector<Signature> signatures = {
+        // CreateThread's first argument is `@Procedure()` (an AddressOfExpr,
+        // already Integer-typed - see its own dedicated Sema/Codegen
+        // handling), so it needs no special treatment here beyond being
+        // declared Integer like any other parameter.
+        {"createthread", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"isthread", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"waitthread", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"createmutex", TypeSuffix::Integer, {}, 0},
+        {"lockmutex", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"unlockmutex", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"trylockmutex", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"freemutex", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // CreateSemaphore's initial-count argument is optional (oracle-
+        // verified: `CreateSemaphore()` defaults to 0) - the runtime
+        // function itself carries the matching C++ default value, so
+        // Codegen's own "only emit the args actually given" call-site
+        // logic (see genExpr's Call case) needs no special handling here.
+        {"createsemaphore", TypeSuffix::Integer, {TypeSuffix::Integer}, 0},
+        {"signalsemaphore", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"waitsemaphore", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"trysemaphore", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"freesemaphore", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // Not thread-specific commands in real PB, but bundled here - see
+        // threadlib.hpp's own doc comment on `pbDelay`/`pbElapsedMilliseconds`.
+        {"delay", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"elapsedmilliseconds", TypeSuffix::Integer, {}, 0},
+    };
+    for (const auto& sig : signatures) {
+        ProcedureInfo info;
+        info.returnSuffix = sig.returnSuffix;
+        info.paramSuffixes = sig.paramSuffixes;
+        info.requiredParamCount = sig.requiredParamCount;
+        procedures_[sig.name] = info;
+    }
+}
+
+bool Sema::isThreadLibBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "createthread",  "isthread",        "waitthread",      "createmutex",    "lockmutex",
+        "unlockmutex",   "trylockmutex",    "freemutex",       "createsemaphore", "signalsemaphore",
+        "waitsemaphore", "trysemaphore",    "freesemaphore",   "delay",          "elapsedmilliseconds",
     };
     return names.contains(lowerName);
 }
@@ -1345,6 +1399,27 @@ void Sema::visitExpr(ast::Expr& expr) {
         }
         case ast::ExprKind::AddressOf: {
             auto& addr = static_cast<ast::AddressOfExpr&>(expr);
+            // `@ProcedureName()` - the procedure's own address (oracle-
+            // verified, e.g. `CreateThread(@Worker(), param)`) - is NOT an
+            // ordinary call to visit normally: it's always written with
+            // empty parens regardless of the named procedure's own
+            // parameter list (oracle-verified: `@Worker()` is legal even
+            // though `Worker` itself takes one parameter), so running it
+            // through the normal call-arity machinery would wrongly flag
+            // it as a missing-argument error. Recognized here, before the
+            // operand is visited at all, exactly like the List/Map bare
+            // `name()` special-casing elsewhere in this function.
+            if (addr.operand->kind == ast::ExprKind::Call) {
+                auto& call = static_cast<ast::CallExpr&>(*addr.operand);
+                if (procedureInfo(call.name) != nullptr) {
+                    if (!call.args.empty()) {
+                        diagnostics_.error(addr.loc,
+                                            "'@" + call.spelling + "()' takes no arguments - it names the "
+                                            "procedure itself, not a call to it");
+                    }
+                    break;
+                }
+            }
             visitExpr(*addr.operand);
             break;
         }

@@ -5,7 +5,7 @@ compiles the generated C++ with a real backend compiler (g++/clang++).
 
 ## Status
 
-`M0`-`M5` done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
+`M0`-`M6` done, M7a (threads) done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
 operator/precedence table (arithmetic, bitwise, comparisons, logical), `If`/`Select`/
 `For`/`While`/`Repeat`, `EnableExplicit`, `#Name`/`Enumeration` constants,
 `Procedure`/`ProcedureReturn` with recursion and genuinely isolated per-procedure scope,
@@ -22,7 +22,9 @@ non-taken branches are never type-checked, matching real PB), `DataSection`/`Dat
 debug-mode-only "out of data" fatal error, matching real PB exactly), and non-recursive
 `Macro`/`EndMacro` (a genuine token-level textual substitution pass run before parsing,
 since a macro parameter is pasted as raw, unparenthesized text rather than a pre-evaluated
-value - oracle-verified) - all cross-checked against PureBasic's own compiler, including
+value - oracle-verified), and threads (`CreateThread`/`IsThread`/`WaitThread`, re-entrant `Mutex`,
+`Semaphore`, plus `@ProcedureName()` - a procedure's own address - and `Delay`/
+`ElapsedMilliseconds`) - all cross-checked against PureBasic's own compiler, including
 real bugs (a target-typed `/`, a two-tier vs. one-tier bitwise precedence mix-up, a wrong
 initial assumption about primitive-typed pointers, an unaligned-memory-access UB in
 `Peek*`/`Poke*`) the differential test suite or a targeted oracle probe caught before they

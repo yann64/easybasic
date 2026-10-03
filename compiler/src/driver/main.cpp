@@ -141,6 +141,7 @@ int main(int argc, char** argv) {
 
     std::vector<std::string> cxxArgs = {
         "-std=c++20",
+        "-pthread", // needed for std::thread/std::mutex/std::counting_semaphore (M7a) on GCC/Clang toolchains
         "-I" + runtimeIncludeDir(),
         cppPath,
         "-o",

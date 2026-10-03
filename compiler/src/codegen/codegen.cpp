@@ -129,6 +129,20 @@ std::string dateLibRuntimeName(const std::string& lowerName, std::size_t argCoun
     return "easybasic::runtime::" + names.at(lowerName);
 }
 
+std::string threadLibRuntimeName(const std::string& lowerName) {
+    static const std::unordered_map<std::string, std::string> names = {
+        {"createthread", "pbCreateThread"},   {"isthread", "pbIsThread"},
+        {"waitthread", "pbWaitThread"},       {"createmutex", "pbCreateMutex"},
+        {"lockmutex", "pbLockMutex"},         {"unlockmutex", "pbUnlockMutex"},
+        {"trylockmutex", "pbTryLockMutex"},   {"freemutex", "pbFreeMutex"},
+        {"createsemaphore", "pbCreateSemaphore"}, {"signalsemaphore", "pbSignalSemaphore"},
+        {"waitsemaphore", "pbWaitSemaphore"}, {"trysemaphore", "pbTrySemaphore"},
+        {"freesemaphore", "pbFreeSemaphore"}, {"delay", "pbDelay"},
+        {"elapsedmilliseconds", "pbElapsedMilliseconds"},
+    };
+    return "easybasic::runtime::" + names.at(lowerName);
+}
+
 } // namespace
 
 std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName) {
@@ -245,6 +259,16 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
         }
         case ast::ExprKind::AddressOf: {
             const auto& addr = static_cast<const ast::AddressOfExpr&>(expr);
+            if (addr.operand->kind == ast::ExprKind::Call) {
+                const auto& call = static_cast<const ast::CallExpr&>(*addr.operand);
+                if (sema_.procedureInfo(call.name) != nullptr) {
+                    // `@ProcedureName()` - the function's own address, not a
+                    // call followed by address-of its result (see Sema's
+                    // matching visitExpr case for why this can't just fall
+                    // through to the generic path below).
+                    return "reinterpret_cast<std::int64_t>(&f_" + call.name + ")";
+                }
+            }
             return "reinterpret_cast<std::int64_t>(&(" + genExpr(*addr.operand, false) + "))";
         }
         case ast::ExprKind::Call: {
@@ -373,6 +397,8 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 calleeName = fileLibRuntimeName(call.name);
             } else if (Sema::isDateLibBuiltinName(call.name)) {
                 calleeName = dateLibRuntimeName(call.name, call.args.size());
+            } else if (Sema::isThreadLibBuiltinName(call.name)) {
+                calleeName = threadLibRuntimeName(call.name);
             } else {
                 calleeName = "f_" + call.name;
             }

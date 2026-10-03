@@ -1280,3 +1280,41 @@ TEST_CASE("Sema's Read leaves an already-declared destination's own type untouch
     REQUIRE(sema.analyze(*module));
     CHECK(sema.typeOf("s") == TypeSuffix::String);
 }
+
+TEST_CASE("Sema accepts '@ProcedureName()' regardless of the named procedure's own parameter count",
+          "[sema][threads]") {
+    // Oracle-verified (M7a): `@Worker()` is legal even though `Worker`
+    // itself takes one parameter - it names the procedure, it doesn't call
+    // it, so the usual call-arity check must not apply here.
+    DiagnosticEngine diags;
+    auto module = parse("Procedure Worker(n)\nProcedureReturn n\nEndProcedure\n*p = @Worker()", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a non-empty argument list on '@ProcedureName(...)'", "[sema][threads]") {
+    DiagnosticEngine diags;
+    auto module = parse("Procedure Worker(n)\nProcedureReturn n\nEndProcedure\n*p = @Worker(5)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema recognizes the thread-library builtins by name", "[sema][threads]") {
+    CHECK(Sema::isThreadLibBuiltinName("createthread"));
+    CHECK(Sema::isThreadLibBuiltinName("waitthread"));
+    CHECK(Sema::isThreadLibBuiltinName("createmutex"));
+    CHECK(Sema::isThreadLibBuiltinName("trysemaphore"));
+    CHECK(Sema::isThreadLibBuiltinName("delay"));
+    CHECK(Sema::isThreadLibBuiltinName("elapsedmilliseconds"));
+    CHECK_FALSE(Sema::isThreadLibBuiltinName("somethingelse"));
+}
+
+TEST_CASE("Sema's CreateSemaphore accepts both zero and one argument", "[sema][threads]") {
+    DiagnosticEngine diags;
+    auto module = parse("a = CreateSemaphore()\nb = CreateSemaphore(3)", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}

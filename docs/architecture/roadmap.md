@@ -31,7 +31,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
-| **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Not started - scoped, see M7 scoping notes |
+| **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done - see M7a notes (`KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately deferred) |
 | **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Not started - scoped, see M7 scoping notes |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Not started - scoped, see M7 scoping notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Not started - scoped, see M7 scoping notes |
@@ -1620,4 +1620,96 @@ wrapped around already-supported `Procedure`/`Global` declarations, with `::`-qu
 added to name resolution. Likely the most mechanically straightforward of the four M7 pieces once
 reached, though not yet designed in detail (deprioritized to last, per the user's own explicit
 ordering).
+
+## M7a Implementation Notes (Threads)
+
+**Scope landed**: `CreateThread`/`IsThread`/`WaitThread`, `CreateMutex`/`LockMutex`/`UnlockMutex`/
+`TryLockMutex`/`FreeMutex`, `CreateSemaphore`/`SignalSemaphore`/`WaitSemaphore`/`TrySemaphore`/
+`FreeSemaphore`, plus `Delay`/`ElapsedMilliseconds` (not thread-specific commands in real PB, but
+needed immediately by any real thread-timing test, bundled in rather than given their own
+single-purpose library). `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately
+deferred - see below.
+
+**A genuinely new primitive, needed before `CreateThread` itself could work at all**:
+`@ProcedureName()` (a procedure's own address, as opposed to `@variable`/`@array(i)`, which were
+already supported) wasn't implemented - confirmed by a hard compile error (`lvalue required as
+unary '&' operand`, since the existing `AddressOf` codegen tried to take the address of *calling*
+the procedure, `&(f_proc())`, not the function itself). Oracle-verified it's always written with
+empty parens regardless of the named procedure's own parameter count (`@Worker()` is legal even
+though `Worker(n)` itself takes one parameter - the real `Thread.pb` example's own shape), so this
+needed its own Sema special-case (checked before the operand is visited at all, mirroring the
+List/Map bare-`name()` special-casing already in `visitExpr`'s `Call` case): if `@`'s operand is a
+`Call` naming an actual declared procedure, skip the ordinary call-arity validation entirely rather
+than reporting a missing-argument error, and emit `reinterpret_cast<std::int64_t>(&f_procname)` in
+Codegen (the function's own address, not a call followed by address-of its result). This is a
+genuinely reusable primitive beyond M7a - any future feature needing a raw procedure pointer (e.g.
+a callback-registration API) can reuse it unchanged.
+
+**Oracle-verified semantics that shaped the runtime design**:
+- `WaitThread`'s return value is a plain success flag (`1`), **not** the thread procedure's own
+  `ProcedureReturn` value - confirmed directly with a `Procedure Worker(n): ProcedureReturn 999`
+  thread whose `WaitThread` result printed `1`, never `999`. Real PB threads communicate back via
+  shared globals/`Mutex`/`Semaphore`, not a return channel - so the runtime's own entry-function
+  return value is simply discarded, no propagation machinery needed.
+- PB's `Mutex` is **re-entrant (recursive)**: a second `TryLockMutex` from the same thread that
+  already holds the lock succeeds too, confirmed directly (`TryLockMutex`/`TryLockMutex`/
+  `UnlockMutex`/`TryLockMutex` all return `1` in sequence) - mapped to `std::recursive_mutex`, not
+  plain `std::mutex` (re-locking the latter from its owning thread is undefined behavior).
+- `CreateSemaphore()` defaults its initial count to `0`; `CreateSemaphore(3)` starts with 3 already
+  available - confirmed via a `TrySemaphore` exhaustion sequence. Maps directly onto
+  `std::counting_semaphore<>`'s own constructor argument, with the runtime function's own C++
+  default parameter (`= 0`) handling the no-argument call - Codegen's existing "only emit the args
+  actually given, let the callee's own default fill the rest" call-site logic (already established
+  for `pbRandom`'s optional min bound) needed no changes.
+- `KillThread` on an already-finished thread is a **fatal debugger error** in real PB ("The
+  specified Thread does not exists."); calling it on a genuinely still-running thread sent this
+  whole test machine's shell a raw `SIGUSR2` that killed the entire process, not just the target
+  thread - real PB's own `KillThread` is implemented via OS-level forced thread termination (signal-
+  based on Linux), which is inherently unsafe (skips destructors, can corrupt shared state) even in
+  the real implementation. Given C++ has no safe, portable equivalent (`pthread_cancel` is POSIX-
+  only and still discouraged; Windows' `TerminateThread` is equally unsafe), `KillThread`/
+  `PauseThread`/`ResumeThread` (no portable "pause an arbitrary running thread" primitive exists
+  either) and `ThreadID` (no example or use case found needing it, and no oracle time spent on it)
+  are deliberately left unimplemented rather than built on fundamentally unsafe foundations -
+  real-world PB threading code should prefer cooperative shutdown (a shared `finished` flag the
+  thread procedure itself checks) over `KillThread`, which this project's own design doesn't
+  obstruct.
+
+**A real bug found and fixed before it could ship, by reasoning through the ownership chain (not
+by a failing test)**: the first working draft inserted a thread's handle into the global thread
+table *before* constructing the real `std::thread` object (`handle->thread = std::thread(...)` came
+second). A `WaitThread` racing in immediately after `CreateThread` returns could then observe a
+still-default-constructed (non-joinable) `std::thread` and skip joining entirely, silently
+returning without actually waiting. Fixed by constructing the thread first, publishing the handle
+into the table only once it's fully set up.
+
+**A second real bug, this one caught by thinking through real PB's own documented usage pattern**:
+a `std::thread` still joinable at destruction calls `std::terminate()` - but the actual `Thread.pb`
+example starts a thread with an infinite `Repeat/ForEver` loop and simply lets the whole process
+exit once a blocking `MessageRequester` returns, with no explicit `WaitThread`/cleanup at all. Under
+a naive implementation, the global `ThreadHandle` table's own destruction at program exit would
+have called `std::terminate()` on that still-running thread, crashing *pbcxx's own generated
+program* in a scenario real PB handles cleanly. Fixed with an explicit `ThreadHandle` destructor
+that detaches (not joins) a still-joinable thread - matching real behavior exactly: the OS tears the
+detached thread down along with the rest of the process at exit. Verified directly (not just
+reasoned about): a real program with an infinite-loop background thread and no `WaitThread` call
+exits cleanly with code 0, byte-for-byte matching the oracle's own output, both normally and under
+a direct ASan/UBSan sanitizer compile of the generated code.
+
+**Toolchain note**: `std::thread`/`std::mutex`/`std::counting_semaphore` need a real threading
+backend linked in - added `find_package(Threads REQUIRED)` + `Threads::Threads` to the
+`easybasic_runtime` CMake target (for the unit tests and `pbcxx` itself), and `-pthread` to the
+backend-compiler invocation `pbcxx`'s own driver shells out to for *generated* programs (a
+separate, runtime concern CMake's own linking has no reach into). Confirmed working on both Linux
+and a real Haiku machine (`Threads::Threads` resolves automatically on both via CMake's own
+platform detection) - Windows/MinGW not yet verified for this specific milestone (will be confirmed
+via the existing `windows-mingw` CI job on the next push).
+
+**`diff_against_pbcompilerc.sh` gained an always-on `-t`/`--thread` (`ThreadSafe` mode) flag** for
+the oracle side of every differential test, not just thread ones - confirmed it changes nothing for
+a non-threaded program (`hello_world`'s own output is byte-identical with or without it), but
+without it real PB prints an extra `[Debugger Warning]  ThreadSafe mode should be enabled when
+using threads.` pair of lines for any program that actually uses threads, which `pbcxx` has no
+equivalent internal-debugger-state concern to warn about. Simpler and more correct than trying to
+filter or special-case that warning out of the diff itself.
 
