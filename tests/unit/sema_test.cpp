@@ -1038,3 +1038,66 @@ TEST_CASE("Sema recognizes the File-library builtins by name", "[sema][filelib]"
     CHECK(Sema::isFileLibBuiltinName("lof"));
     CHECK_FALSE(Sema::isFileLibBuiltinName("somethingelse"));
 }
+
+// --- M4e: Date library builtins ---
+
+TEST_CASE("Sema accepts Date's 0-arg and 6-arg forms", "[sema][datelib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug Date()\nDebug Date(2024, 3, 15, 10, 30, 45)", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves each Date-library builtin's declared return type", "[sema][datelib]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Define d.i = Date()\nDebug Year(d)\nDebug FormatDate(\"x\", d)\nDebug AddDate(d, 0, 1)", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    auto* year = static_cast<ast::DebugStmt*>(module->statements[1].get());
+    auto* formatDate = static_cast<ast::DebugStmt*>(module->statements[2].get());
+    auto* addDate = static_cast<ast::DebugStmt*>(module->statements[3].get());
+    CHECK(sema.classify(*year->value, false) == ValueKind::IntegerFamily);
+    CHECK(sema.classify(*formatDate->value, false) == ValueKind::StringFamily);
+    CHECK(sema.classify(*addDate->value, false) == ValueKind::IntegerFamily);
+}
+
+TEST_CASE("Sema resolves the #PB_Date_* constants without a user declaration", "[sema][datelib]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "Debug #PB_Date_Year\nDebug #PB_Date_Month\nDebug #PB_Date_Week\nDebug #PB_Date_Day\n"
+        "Debug #PB_Date_Hour\nDebug #PB_Date_Minute\nDebug #PB_Date_Second",
+        diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema::builtinConstantValue resolves the Date unit constants", "[sema][datelib]") {
+    CHECK(Sema::builtinConstantValue("pb_date_year") == 0);
+    CHECK(Sema::builtinConstantValue("pb_date_month") == 1);
+    CHECK(Sema::builtinConstantValue("pb_date_week") == 2);
+    CHECK(Sema::builtinConstantValue("pb_date_day") == 3);
+    CHECK(Sema::builtinConstantValue("pb_date_hour") == 4);
+    CHECK(Sema::builtinConstantValue("pb_date_minute") == 5);
+    CHECK(Sema::builtinConstantValue("pb_date_second") == 6);
+}
+
+TEST_CASE("Sema rejects a String argument to a Date-library numeric parameter", "[sema][datelib]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug Year(\"nope\")", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema recognizes the Date-library builtins by name", "[sema][datelib]") {
+    CHECK(Sema::isDateLibBuiltinName("date"));
+    CHECK(Sema::isDateLibBuiltinName("year"));
+    CHECK(Sema::isDateLibBuiltinName("dayofweek"));
+    CHECK(Sema::isDateLibBuiltinName("formatdate"));
+    CHECK(Sema::isDateLibBuiltinName("adddate"));
+    CHECK_FALSE(Sema::isDateLibBuiltinName("somethingelse"));
+}

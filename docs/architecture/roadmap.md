@@ -28,7 +28,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M1** | All 11 type suffixes; oracle-derived operator/precedence table; `If/Select/For/While/Repeat`; `EnableExplicit`; `#`-constants/`Enumeration` | Done (see M1 notes below) |
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deferred to and closed by M3a/M3b; mutual recursion/`Declare`, call-argument type-checking, and constants in nested blocks deferred further, closed by a dedicated M2-closure pass (see its own notes) |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
-| **M4** | Core stdlib: String, Math, Memory, File, Date | In progress - core String (M4a), Math (M4b), Memory (M4c), and File (M4d) libraries done; Date still to come |
+| **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
@@ -1046,4 +1046,68 @@ same ground against an in-memory buffer rather than a file - not judged worth a 
 file-specific implementation of the identical idea for this pass); `ExamineDirectory`/
 `NextDirectoryEntry` and other directory-listing functions; `FileBufferSize`; file
 locking/sharing-mode flags; `Date` - the last piece of M4.
+
+## M4e Implementation Notes (core Date library) - M4 complete
+
+**Scope landed**: `Date` (both its 0-arg "current time" and 6-arg "construct from
+components" forms), `Year`/`Month`/`Day`/`Hour`/`Minute`/`Second`/`DayOfWeek`,
+`FormatDate` (the `%yyyy`/`%mm`/`%dd`/`%hh`/`%ii`/`%ss` placeholder set), and `AddDate`
+with all seven oracle-verified `#PB_Date_*` units. This is the last piece of M4 - String,
+Math, Memory, File, and now Date are all done.
+
+**`Date` is the first M4 builtin whose real arity genuinely can't be expressed by
+`Sema`'s usual continuous `[required, total]` range** - oracle-verified to accept
+*exactly* 0 or 6 arguments, rejecting 1-5 outright ("Incorrect number of parameters.").
+Registered as `[0, 6]` anyway (a documented, minor imprecision: a 1-5-argument call now
+fails at the C++ backend-compile stage instead of with a clean PB-style diagnostic, still
+safely rejected either way) rather than inventing new Sema machinery for one function's
+bimodal arity. The zero-arg and six-arg forms map to two entirely different C++ functions
+(`pbDateNow`/`pbDate`) - `Codegen`'s own `dateLibRuntimeName` is the one dispatcher in
+this whole M4 family that needs the call's argument *count*, not just its name, to decide
+what to emit (every other optional-argument case elsewhere reused a single function with
+a real C++ default parameter, which can't express "omit all six arguments at once, or
+none of them").
+
+**A real, oracle-checked design question answered rather than assumed: does `AddDate`'s
+`Month`/`Year` arithmetic do genuine calendar normalization, or a fixed day-count
+shortcut?** The two are easy to conflate, since `AddDate(d, Month, 1)` on a March 15 date
+produces an epoch value that - worked out independently via exact day-of-year arithmetic,
+not eyeballed - lands precisely on April 15, the same answer real calendar-aware "same
+day, next month" `mktime`-based arithmetic gives. (An earlier arithmetic slip during this
+verification briefly suggested a "+31 days, the length of March" shortcut instead,
+cheaper to implement but numerically indistinguishable for *this specific example* - redone
+carefully, the day-of-year math confirms it's true calendar arithmetic, not a
+coincidentally-matching shortcut; `pbAddDate`'s `Month`/`Year` cases accordingly use real
+`mktime`-based `tm_mon`/`tm_year` normalization, not a flat seconds offset.)
+
+**`Date`/`Year`/`Month`/etc. all interpret their components as *local* time on both the
+construct and extract sides, making the round trip timezone-independent by construction -
+verified directly by running the same test under two different system timezones (UTC and
+the development machine's own local zone, CEST) and getting byte-identical output either
+way**, not merely asserted to be safe. This is also why this milestone's own e2e/e2e_diff
+test deliberately never prints a *raw* epoch integer (`Date()`'s or `AddDate()`'s return
+value directly) - that value's own absolute magnitude genuinely does depend on the host
+timezone, unlike every *component* extracted from it, so a golden fixture captured on one
+machine could spuriously fail on a CI runner or contributor's machine in a different
+timezone. `Date()`'s own current-time form is (like `Random`) a documented non-goal for
+exact-value oracle fidelity, verified only for "returns a plausible, recent-looking
+timestamp," consistent with that same project-wide pattern for anything inherently
+non-reproducible.
+
+**A real, if minor, portability/correctness fix caught by actually compiling the
+generated code, not just reasoning about it**: `pbFormatDate`'s first implementation used
+a `char buf[8]` scratch buffer for `snprintf`-formatting each date component - plenty for
+any value a real `std::tm` ever holds, but GCC's own static analysis can't prove that for
+an arbitrary `int` argument, and flagged `-Wformat-truncation` on every build. Fixed by
+sizing the buffer to safely fit any 32-bit `int` (16 bytes) instead of relying on "big
+enough in every case that will ever actually occur" - removes compiler-noise that would
+otherwise appear in every single program using `FormatDate`, and is the more defensible
+choice regardless of whether the compiler can prove it.
+
+**Deliberately deferred past M4e (closing out all of M4)**: `ParseDate` (the inverse of
+`FormatDate`); `FormatDate`'s own fuller placeholder set (short year, month/weekday
+names, AM/PM); `Date`'s own documented timezone/DST edge cases (a component combination
+that doesn't exist, e.g. a "spring-forward" gap hour, is left to `mktime`'s own
+platform-specific normalization behavior rather than specially validated) - M4 as a whole
+is now done; M5 (`CompilerIf`/`CompilerSelect`, `DataSection`, `Macro`) is next.
 

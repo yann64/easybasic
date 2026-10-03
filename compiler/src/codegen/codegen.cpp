@@ -110,6 +110,25 @@ std::string fileLibRuntimeName(const std::string& lowerName) {
     return "easybasic::runtime::" + names.at(lowerName);
 }
 
+/// As `stringLibRuntimeName`, for the M4e Date library. `argCount` is
+/// needed specifically for `Date`: its zero-arg ("current time") and
+/// six-arg ("construct from components") forms map to two entirely
+/// different C++ functions (`pbDateNow`/`pbDate`), unlike every other
+/// optional-argument case elsewhere in this project - a C++ default
+/// parameter can't express "omit all six arguments at once, or none of
+/// them" (see `Sema::isDateLibBuiltinName`'s own doc comment).
+std::string dateLibRuntimeName(const std::string& lowerName, std::size_t argCount) {
+    if (lowerName == "date") {
+        return argCount == 0 ? "easybasic::runtime::pbDateNow" : "easybasic::runtime::pbDate";
+    }
+    static const std::unordered_map<std::string, std::string> names = {
+        {"year", "pbYear"},     {"month", "pbMonth"},         {"day", "pbDay"},
+        {"hour", "pbHour"},     {"minute", "pbMinute"},       {"second", "pbSecond"},
+        {"dayofweek", "pbDayOfWeek"}, {"formatdate", "pbFormatDate"}, {"adddate", "pbAddDate"},
+    };
+    return "easybasic::runtime::" + names.at(lowerName);
+}
+
 } // namespace
 
 std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName) {
@@ -333,6 +352,8 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 calleeName = memoryLibRuntimeName(call.name);
             } else if (Sema::isFileLibBuiltinName(call.name)) {
                 calleeName = fileLibRuntimeName(call.name);
+            } else if (Sema::isDateLibBuiltinName(call.name)) {
+                calleeName = dateLibRuntimeName(call.name, call.args.size());
             } else {
                 calleeName = "f_" + call.name;
             }

@@ -213,6 +213,19 @@ public:
     /// needed here either.
     static bool isFileLibBuiltinName(const std::string& lowerName);
 
+    /// True for the M4e Date-library functions (`Date`, `Year`, `Month`,
+    /// `Day`, `Hour`, `Minute`, `Second`, `DayOfWeek`, `FormatDate`,
+    /// `AddDate`) - mirrors `isFileLibBuiltinName`'s own role and
+    /// registration mechanism (`registerDateLibBuiltins`). `Date` is the
+    /// one exception to "no special argument-shape handling needed" every
+    /// other M4 library enjoyed: it's oracle-verified to accept *exactly*
+    /// 0 or 6 arguments, never 1-5, a genuinely bimodal arity `Sema`'s
+    /// usual continuous `[required, total]` range can't express exactly -
+    /// registered as `[0, 6]` anyway, a documented, minor imprecision (a
+    /// 1-5-argument call fails at the C++ backend-compile stage instead of
+    /// with a clean PB-style diagnostic, safely rejected either way).
+    static bool isDateLibBuiltinName(const std::string& lowerName);
+
     /// The literal Integer value of one of the handful of built-in `#PB_*`
     /// constants Sema pre-declares (currently only `#PB_Round_Down` (0),
     /// `#PB_Round_Up` (1), `#PB_Round_Nearest` (2), for `Round`'s own mode
@@ -303,6 +316,10 @@ private:
     void registerMemoryLibBuiltins();
     /// Same mechanism again, for the M4d File library.
     void registerFileLibBuiltins();
+    /// Same mechanism again, for the M4e Date library - see
+    /// `isDateLibBuiltinName`'s own doc comment for the one wrinkle
+    /// (`Date`'s bimodal arity) this mechanism doesn't capture exactly.
+    void registerDateLibBuiltins();
     /// Pre-populates `constants_` (but deliberately NOT `constOrder_` - see
     /// `Codegen::genExpr`'s `ConstRef` case) with the handful of built-in
     /// `#PB_*` constants Sema recognizes (currently just `Round`'s own

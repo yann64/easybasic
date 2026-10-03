@@ -19,6 +19,7 @@ Sema::Sema(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {
     registerMathLibBuiltins();
     registerMemoryLibBuiltins();
     registerFileLibBuiltins();
+    registerDateLibBuiltins();
     registerBuiltinConstants();
 }
 
@@ -214,16 +215,66 @@ bool Sema::isFileLibBuiltinName(const std::string& lowerName) {
     return names.contains(lowerName);
 }
 
+void Sema::registerDateLibBuiltins() {
+    struct Signature {
+        const char* name;
+        TypeSuffix returnSuffix;
+        std::vector<TypeSuffix> paramSuffixes;
+        std::size_t requiredParamCount;
+    };
+    static const std::vector<Signature> signatures = {
+        // `Date` - see isDateLibBuiltinName's own doc comment on why [0, 6]
+        // is a deliberate, documented approximation of its real "exactly 0
+        // or 6" arity.
+        {"date", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         0},
+        {"year", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"month", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"day", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"hour", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"minute", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"second", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"dayofweek", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"formatdate", TypeSuffix::String, {TypeSuffix::String, TypeSuffix::Integer}, 2},
+        {"adddate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+    };
+    for (const auto& sig : signatures) {
+        ProcedureInfo info;
+        info.returnSuffix = sig.returnSuffix;
+        info.paramSuffixes = sig.paramSuffixes;
+        info.requiredParamCount = sig.requiredParamCount;
+        procedures_[sig.name] = info;
+    }
+}
+
+bool Sema::isDateLibBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "date", "year", "month", "day", "hour", "minute", "second", "dayofweek", "formatdate", "adddate",
+    };
+    return names.contains(lowerName);
+}
+
 namespace {
 const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
     // Oracle-verified values (`pbcompilerc`): `#PB_Round_Down` = 0,
     // `#PB_Round_Up` = 1, `#PB_Round_Nearest` = 2. A fourth, plausible-
     // sounding `#PB_Round_Truncate` does NOT exist in real PB ("Constant
-    // not found").
+    // not found"). `#PB_Date_*` (for `AddDate`'s own unit argument) is
+    // oracle-verified too: Year=0, Month=1, Week=2, Day=3, Hour=4,
+    // Minute=5, Second=6.
     static const std::unordered_map<std::string, std::int64_t> table = {
         {"pb_round_down", 0},
         {"pb_round_up", 1},
         {"pb_round_nearest", 2},
+        {"pb_date_year", 0},
+        {"pb_date_month", 1},
+        {"pb_date_week", 2},
+        {"pb_date_day", 3},
+        {"pb_date_hour", 4},
+        {"pb_date_minute", 5},
+        {"pb_date_second", 6},
     };
     return table;
 }
