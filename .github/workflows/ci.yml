@@ -136,6 +136,32 @@ jobs:
       - name: Test
         run: ctest --preset windows-mingw
 
-  # Haiku is not part of this matrix - no GitHub-hosted Haiku image exists.
-  # The real path to Haiku CI is registering an SSH-reachable qemu VM as a
-  # self-hosted runner (M6) - see docs/architecture/roadmap.md's M6 notes.
+  # No GitHub-hosted Haiku image exists, and Haiku itself can't run the
+  # official Actions runner agent directly - it's a .NET application, and
+  # Haiku has no .NET/Mono support at all. The workable design instead: a
+  # self-hosted runner on this Linux dev machine (labeled `haiku-bridge`),
+  # whose own steps run here as normal, but reach over SSH to a real Haiku
+  # machine on the same LAN to do the actual configure/build/test - the
+  # same thing a developer would do by hand, just scripted. This machine
+  # and the Haiku box both need to be reachable for this job to pass; if
+  # either is offline, this job fails/hangs rather than silently skipping.
+  haiku:
+    runs-on: [self-hosted, haiku-bridge]
+    env:
+      HAIKU_HOST: user@192.168.1.32
+      HAIKU_SSH_KEY: /home/yann64/.ssh/id_ed25519_haiku
+      HAIKU_REMOTE_DIR: /boot/home/ci/easybasic
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync source to the Haiku machine
+        # --delete keeps the remote source tree exactly in sync with this
+        # checkout; build/ is excluded so CMake's own incremental rebuild
+        # still applies between runs (full Haiku builds are slow).
+        run: |
+          rsync -az --delete --exclude='build/' --exclude='.git/' \
+            -e "ssh -i $HAIKU_SSH_KEY -o StrictHostKeyChecking=accept-new" \
+            ./ "$HAIKU_HOST:$HAIKU_REMOTE_DIR/"
+      - name: Configure, build, and test on Haiku
+        run: |
+          ssh -i "$HAIKU_SSH_KEY" -o StrictHostKeyChecking=accept-new "$HAIKU_HOST" \
+            "cd $HAIKU_REMOTE_DIR && cmake --preset haiku && cmake --build --preset haiku && ctest --preset haiku --output-on-failure"

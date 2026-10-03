@@ -14,7 +14,12 @@
 ; This was a real gap this project's own first-ever Windows CI run (M6)
 ; caught directly: it runs this exact suite on real Windows, which quite
 ; literally does select the #PB_OS_Windows branch there, not a
-; hypothetical concern.
+; hypothetical concern. #PB_OS_Haiku has to be included here too (a
+; pbcxx-specific extension, not a real PB constant, since Haiku isn't an
+; officially PB-supported platform at all) - caught the same way, by
+; actually running this suite on a real Haiku machine, which otherwise
+; correctly reported isKnownOS = 0 (true: none of the *official* PB OS
+; constants matched Haiku's own #PB_Compiler_OS value).
 #MyFlag = 1
 
 isKnownOS.i = 0
@@ -23,6 +28,8 @@ CompilerIf #PB_Compiler_OS = #PB_OS_Windows
 CompilerElseIf #PB_Compiler_OS = #PB_OS_Linux
   isKnownOS = 1
 CompilerElseIf #PB_Compiler_OS = #PB_OS_MacOS
+  isKnownOS = 1
+CompilerElseIf #PB_Compiler_OS = #PB_OS_Haiku
   isKnownOS = 1
 CompilerEndIf
 Debug isKnownOS
