@@ -2,10 +2,14 @@
 # split out from the rest of the compiler from day one (mirrors eBasic's own
 # ebasic_frontend) so a future docgen/LSP tool can parse real PB source the
 # exact same way `pbcxx` itself does, without linking Sema/Codegen at all.
-# (Preprocessor has no sources yet - CompilerIf/Macro/DataSection land in M5.)
+# (CompilerIf/DataSection ended up living in Sema instead - see their own
+# doc comments; Macro's own token-level textual substitution is the one
+# piece that genuinely has to run before the Parser, so it's the first real
+# preprocessor/ source.)
 add_library(pbcxx_frontend STATIC
     src/diagnostics/diagnostics.cpp
     src/lexer/lexer.cpp
+    src/preprocessor/macro_expander.cpp
     src/parser/parser.cpp
 )
 target_include_directories(pbcxx_frontend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

@@ -94,6 +94,8 @@ const std::unordered_map<std::string, TokenKind>& keywordTable() {
         {"data", TokenKind::KwData},
         {"read", TokenKind::KwRead},
         {"restore", TokenKind::KwRestore},
+        {"macro", TokenKind::KwMacro},
+        {"endmacro", TokenKind::KwEndMacro},
         {"and", TokenKind::KwAnd},
         {"or", TokenKind::KwOr},
         {"not", TokenKind::KwNot},
@@ -163,6 +165,8 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwData: return "'Data'";
         case TokenKind::KwRead: return "'Read'";
         case TokenKind::KwRestore: return "'Restore'";
+        case TokenKind::KwMacro: return "'Macro'";
+        case TokenKind::KwEndMacro: return "'EndMacro'";
         case TokenKind::KwAnd: return "'And'";
         case TokenKind::KwOr: return "'Or'";
         case TokenKind::KwNot: return "'Not'";

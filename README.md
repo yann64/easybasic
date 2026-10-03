@@ -5,27 +5,29 @@ compiles the generated C++ with a real backend compiler (g++/clang++).
 
 ## Status
 
-`M0`-`M4` done, `M5` in progress: core literals, `Define`/`Debug`, assignment, the full
-oracle-derived operator/precedence table (arithmetic, bitwise, comparisons, logical),
-`If`/`Select`/`For`/`While`/`Repeat`, `EnableExplicit`, `#Name`/`Enumeration` constants,
+`M0`-`M5` done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
+operator/precedence table (arithmetic, bitwise, comparisons, logical), `If`/`Select`/
+`For`/`While`/`Repeat`, `EnableExplicit`, `#Name`/`Enumeration` constants,
 `Procedure`/`ProcedureReturn` with recursion and genuinely isolated per-procedure scope,
 `Global`/`Shared`/`Protected`, static `Dim` arrays, `Structure` (incl. nested/arrays-of-
 Structure), pointers (`*Var`/`@Var`, `\`-dereference, `AllocateMemory`/
 `AllocateStructure`), `NewList`/`NewMap` (`ForEach`, cursor navigation, by-key Map
 access), `Declare` (mutual recursion), the core String/Math/Memory/File/Date
 libraries (`Left`/`Mid`/`Str`/`Val`, `Sqr`/`Pow`/`Round`, `Peek*`/`Poke*`,
-`CreateFile`/`ReadFile`/`Loc`/`Lof`, `Date`/`Year`/`FormatDate`/`AddDate`), and
+`CreateFile`/`ReadFile`/`Loc`/`Lof`, `Date`/`Year`/`FormatDate`/`AddDate`),
 `CompilerIf`/`CompilerSelect` with the `#PB_Compiler_OS`/`#PB_OS_*`/
 `#PB_Compiler_Processor`/`#PB_Processor_*` constants (resolved entirely at transpile time -
-non-taken branches are never type-checked, matching real PB), and `DataSection`/`Data`/
+non-taken branches are never type-checked, matching real PB), `DataSection`/`Data`/
 `Read`/`Restore` (a global, concatenated data pool with forward-referenceable labels and a
-debug-mode-only "out of data" fatal error, matching real PB exactly) - all cross-checked against
-PureBasic's own compiler, including real bugs (a target-typed `/`, a two-tier vs. one-tier
-bitwise precedence mix-up, a wrong initial assumption about primitive-typed pointers, an
-unaligned-memory-access UB in `Peek*`/`Poke*`) the differential test suite or a targeted
-oracle probe caught before they shipped. See
-[`docs/architecture/roadmap.md`](docs/architecture/roadmap.md) for the full milestone
-plan and the per-milestone implementation notes.
+debug-mode-only "out of data" fatal error, matching real PB exactly), and non-recursive
+`Macro`/`EndMacro` (a genuine token-level textual substitution pass run before parsing,
+since a macro parameter is pasted as raw, unparenthesized text rather than a pre-evaluated
+value - oracle-verified) - all cross-checked against PureBasic's own compiler, including
+real bugs (a target-typed `/`, a two-tier vs. one-tier bitwise precedence mix-up, a wrong
+initial assumption about primitive-typed pointers, an unaligned-memory-access UB in
+`Peek*`/`Poke*`) the differential test suite or a targeted oracle probe caught before they
+shipped. See [`docs/architecture/roadmap.md`](docs/architecture/roadmap.md) for the full
+milestone plan and the per-milestone implementation notes.
 
 ## Building
 

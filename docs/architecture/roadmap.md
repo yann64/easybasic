@@ -29,7 +29,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deferred to and closed by M3a/M3b; mutual recursion/`Declare`, call-argument type-checking, and constants in nested blocks deferred further, closed by a dedicated M2-closure pass (see its own notes) |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
-| **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | In progress - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a) and `DataSection`/`Data`/`Read`/`Restore` (M5b) done; `Macro` remains |
+| **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
 
@@ -1303,4 +1303,81 @@ desync real PB's own byte-level cursor, producing outright garbage on every subs
 read; this project's logical-item cursor can't (and doesn't try to) reproduce that specific
 garbage, since byte-for-byte ABI fidelity was never a goal of this project (the same
 principle already applied to `PeekS`/`PokeS`'s own `@stringVar` limitation in M4c).
+
+## M5c Implementation Notes (non-recursive `Macro`/`EndMacro`) - M5 complete
+
+**Scope landed**: `Macro name[(param1, param2, ...)] ... EndMacro`, invoked either
+`name(arg1, arg2, ...)` or (zero-parameter only) bare `name`. This closes out M5 -
+`CompilerIf`/`CompilerSelect` (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), and now
+`Macro` are all done. `IncludeFile`/`XIncludeFile` were never in this milestone's own scope
+and remain unimplemented.
+
+**The single most consequential oracle finding**: a macro parameter is substituted as raw,
+unparenthesized *tokens*, not a pre-evaluated value - `Macro Square(x) : x*x : EndMacro`
+invoked as `Square(2+3)` expands to the literal token sequence `2+3*2+3`, which is `11`
+under ordinary operator precedence, **not** `25` - the classic C-preprocessor "forgot the
+parens" result. This single fact rules out doing `Macro` the way `CompilerIf`/`DataSection`
+were done (an AST-level transformation inside `Sema`, working with already-parsed,
+already-typed expression trees) - by the time anything is parsed into an expression tree,
+the "raw text, not a value" distinction that makes `Square(2+3)` give `11` is already lost.
+`Macro` is instead a genuine **token-level textual substitution pass** (`MacroExpander`,
+new `compiler/src/preprocessor/` - the directory existed empty since M0, originally
+intended for exactly this), run between the `Lexer` and the `Parser`, mirroring a C
+preprocessor - and, per real `pbcompilerc`'s own error text referencing "the expanded macro
+(Macro.out)" when something goes wrong inside one, apparently mirroring real PB's own
+implementation strategy too.
+
+**A second oracle finding governs the other half of the design**: a zero-parameter macro is
+invoked **bare**, with no parens at all - `Greet` works, but `Greet()` is a syntax error
+("Garbage at the end of the line"), the *opposite* of a zero-arg `Procedure` call (which
+requires `()`). A bare identifier is otherwise genuinely ambiguous with a plain variable
+reference at the grammar level, so recognizing "this identifier is actually a macro
+invocation" has to happen by name lookup directly against the token stream, before the
+Parser's own grammar-driven disambiguation ever runs - another point in favor of a pre-
+Parser token pass rather than anything Parser- or Sema-level.
+
+**A methodologically important correction caught mid-slice**: an early design iteration
+collected *every* `Macro` definition in the file into a lookup table first (mirroring
+`Sema::collectDataSections`'s own whole-Module pre-pass for `Restore`'s forward-reference
+support), then expanded invocations against that complete table - which would make a macro
+invocation *forward-reference* a definition appearing later in the file. This looked
+correct under a `-k` syntax-only check (already a known pitfall - see the M3f/M2-closure
+notes on `-k` not validating that a called name is real) - but a full `-d -o` compile
+reveals real PB actually **rejects** this ("... is not a function, array, list, map or
+macro."). Caught specifically by re-verifying with a full compile instead of trusting the
+earlier `-k` result, this ruled out the whole-file-pre-pass design: `MacroExpander` instead
+populates its definition table *incrementally*, in a single left-to-right scan - a macro is
+only available for expansion from the point its own `Macro ... EndMacro` is reached onward,
+exactly like a genuine single-pass preprocessor (and, oracle-verified the other way,
+*unlike* `DataSection`'s own labels, which genuinely do support a forward `Restore`
+reference via a full compile+run check, not just `-k`).
+
+**A real bug caught before it ever reached the oracle comparison**: the first working
+version of the token-level substitution pasted a macro's *entire* captured body - including
+the leading `NewLine` token ending the `Macro name(...)` header line itself, and the
+trailing one right before `EndMacro` - verbatim into the invocation site. For an expression-
+style macro this silently broke the *invoking* statement: `Debug Double(5)` (body `(x) * 2`)
+expanded to `Debug` <newline> `(5) * 2` as two separate, broken statements, since the
+leading `NewLine` terminated the `Debug` statement immediately with no expression at all.
+Fixed by trimming only the *outermost* leading/trailing `NewLine`/`Colon` from a captured
+body - an *internal* separator (between two statements in a multi-statement macro like
+`PrintBoth`) is left untouched, since that one is genuinely meaningful content.
+
+**Nested macro invocation and non-recursion are both handled by the same recursive
+design**: `MacroExpander::expandTokens` recurses into a macro's own (parameter-substituted)
+body to fully expand it before splicing the result into the output, so `Outer(a)` calling
+`Inner(a)` (oracle-verified) naturally bottoms out correctly regardless of which macro was
+defined first in the file. The same recursion carries an `activeExpansion_` name set,
+checked on entry to each nested expansion - oracle-verified real PB itself detects and
+rejects direct/indirect self-recursion ("Endless recursivity detected in the Macro.")
+rather than hanging forever; since the set tracks the *whole* active expansion chain (not
+just the immediate caller), a longer mutual-recursion cycle would be caught the same way,
+though that specific case wasn't separately oracle-verified.
+
+**Deliberately not chased byte-for-byte**: the exact wording of real PB's own diagnostics
+for a missing/forward-referenced macro, a wrong argument count, or self-recursion - this
+project raises its own clear, distinct diagnostic for each (verified to actually fire, via
+both targeted `MacroExpander` unit tests and a full pbcxx run), not real PB's exact text.
+`IncludeFile`/`XIncludeFile` remain unimplemented and unverified - out of this milestone's
+stated scope from the start.
 

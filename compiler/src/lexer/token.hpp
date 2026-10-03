@@ -70,6 +70,8 @@ enum class TokenKind {
     KwData,             ///< `Data.suffix v1[, v2, ...]` inside a DataSection (M5b).
     KwRead,             ///< `Read[.suffix] varname` (M5b).
     KwRestore,          ///< `Restore label` (M5b).
+    KwMacro,            ///< `Macro name[(params)] ... EndMacro` (M5c).
+    KwEndMacro,
     KwAnd,
     KwOr,
     KwNot,

@@ -10,6 +10,7 @@
 #include "../diagnostics/diagnostics.hpp"
 #include "../lexer/lexer.hpp"
 #include "../parser/parser.hpp"
+#include "../preprocessor/macro_expander.hpp"
 #include "../sema/sema.hpp"
 #include "easybasic/version.hpp"
 #include "process.hpp"
@@ -104,6 +105,13 @@ int main(int argc, char** argv) {
 
     easybasic::Lexer lexer(source, fileId, diagnostics);
     std::vector<easybasic::Token> tokens = lexer.tokenize();
+    if (diagnostics.hasErrors()) {
+        diagnostics.printAll(std::cerr);
+        return 1;
+    }
+
+    easybasic::MacroExpander macroExpander(diagnostics);
+    tokens = macroExpander.expand(tokens);
     if (diagnostics.hasErrors()) {
         diagnostics.printAll(std::cerr);
         return 1;

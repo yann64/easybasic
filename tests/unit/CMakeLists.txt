@@ -1,5 +1,6 @@
 add_executable(easybasic_unit_tests
     lexer_test.cpp
+    macro_expander_test.cpp
     sema_test.cpp
     runtime_pbstring_test.cpp
     runtime_stringlib_test.cpp
