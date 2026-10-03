@@ -59,24 +59,47 @@ jobs:
           run-clang-tidy -p build/linux-clang \
             $(find compiler/src runtime/include -name '*.cpp' -o -name '*.hpp')
       - name: cppcheck
-        # `--enable=all` (style+inconclusive included) is what's used for
-        # local, informational review throughout this project's own
-        # development - deliberately *not* what gates CI, since this
-        # codebase has accumulated plenty of accepted style-only notes
-        # (useStlAlgorithm, constVariableReference, intentionally-kept-for-
-        # future-use "unused" public API functions) that were never meant
-        # to be build-breaking. `warning,performance,portability` is the
-        # subset that actually indicates a real bug. Passing the file list
-        # explicitly (not just the two directories) because cppcheck
-        # otherwise silently skips a header-only directory like
-        # runtime/include entirely - it has no .cpp of its own for cppcheck
-        # to treat as a translation unit - so `runtime/include`'s own
-        # substantial logic (PBString, PBList/PBMap, the stdlib headers)
-        # was never actually being checked here before this fix.
+        # `--enable=style,warning,performance,portability` deliberately
+        # excludes `information` (what `--enable=all` would additionally
+        # pull in) - this cppcheck version's `--error-exitcode` counts an
+        # enabled `information`-severity notice (e.g.
+        # `normalCheckLevelMaxBranches`, printed once per file; the
+        # generated-at-build-time `easybasic/version.hpp` not being found
+        # during this standalone lint pass) as a failure too, which isn't
+        # the kind of thing this gate should ever block on. Explicit
+        # `--suppress=` IDs below are for specific *style* findings already
+        # reviewed and accepted as not real bugs:
+        #   - useStlAlgorithm/constVariableReference: style preferences,
+        #     not adopted (raw loops and non-const auto& downcasts are
+        #     pervasive and intentional throughout parser/sema/codegen).
+        #   - unusedFunction: flags public API kept for tests/future
+        #     callers that cppcheck's whole-program view can't see used
+        #     (DiagnosticEngine::warning/diagnostics(),
+        #     constDeclarationOrder()) - and, once runtime/include's own
+        #     .hpp files are checked as their own standalone translation
+        #     units (see below), *every* runtime library function, since
+        #     none of them are "called" from within their own header.
+        #   - duplicateAssignExpression: a false positive in
+        #     stringlib.hpp's pbUtf16Slice - byteStart/byteEnd are
+        #     deliberately both initialized to the same `utf8.size()`
+        #     sentinel ("default to end of string"), not a copy-paste bug.
+        #   - noExplicitConstructor: PBString's implicit single-argument
+        #     constructors are deliberate, for PB's own value-semantics
+        #     ergonomics (`s = "hi"` needs an implicit `const char*`
+        #     conversion).
+        # `compiler/src` is passed as a plain directory (cppcheck's normal
+        # mode: scan each .cpp, pulling in its own headers via #include, so
+        # a header's usage is seen in context) - but runtime/include's own
+        # .hpp files have to be passed explicitly, since a header-only
+        # directory with no .cpp of its own is otherwise silently never
+        # scanned at all (confirmed: `cppcheck runtime/include` alone
+        # errors with "could not find or open any of the paths given").
         run: |
-          cppcheck --enable=warning,performance,portability --error-exitcode=1 \
-            --suppress=missingIncludeSystem -I compiler/src -I runtime/include --std=c++20 \
-            $(find compiler/src runtime/include -name '*.cpp' -o -name '*.hpp')
+          cppcheck --enable=style,warning,performance,portability --inconclusive --error-exitcode=1 \
+            --suppress=useStlAlgorithm --suppress=constVariableReference \
+            --suppress=unusedFunction --suppress=duplicateAssignExpression \
+            --suppress=noExplicitConstructor -I compiler/src -I runtime/include --std=c++20 \
+            compiler/src $(find runtime/include -name '*.hpp')
 
   windows-mingw:
     runs-on: windows-latest
