@@ -57,6 +57,14 @@ enum class TokenKind {
     KwNewList,   ///< `NewList name.type()` - declares a List (M3e).
     KwNewMap,    ///< `NewMap name.type()` - declares a Map (M3f).
     KwForEach,   ///< `ForEach name() ... Next` - iterates a List/Map (M3e/M3f).
+    KwCompilerIf,       ///< `CompilerIf cond ... CompilerEndIf` - compile-time branch (M5a).
+    KwCompilerElseIf,
+    KwCompilerElse,
+    KwCompilerEndIf,
+    KwCompilerSelect,   ///< `CompilerSelect sel ... CompilerEndSelect` - compile-time branch (M5a).
+    KwCompilerCase,
+    KwCompilerDefault,
+    KwCompilerEndSelect,
     KwAnd,
     KwOr,
     KwNot,

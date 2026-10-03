@@ -1101,3 +1101,111 @@ TEST_CASE("Sema recognizes the Date-library builtins by name", "[sema][datelib]"
     CHECK(Sema::isDateLibBuiltinName("adddate"));
     CHECK_FALSE(Sema::isDateLibBuiltinName("somethingelse"));
 }
+
+TEST_CASE("Sema splices a taken CompilerIf branch's statements into the surrounding block",
+          "[sema][compilerif]") {
+    DiagnosticEngine diags;
+    auto module = parse("CompilerIf 1 = 1\nx.i = 5\nCompilerElse\ny.i = 6\nCompilerEndIf", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK(sema.typeOf("x") == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema's non-taken CompilerIf branch never declares its own variables",
+          "[sema][compilerif]") {
+    // EnableExplicit makes an undeclared-variable reference an error, so
+    // this is how "the Else branch's `y.i = 6` never ran" is observable:
+    // referencing `y` afterward fails exactly as it would if that
+    // assignment had never been written at all (typeOf() alone can't tell
+    // "declared as Integer" apart from "never declared", since it defaults
+    // an unknown name to Integer too).
+    DiagnosticEngine diags;
+    auto module =
+        parse("EnableExplicit\nCompilerIf 1 = 1\nx.i = 5\nCompilerElse\ny.i = 6\nCompilerEndIf\nDebug y", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema never type-checks a non-taken CompilerIf branch", "[sema][compilerif]") {
+    // Oracle-verified: a bogus call in a non-selected branch raises no
+    // error at all - the branch isn't even looked at.
+    DiagnosticEngine diags;
+    auto module =
+        parse("CompilerIf 1 = 0\nThisIsNotARealFunctionAtAll()\nCompilerEndIf", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema allows a Procedure declared inside a selected CompilerIf branch",
+          "[sema][compilerif]") {
+    // Oracle-verified legal, unlike a Procedure nested inside a runtime If
+    // (which Sema rejects - see the ProcedureDecl/controlFlowDepth_ notes).
+    DiagnosticEngine diags;
+    auto module = parse("CompilerIf 1 = 1\nProcedure Foo()\nProcedureReturn 42\nEndProcedure\nCompilerEndIf",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK(sema.procedureInfo("foo") != nullptr);
+}
+
+TEST_CASE("Sema's CompilerIf condition can reference a user-defined #Constant", "[sema][compilerif]") {
+    DiagnosticEngine diags;
+    auto module = parse("#MyFlag = 1\nCompilerIf #MyFlag = 1\nx.i = 5\nCompilerEndIf", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK(sema.typeOf("x") == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema diagnoses a non-constant CompilerIf condition", "[sema][compilerif]") {
+    DiagnosticEngine diags;
+    auto module = parse("Define v.i = 5\nCompilerIf v = 1\nCompilerEndIf", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves CompilerSelect, splicing in the matching CompilerCase", "[sema][compilerif]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "CompilerSelect 4\nCompilerCase 2\nx.i = 1\nCompilerCase 4\ny.i = 2\nCompilerDefault\nz.i = 3\n"
+        "CompilerEndSelect",
+        diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK(sema.typeOf("y") == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema's CompilerSelect never declares a non-matching CompilerCase branch's variables",
+          "[sema][compilerif]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "EnableExplicit\nCompilerSelect 4\nCompilerCase 2\nx.i = 1\nCompilerCase 4\ny.i = 2\n"
+        "CompilerDefault\nz.i = 3\nCompilerEndSelect\nDebug x",
+        diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema's CompilerSelect falls back to CompilerDefault when no CompilerCase matches",
+          "[sema][compilerif]") {
+    DiagnosticEngine diags;
+    auto module =
+        parse("CompilerSelect 99\nCompilerCase 1\nx.i = 1\nCompilerDefault\ny.i = 2\nCompilerEndSelect", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK(sema.typeOf("y") == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema's builtinConstantValue resolves the #PB_OS_*/#PB_Processor_* constants",
+          "[sema][compilerif]") {
+    // Fixed values, independent of whatever platform this build runs on
+    // (unlike #PB_Compiler_OS/#PB_Compiler_Processor themselves).
+    CHECK(Sema::builtinConstantValue("pb_os_windows") == 1);
+    CHECK(Sema::builtinConstantValue("pb_os_linux") == 2);
+    CHECK(Sema::builtinConstantValue("pb_os_macos") == 4);
+    CHECK(Sema::builtinConstantValue("pb_processor_x86") == 2);
+    CHECK(Sema::builtinConstantValue("pb_processor_x64") == 4);
+}

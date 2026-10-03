@@ -29,7 +29,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deferred to and closed by M3a/M3b; mutual recursion/`Declare`, call-argument type-checking, and constants in nested blocks deferred further, closed by a dedicated M2-closure pass (see its own notes) |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
-| **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Not started |
+| **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | In progress - `CompilerIf`/`CompilerSelect` + `#PB_Compiler_OS`/`#PB_OS_*`/`#PB_Compiler_Processor`/`#PB_Processor_*` done (M5a) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
 
@@ -1110,4 +1110,101 @@ names, AM/PM); `Date`'s own documented timezone/DST edge cases (a component comb
 that doesn't exist, e.g. a "spring-forward" gap hour, is left to `mktime`'s own
 platform-specific normalization behavior rather than specially validated) - M4 as a whole
 is now done; M5 (`CompilerIf`/`CompilerSelect`, `DataSection`, `Macro`) is next.
+
+## M5a Implementation Notes (`CompilerIf`/`CompilerSelect` + `#PB_Compiler_*`/`#PB_OS_*`/`#PB_Processor_*`)
+
+**Scope landed**: `CompilerIf`/`CompilerElseIf`/`CompilerElse`/`CompilerEndIf`,
+`CompilerSelect`/`CompilerCase`/`CompilerDefault`/`CompilerEndSelect`, and
+`#PB_Compiler_OS`/`#PB_OS_Windows`/`#PB_OS_Linux`/`#PB_OS_MacOS`/`#PB_Compiler_Processor`/
+`#PB_Processor_x86`/`#PB_Processor_x64`. `DataSection`/`Data`/`Read`/`Restore` and
+non-recursive `Macro` remain for a later M5 slice.
+
+**The single most consequential oracle finding this slice turned up**: a non-selected
+`CompilerIf`/`CompilerSelect` branch is **never type-checked at all** by real PB - a
+syntax-check of a program with a bogus, nonexistent function call sitting inside a branch
+that the current platform doesn't select succeeds cleanly, with no diagnostic whatsoever.
+This directly ruled out the "keep the node in the tree, have `Sema` just skip walking the
+untaken side" design (the obvious first idea), because `Codegen`'s own `genDeclarePrototypes`/
+`genProcedures` scan `module_.statements` directly rather than recursively, and because a
+second, independently oracle-verified fact - **a `Procedure` declared inside a *selected*
+`CompilerIf` branch is legal** (unlike inside a runtime `If`, which `Sema` already rejects,
+see the M2-closure notes) - meant a naive "leave the node in place, mark which branch Sema
+picked" design would also have required teaching `genProcedures`/`genDeclarePrototypes`/
+`genConstantsIn` to recurse into `CompilerIf`/`CompilerSelect` nodes specifically, mirroring
+the exact "only scans top-level statements" class of bug the M2-closure work fixed once
+already for `Declare`/global constants.
+
+**Chosen design**: resolve `CompilerIf`/`CompilerSelect` as a genuine, permanent **AST
+rewrite performed by `Sema`, not a runtime construct lowered by `Codegen` at all**.
+`Sema::visitBlock` (which already owns the mutable `ast::Block& block` it's walking) now
+detects a `CompilerIf`/`CompilerSelect` node at the current position, evaluates its
+condition/selector with a new compile-time constant folder (`Sema::evalConstExpr`), and
+**splices the selected branch's own statements directly into `block` in the node's place**
+(`Sema::resolveCompilerIf`/`resolveCompilerSelect`) - moving the `unique_ptr<Stmt>`
+elements out, not copying them. After `Sema::analyze()` returns, a `CompilerIf`/
+`CompilerSelect` node no longer exists anywhere in the tree at all: the selected branch's
+statements are sitting exactly where the node used to be, as if they'd been written there
+directly, as a real preprocessor's textual substitution would behave, just performed at
+the AST level instead of the token level. This is why `Codegen` needs no new logic for
+either `StmtKind` beyond a `-Wswitch` exhaustiveness placeholder (both `genStmt`'s main
+switch and `Sema::visitStmt`'s own switch have one, documented as unreachable) - it runs
+as a completely separate pass over the same, already-rewritten `Module`, so every
+existing top-level-only or recursive scan (`genDeclarePrototypes`, `genProcedures`,
+`genConstantsIn`) "just works" for anything that used to be wrapped in a `CompilerIf`,
+with zero changes needed to any of them.
+
+**A correctness subtlety the splicing approach could have gotten wrong**: `evalConstExpr`'s
+caller holds a reference to the *selected branch's* `ast::Block` (a member of the
+`CompilerIfStmt`/`CompilerSelectStmt` node itself) right up until the moment that node is
+erased from the parent `block` - and erasing a `unique_ptr<Stmt>` element destroys the
+`CompilerIfStmt`/`CompilerSelectStmt` object it points to, including every one of its
+`branches`/`cases`. `resolveCompilerIf`/`resolveCompilerSelect` therefore `std::move` the
+selected branch's `Block` out into a local variable **before** erasing the node, so the
+local variable owns its statements independently by the time the node (and its now-empty,
+moved-from branches) gets destroyed. Caught by reasoning through the ownership chain
+during implementation, not by a test failure - but also independently confirmed clean
+under the ASan/UBSan preset afterward (no use-after-free, as this bug class would have
+produced).
+
+**`CompilerIf`'s condition genuinely needs real constant VALUES, which `Sema` had never
+needed to track before this**: every earlier milestone's constant handling
+(`constants_`/`constOrder_`) only ever needed each `#Name`'s *type*, never its actual
+number - `Codegen` re-evaluates a constant's own init expression directly as C++ rather
+than asking `Sema` for a precomputed value, and `Enumeration` member chaining
+(`k_previousName + 1`) was likewise deferred entirely to generated C++ arithmetic.
+`CompilerIf`/`CompilerSelect` conditions are the first construct that needs `Sema` itself
+to do real compile-time arithmetic on a `#Name` reference, since a non-selected branch is
+never going to become C++ code that could do that arithmetic at runtime. Closed by adding
+a new `constantIntValues_` table (Integer-family only - deliberately not extended to
+String/Float constants, since no oracle-verified `CompilerIf` usage needs them),
+populated for user `#Name = expr` declarations and `Enumeration` members (replicating the
+same auto-increment chaining `Codegen` already does, just as real arithmetic instead of
+generated C++ text) alongside the pre-existing built-in `#PB_*` table, and consulted by
+`Sema::evalConstExpr` - a small recursive folder covering `IntLiteral`, `ConstRef`,
+`Unary`/`Binary` arithmetic, comparison, and `And`/`Or` (not `XOr`, which stays untrusted
+here for the same reason it's untrusted in `genCondition` - see that code's own notes).
+Oracle-verified end-to-end: a user `#MyFlag = 1` referenced in a later `CompilerIf
+#MyFlag = 1` resolves and selects the expected branch, byte-for-byte matching real PB's
+own output for the same program.
+
+**`#PB_Compiler_OS`/`#PB_Compiler_Processor` reflect whatever platform `pbcxx` itself was
+*built* for**, via standard preprocessor macros (`_WIN32`, `__APPLE__`, `__HAIKU__`,
+`__x86_64__`/`__aarch64__`/`__arm__`, falling back to Linux/x86 otherwise) - correct for
+this project's single-target model (it shells out to a native g++/clang++ for the same
+machine it runs on; there is no cross-compilation story to account for separately).
+Oracle-verified on this Linux/x64 development machine: `#PB_Compiler_OS` = `2`
+(`#PB_OS_Linux`), `#PB_Compiler_Processor` = `4` (`#PB_Processor_x64`); `#PB_OS_Windows` =
+`1` and `#PB_OS_MacOS` = `4` and `#PB_Processor_x86` = `2` are oracle-verified as the
+*fixed, always-available* comparison values (e.g. `#PB_OS_Windows` is legal and equal to
+`1` even when compiled on Linux, just never equal to the *current* `#PB_Compiler_OS`).
+**`#PB_OS_Haiku` has no real-PB value to verify at all** - Haiku isn't an officially
+PB-supported platform - so `8` is a pbcxx-specific extension continuing the confirmed
+values' power-of-two pattern, documented as such rather than presented as oracle fact;
+the ARM processor constants (`#PB_Processor_arm64`=`8`, `#PB_Processor_arm`=`16`) are
+likewise unverified best-guesses (no ARM machine available to check against), chosen only
+to be internally distinct from the two confirmed x86/x64 values.
+
+**Deliberately deferred to a later M5 slice**: `DataSection`/`Data`/`Read`/`Restore`;
+non-recursive `Macro`/`EndMacro`; `IncludeFile`/`XIncludeFile`. None of these have been
+oracle-verified yet.
 

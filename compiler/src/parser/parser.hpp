@@ -53,6 +53,14 @@ private:
     std::unique_ptr<ast::Stmt> parseDebug();
     std::unique_ptr<ast::Stmt> parseIf();
     std::unique_ptr<ast::Stmt> parseSelect();
+    /// `CompilerIf`/`CompilerSelect` - structurally identical to `parseIf`/
+    /// `parseSelect`, including reusing `parseCondition()` for the exact
+    /// same comparison/`And`/`Or`/`Not` grammar (oracle-verified: a
+    /// `CompilerIf` condition is a boolean context exactly like a runtime
+    /// `If`'s) - see ast::CompilerIfStmt's own doc comment for why `Sema`,
+    /// not `Codegen`, is what actually resolves these.
+    std::unique_ptr<ast::Stmt> parseCompilerIf();
+    std::unique_ptr<ast::Stmt> parseCompilerSelect();
     std::unique_ptr<ast::Stmt> parseFor();
     std::unique_ptr<ast::Stmt> parseWhile();
     std::unique_ptr<ast::Stmt> parseRepeat();

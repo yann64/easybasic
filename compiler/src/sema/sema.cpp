@@ -257,13 +257,52 @@ bool Sema::isDateLibBuiltinName(const std::string& lowerName) {
 }
 
 namespace {
+
+// `#PB_Compiler_OS`/`#PB_Compiler_Processor` reflect whatever platform
+// `pbcxx` *itself* was built for, not a cross-compilation target - this
+// project doesn't support cross-compiling (it shells out to a native g++/
+// clang++ for the same machine it runs on), so "the platform pbcxx runs
+// on" and "the platform the generated binary will run on" are always the
+// same, exactly like real `pbcompilerc`'s own single-target model.
+#if defined(_WIN32)
+constexpr std::int64_t kCompilerOs = 1; // #PB_OS_Windows (oracle-verified)
+#elif defined(__HAIKU__)
+// Haiku is not an officially PB-supported platform at all, so there is no
+// real `#PB_OS_Haiku` to match - this is a pbcxx-specific extension value
+// (continuing the power-of-two pattern the three confirmed values follow),
+// not something oracle-verified against real PB.
+constexpr std::int64_t kCompilerOs = 8;
+#elif defined(__APPLE__)
+constexpr std::int64_t kCompilerOs = 4; // #PB_OS_MacOS (oracle-verified)
+#else
+constexpr std::int64_t kCompilerOs = 2; // #PB_OS_Linux (oracle-verified) - the default/fallback.
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64)
+constexpr std::int64_t kCompilerProcessor = 4; // #PB_Processor_x64 (oracle-verified)
+#elif defined(__aarch64__) || defined(_M_ARM64)
+// Not independently oracle-verified (no ARM machine to check against) -
+// chosen only to be internally consistent (distinct from the two verified
+// x86/x64 values).
+constexpr std::int64_t kCompilerProcessor = 8;
+#elif defined(__arm__) || defined(_M_ARM)
+constexpr std::int64_t kCompilerProcessor = 16; // Likewise unverified.
+#else
+constexpr std::int64_t kCompilerProcessor = 2; // #PB_Processor_x86 (oracle-verified) - the default/fallback.
+#endif
+
 const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
     // Oracle-verified values (`pbcompilerc`): `#PB_Round_Down` = 0,
     // `#PB_Round_Up` = 1, `#PB_Round_Nearest` = 2. A fourth, plausible-
     // sounding `#PB_Round_Truncate` does NOT exist in real PB ("Constant
     // not found"). `#PB_Date_*` (for `AddDate`'s own unit argument) is
     // oracle-verified too: Year=0, Month=1, Week=2, Day=3, Hour=4,
-    // Minute=5, Second=6.
+    // Minute=5, Second=6. `#PB_OS_Windows`=1/`#PB_OS_Linux`=2/
+    // `#PB_OS_MacOS`=4 and `#PB_Processor_x86`=2/`#PB_Processor_x64`=4 are
+    // oracle-verified on this Linux/x64 machine (`#PB_Compiler_OS` read `2`,
+    // `#PB_Compiler_Processor` read `4`); `#PB_OS_Haiku` and the ARM
+    // processor constants are pbcxx-specific extensions/unverified guesses
+    // (see `kCompilerOs`/`kCompilerProcessor`'s own comments).
     static const std::unordered_map<std::string, std::int64_t> table = {
         {"pb_round_down", 0},
         {"pb_round_up", 1},
@@ -275,6 +314,16 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_date_hour", 4},
         {"pb_date_minute", 5},
         {"pb_date_second", 6},
+        {"pb_os_windows", 1},
+        {"pb_os_linux", 2},
+        {"pb_os_macos", 4},
+        {"pb_os_haiku", 8},
+        {"pb_processor_x86", 2},
+        {"pb_processor_x64", 4},
+        {"pb_processor_arm64", 8},
+        {"pb_processor_arm", 16},
+        {"pb_compiler_os", kCompilerOs},
+        {"pb_compiler_processor", kCompilerProcessor},
     };
     return table;
 }
@@ -283,6 +332,7 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
 void Sema::registerBuiltinConstants() {
     for (const auto& [name, value] : builtinConstantTable()) {
         constants_[name] = TypeSuffix::Integer;
+        constantIntValues_[name] = value;
     }
 }
 
@@ -351,8 +401,21 @@ bool Sema::analyze(ast::Module& module) {
 }
 
 void Sema::visitBlock(ast::Block& block) {
-    for (auto& stmt : block) {
-        visitStmt(*stmt);
+    std::size_t i = 0;
+    while (i < block.size()) {
+        if (block[i]->kind == ast::StmtKind::CompilerIf) {
+            resolveCompilerIf(block, i);
+            continue; // Re-examine position `i` - now the first spliced-in
+                      // statement (which might itself be another
+                      // CompilerIf/CompilerSelect), or whatever originally
+                      // followed if nothing was spliced in.
+        }
+        if (block[i]->kind == ast::StmtKind::CompilerSelect) {
+            resolveCompilerSelect(block, i);
+            continue;
+        }
+        visitStmt(*block[i]);
+        ++i;
     }
 }
 
@@ -360,6 +423,136 @@ void Sema::visitNestedBlock(ast::Block& block) {
     ++controlFlowDepth_;
     visitBlock(block);
     --controlFlowDepth_;
+}
+
+void Sema::resolveCompilerIf(ast::Block& block, std::size_t index) {
+    auto& ci = static_cast<ast::CompilerIfStmt&>(*block[index]);
+    ast::Block selected; // empty if nothing matched and there was no CompilerElse.
+    for (auto& branch : ci.branches) {
+        if (!branch.condition) {
+            selected = std::move(branch.body); // CompilerElse
+            break;
+        }
+        auto value = evalConstExpr(*branch.condition);
+        if (!value) {
+            diagnostics_.error(branch.condition->loc, "'CompilerIf' condition must be a constant expression");
+            break;
+        }
+        if (*value != 0) {
+            selected = std::move(branch.body);
+            break;
+        }
+    }
+    // `selected` already owns (moved out of `ci`) everything it needs, so
+    // erasing the CompilerIfStmt node itself first - destroying `ci` and
+    // whatever's left of its branches - is safe.
+    auto pos = block.begin() + static_cast<std::ptrdiff_t>(index);
+    block.erase(pos);
+    block.insert(block.begin() + static_cast<std::ptrdiff_t>(index), std::make_move_iterator(selected.begin()),
+                 std::make_move_iterator(selected.end()));
+}
+
+void Sema::resolveCompilerSelect(ast::Block& block, std::size_t index) {
+    auto& cs = static_cast<ast::CompilerSelectStmt&>(*block[index]);
+    auto selectorValue = evalConstExpr(*cs.selector);
+    if (!selectorValue) {
+        diagnostics_.error(cs.selector->loc, "'CompilerSelect' selector must be a constant expression");
+    }
+    ast::Block selected;
+    for (auto& caseBranch : cs.cases) {
+        if (caseBranch.values.empty()) {
+            selected = std::move(caseBranch.body); // CompilerDefault
+            break;
+        }
+        if (!selectorValue) {
+            continue; // Already reported above; nothing left to meaningfully match against.
+        }
+        bool matches = false;
+        for (const auto& valueExpr : caseBranch.values) {
+            auto caseValue = evalConstExpr(*valueExpr);
+            if (!caseValue) {
+                diagnostics_.error(valueExpr->loc, "'CompilerCase' value must be a constant expression");
+                continue;
+            }
+            if (*caseValue == *selectorValue) {
+                matches = true;
+                break;
+            }
+        }
+        if (matches) {
+            selected = std::move(caseBranch.body);
+            break;
+        }
+    }
+    auto pos = block.begin() + static_cast<std::ptrdiff_t>(index);
+    block.erase(pos);
+    block.insert(block.begin() + static_cast<std::ptrdiff_t>(index), std::make_move_iterator(selected.begin()),
+                 std::make_move_iterator(selected.end()));
+}
+
+std::optional<std::int64_t> Sema::evalConstExpr(const ast::Expr& expr) const {
+    switch (expr.kind) {
+        case ast::ExprKind::IntLiteral:
+            return static_cast<const ast::IntLiteralExpr&>(expr).value;
+        case ast::ExprKind::ConstRef: {
+            const auto& ref = static_cast<const ast::ConstRefExpr&>(expr);
+            auto it = constantIntValues_.find(ref.name);
+            return it == constantIntValues_.end() ? std::optional<std::int64_t>{} : it->second;
+        }
+        case ast::ExprKind::Unary: {
+            const auto& un = static_cast<const ast::UnaryExpr&>(expr);
+            auto operand = evalConstExpr(*un.operand);
+            if (!operand) {
+                return std::nullopt;
+            }
+            switch (un.op) {
+                case ast::UnaryOp::Negate: return -*operand;
+                case ast::UnaryOp::BitNot: return ~*operand;
+                case ast::UnaryOp::LogicalNot: return *operand == 0 ? 1 : 0;
+            }
+            return std::nullopt;
+        }
+        case ast::ExprKind::Binary: {
+            const auto& bin = static_cast<const ast::BinaryExpr&>(expr);
+            // Oracle-verified-untrusted elsewhere (see BinaryOp::LogicalXOr's
+            // own doc comment) - not propagated into compile-time folding
+            // either.
+            if (bin.op == ast::BinaryOp::LogicalXOr) {
+                return std::nullopt;
+            }
+            auto lhs = evalConstExpr(*bin.lhs);
+            auto rhs = evalConstExpr(*bin.rhs);
+            if (!lhs || !rhs) {
+                return std::nullopt;
+            }
+            switch (bin.op) {
+                case ast::BinaryOp::Add: return *lhs + *rhs;
+                case ast::BinaryOp::Sub: return *lhs - *rhs;
+                case ast::BinaryOp::Mul: return *lhs * *rhs;
+                case ast::BinaryOp::Div: return *rhs != 0 ? std::optional<std::int64_t>(*lhs / *rhs) : std::nullopt;
+                case ast::BinaryOp::Mod: return *rhs != 0 ? std::optional<std::int64_t>(*lhs % *rhs) : std::nullopt;
+                case ast::BinaryOp::BitAnd: return *lhs & *rhs;
+                case ast::BinaryOp::BitOr: return *lhs | *rhs;
+                case ast::BinaryOp::BitXor: return *lhs ^ *rhs;
+                case ast::BinaryOp::ShiftLeft: return *lhs << *rhs;
+                case ast::BinaryOp::ShiftRight: return *lhs >> *rhs;
+                case ast::BinaryOp::Eq: return *lhs == *rhs ? 1 : 0;
+                case ast::BinaryOp::Ne: return *lhs != *rhs ? 1 : 0;
+                case ast::BinaryOp::Lt: return *lhs < *rhs ? 1 : 0;
+                case ast::BinaryOp::Gt: return *lhs > *rhs ? 1 : 0;
+                case ast::BinaryOp::Le: return *lhs <= *rhs ? 1 : 0;
+                case ast::BinaryOp::Ge: return *lhs >= *rhs ? 1 : 0;
+                case ast::BinaryOp::LogicalAnd: return (*lhs != 0 && *rhs != 0) ? 1 : 0;
+                case ast::BinaryOp::LogicalOr: return (*lhs != 0 || *rhs != 0) ? 1 : 0;
+                case ast::BinaryOp::LogicalXOr: return std::nullopt; // unreachable - handled above
+            }
+            return std::nullopt;
+        }
+        default:
+            // VarRef, Call, FieldAccess, String/Float literals, AddressOf -
+            // none of these are constant-foldable here.
+            return std::nullopt;
+    }
 }
 
 void Sema::visitStmt(ast::Stmt& stmt) {
@@ -579,6 +772,14 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             }
             break;
         }
+        case ast::StmtKind::CompilerIf:
+        case ast::StmtKind::CompilerSelect:
+            // Unreachable: visitBlock() never passes one of these to
+            // visitStmt() at all - it resolves and splices them away
+            // directly (see visitBlock's own doc comment). This case exists
+            // purely so -Wswitch stays an exhaustiveness net for this
+            // enum, matching the project's established convention.
+            break;
         case ast::StmtKind::For: {
             auto& forStmt = static_cast<ast::ForStmt&>(stmt);
             TypeSuffix suffix = forStmt.suffix == TypeSuffix::None ? typeOf(forStmt.varName) : forStmt.suffix;
@@ -620,16 +821,31 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 suffix = TypeSuffix::Double;
             } else if (family == ValueKind::StringFamily) {
                 suffix = TypeSuffix::String;
+            } else if (auto value = evalConstExpr(*constDecl.value)) {
+                // Needed so a later CompilerIf/CompilerSelect can reference
+                // this constant (evalConstExpr only knows Integer-family
+                // values - see constantIntValues_'s own doc comment); a
+                // genuinely non-constant-foldable Integer-family init
+                // (there isn't one in this project's grammar today, but
+                // nothing rules it out structurally) just leaves this
+                // constant unusable in a CompilerIf condition, not an error.
+                constantIntValues_[constDecl.name] = *value;
             }
             declareConst(constDecl.name, constDecl.spelling, suffix, constDecl.loc);
             break;
         }
         case ast::StmtKind::Enumeration: {
             auto& enumStmt = static_cast<ast::EnumerationStmt&>(stmt);
+            std::int64_t nextValue = 0;
             for (auto& member : enumStmt.members) {
                 if (member.explicitValue) {
                     visitExpr(*member.explicitValue);
+                    if (auto value = evalConstExpr(*member.explicitValue)) {
+                        nextValue = *value;
+                    }
                 }
+                constantIntValues_[member.name] = nextValue;
+                ++nextValue;
                 declareConst(member.name, member.spelling, TypeSuffix::Integer, enumStmt.loc);
             }
             break;

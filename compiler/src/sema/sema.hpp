@@ -326,6 +326,21 @@ private:
     /// three mode constants).
     void registerBuiltinConstants();
     void visitStmt(ast::Stmt& stmt);
+    /// Visits every statement in `block` in order - except a
+    /// `CompilerIf`/`CompilerSelect` is never passed to `visitStmt` at all.
+    /// Oracle-verified that the *other* branches of one of these aren't
+    /// even type-checked (a bogus call in a non-taken branch raises no
+    /// error), so this resolves the condition/selector right here with
+    /// `evalConstExpr` and *splices the selected branch's own statements
+    /// into `block` in its place* - a genuine, permanent AST rewrite (this
+    /// method takes `block` by non-const reference specifically to allow
+    /// it), after which the `CompilerIf`/`CompilerSelect` node itself no
+    /// longer exists anywhere in the tree. `Codegen` runs an entirely
+    /// separate pass afterward over this same, already-rewritten `Module`,
+    /// so it never needs its own logic for either `StmtKind` beyond a
+    /// `-Wswitch` exhaustiveness placeholder - exactly mirroring how a real
+    /// preprocessor's textual substitution would behave, just done at the
+    /// AST level instead of the token level.
     void visitBlock(ast::Block& block);
     /// Like `visitBlock`, but for a body that is genuinely nested inside a
     /// control-flow construct (`If`/`Select`/`For`/`While`/`Repeat`/
@@ -338,6 +353,24 @@ private:
     /// own body (see `insideProcedure_` instead, which covers that case with
     /// its own distinct oracle-verified wording).
     void visitNestedBlock(ast::Block& block);
+    /// Evaluates `expr` as a compile-time Integer constant expression -
+    /// literals, `#Name` references (both built-in `#PB_*` ones and a
+    /// user's own, looked up in `constantIntValues_`), and the same
+    /// arithmetic/comparison/`And`/`Or`/`Not` operators `genCondition`
+    /// lowers for a *runtime* condition, but computed here instead of
+    /// generated as C++. Returns `std::nullopt` for anything not constant-
+    /// foldable (a variable reference, `LogicalXOr` - already untrusted
+    /// elsewhere, see `BinaryOp::LogicalXOr`'s own doc comment - or a
+    /// String/Float-valued sub-expression), which `resolveCompilerIf`/
+    /// `resolveCompilerSelect` turn into a diagnostic.
+    std::optional<std::int64_t> evalConstExpr(const ast::Expr& expr) const;
+    /// The two `visitBlock` helpers that do the actual splicing for a
+    /// `CompilerIf`/`CompilerSelect` found at `block[index]` - replacing
+    /// that single element with its selected branch's own statements
+    /// (moved, not copied), or removing it outright if nothing matched and
+    /// there was no `CompilerElse`/`CompilerDefault`.
+    void resolveCompilerIf(ast::Block& block, std::size_t index);
+    void resolveCompilerSelect(ast::Block& block, std::size_t index);
     void declare(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
                  SourceLoc loc);
     /// Like declare(), but for a name reached through PB's implicit-
@@ -438,6 +471,19 @@ private:
     std::vector<std::pair<std::string, TypeSuffix>> order_; ///< First-seen declaration order.
     std::unordered_map<std::string, TypeSuffix> constants_;
     std::vector<std::pair<std::string, TypeSuffix>> constOrder_;
+    /// Every Integer-family constant's own compile-time VALUE (as opposed
+    /// to `constants_`, which only tracks each constant's TYPE) - every
+    /// other milestone's constant handling never needed the actual value,
+    /// only the type, since `Codegen` re-evaluates a constant's own init
+    /// expression directly rather than asking `Sema` for a precomputed
+    /// number. `CompilerIf`/`CompilerSelect` (M5a) are the first thing that
+    /// needs real compile-time arithmetic on a `#Name` reference, via
+    /// `evalConstExpr`. Populated for the built-in `#PB_*` constants (see
+    /// `registerBuiltinConstants`) and for every user `#Name = expr`/
+    /// `Enumeration` member whose value is itself constant-foldable;
+    /// String/Float constants are deliberately not tracked here (not
+    /// needed for any oracle-verified `CompilerIf` usage).
+    std::unordered_map<std::string, std::int64_t> constantIntValues_;
     bool explicitEnabled_ = false;
     std::unordered_map<std::string, ProcedureInfo> procedures_;
     /// Names `Declare`d but not yet fulfilled by a matching `Procedure`,

@@ -129,6 +129,12 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwSelect)) {
         return parseSelect();
     }
+    if (check(TokenKind::KwCompilerIf)) {
+        return parseCompilerIf();
+    }
+    if (check(TokenKind::KwCompilerSelect)) {
+        return parseCompilerSelect();
+    }
     if (check(TokenKind::KwFor)) {
         return parseFor();
     }
@@ -506,6 +512,61 @@ std::unique_ptr<ast::Stmt> Parser::parseSelect() {
     }
 
     expect(TokenKind::KwEndSelect, "to close 'Select'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseCompilerIf() {
+    auto stmt = std::make_unique<ast::CompilerIfStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'CompilerIf'
+
+    ast::CompilerIfStmt::Branch ifBranch;
+    ifBranch.condition = parseCondition();
+    ifBranch.body = parseBlockUntil({TokenKind::KwCompilerElseIf, TokenKind::KwCompilerElse, TokenKind::KwCompilerEndIf});
+    stmt->branches.push_back(std::move(ifBranch));
+
+    while (check(TokenKind::KwCompilerElseIf)) {
+        advance();
+        ast::CompilerIfStmt::Branch branch;
+        branch.condition = parseCondition();
+        branch.body =
+            parseBlockUntil({TokenKind::KwCompilerElseIf, TokenKind::KwCompilerElse, TokenKind::KwCompilerEndIf});
+        stmt->branches.push_back(std::move(branch));
+    }
+
+    if (check(TokenKind::KwCompilerElse)) {
+        advance();
+        ast::CompilerIfStmt::Branch elseBranch; // condition stays null
+        elseBranch.body = parseBlockUntil({TokenKind::KwCompilerEndIf});
+        stmt->branches.push_back(std::move(elseBranch));
+    }
+
+    expect(TokenKind::KwCompilerEndIf, "to close 'CompilerIf'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseCompilerSelect() {
+    auto stmt = std::make_unique<ast::CompilerSelectStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'CompilerSelect'
+    stmt->selector = parseExpr();
+    skipStatementSeparators();
+
+    while (check(TokenKind::KwCompilerCase) || check(TokenKind::KwCompilerDefault)) {
+        ast::CompilerSelectStmt::CaseBranch branch;
+        if (match(TokenKind::KwCompilerCase)) {
+            do {
+                branch.values.push_back(parseExpr());
+            } while (match(TokenKind::Comma));
+        } else {
+            advance(); // 'CompilerDefault' - values stays empty
+        }
+        branch.body =
+            parseBlockUntil({TokenKind::KwCompilerCase, TokenKind::KwCompilerDefault, TokenKind::KwCompilerEndSelect});
+        stmt->cases.push_back(std::move(branch));
+    }
+
+    expect(TokenKind::KwCompilerEndSelect, "to close 'CompilerSelect'");
     return stmt;
 }
 

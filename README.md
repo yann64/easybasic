@@ -5,20 +5,23 @@ compiles the generated C++ with a real backend compiler (g++/clang++).
 
 ## Status
 
-`M0`-`M4` done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
-operator/precedence table (arithmetic, bitwise, comparisons, logical), `If`/`Select`/
-`For`/`While`/`Repeat`, `EnableExplicit`, `#Name`/`Enumeration` constants,
+`M0`-`M4` done, `M5` in progress: core literals, `Define`/`Debug`, assignment, the full
+oracle-derived operator/precedence table (arithmetic, bitwise, comparisons, logical),
+`If`/`Select`/`For`/`While`/`Repeat`, `EnableExplicit`, `#Name`/`Enumeration` constants,
 `Procedure`/`ProcedureReturn` with recursion and genuinely isolated per-procedure scope,
 `Global`/`Shared`/`Protected`, static `Dim` arrays, `Structure` (incl. nested/arrays-of-
 Structure), pointers (`*Var`/`@Var`, `\`-dereference, `AllocateMemory`/
 `AllocateStructure`), `NewList`/`NewMap` (`ForEach`, cursor navigation, by-key Map
-access), `Declare` (mutual recursion), and the core String/Math/Memory/File/Date
+access), `Declare` (mutual recursion), the core String/Math/Memory/File/Date
 libraries (`Left`/`Mid`/`Str`/`Val`, `Sqr`/`Pow`/`Round`, `Peek*`/`Poke*`,
-`CreateFile`/`ReadFile`/`Loc`/`Lof`, `Date`/`Year`/`FormatDate`/`AddDate`) - all cross-
-checked against PureBasic's own compiler, including real bugs (a target-typed `/`, a
-two-tier vs. one-tier bitwise precedence mix-up, a wrong initial assumption about
-primitive-typed pointers, an unaligned-memory-access UB in `Peek*`/`Poke*`) the
-differential test suite or a targeted oracle probe caught before they shipped. See
+`CreateFile`/`ReadFile`/`Loc`/`Lof`, `Date`/`Year`/`FormatDate`/`AddDate`), and
+`CompilerIf`/`CompilerSelect` with the `#PB_Compiler_OS`/`#PB_OS_*`/
+`#PB_Compiler_Processor`/`#PB_Processor_*` constants (resolved entirely at transpile time -
+non-taken branches are never type-checked, matching real PB) - all cross-checked against
+PureBasic's own compiler, including real bugs (a target-typed `/`, a two-tier vs. one-tier
+bitwise precedence mix-up, a wrong initial assumption about primitive-typed pointers, an
+unaligned-memory-access UB in `Peek*`/`Poke*`) the differential test suite or a targeted
+oracle probe caught before they shipped. See
 [`docs/architecture/roadmap.md`](docs/architecture/roadmap.md) for the full milestone
 plan and the per-milestone implementation notes.
 

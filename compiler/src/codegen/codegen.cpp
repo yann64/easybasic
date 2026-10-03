@@ -787,6 +787,14 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             out_ += "    }\n";
             break;
         }
+        case ast::StmtKind::CompilerIf:
+        case ast::StmtKind::CompilerSelect:
+            // Unreachable: Sema::visitBlock() splices every CompilerIf/
+            // CompilerSelect node out of the tree (replacing it with its
+            // selected branch's own statements) before Codegen ever runs -
+            // see Sema::visitBlock's own doc comment. This case exists
+            // purely so -Wswitch stays an exhaustiveness net for this enum.
+            break;
         case ast::StmtKind::For: {
             const auto& forStmt = static_cast<const ast::ForStmt&>(stmt);
             TypeSuffix suffix = sema_.typeOf(forStmt.varName);

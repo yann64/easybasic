@@ -81,6 +81,14 @@ const std::unordered_map<std::string, TokenKind>& keywordTable() {
         {"newlist", TokenKind::KwNewList},
         {"newmap", TokenKind::KwNewMap},
         {"foreach", TokenKind::KwForEach},
+        {"compilerif", TokenKind::KwCompilerIf},
+        {"compilerelseif", TokenKind::KwCompilerElseIf},
+        {"compilerelse", TokenKind::KwCompilerElse},
+        {"compilerendif", TokenKind::KwCompilerEndIf},
+        {"compilerselect", TokenKind::KwCompilerSelect},
+        {"compilercase", TokenKind::KwCompilerCase},
+        {"compilerdefault", TokenKind::KwCompilerDefault},
+        {"compilerendselect", TokenKind::KwCompilerEndSelect},
         {"and", TokenKind::KwAnd},
         {"or", TokenKind::KwOr},
         {"not", TokenKind::KwNot},
@@ -137,6 +145,14 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwNewList: return "'NewList'";
         case TokenKind::KwNewMap: return "'NewMap'";
         case TokenKind::KwForEach: return "'ForEach'";
+        case TokenKind::KwCompilerIf: return "'CompilerIf'";
+        case TokenKind::KwCompilerElseIf: return "'CompilerElseIf'";
+        case TokenKind::KwCompilerElse: return "'CompilerElse'";
+        case TokenKind::KwCompilerEndIf: return "'CompilerEndIf'";
+        case TokenKind::KwCompilerSelect: return "'CompilerSelect'";
+        case TokenKind::KwCompilerCase: return "'CompilerCase'";
+        case TokenKind::KwCompilerDefault: return "'CompilerDefault'";
+        case TokenKind::KwCompilerEndSelect: return "'CompilerEndSelect'";
         case TokenKind::KwAnd: return "'And'";
         case TokenKind::KwOr: return "'Or'";
         case TokenKind::KwNot: return "'Not'";

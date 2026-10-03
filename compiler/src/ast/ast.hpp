@@ -139,6 +139,7 @@ enum class StmtKind {
     ProcedureDecl, ProcedureReturn, ExprStmt, Shared,
     Dim, IndexAssign, StructureDecl, FieldAssign,
     NewList, ForEach, NewMap, Declare,
+    CompilerIf, CompilerSelect,
 };
 
 /// Base of every statement node.
@@ -331,6 +332,41 @@ struct SelectStmt : Stmt {
     SelectStmt() : Stmt(StmtKind::Select) {}
     struct CaseBranch {
         std::vector<std::unique_ptr<Expr>> values; ///< Empty means `Default`.
+        Block body;
+    };
+    std::unique_ptr<Expr> selector;
+    std::vector<CaseBranch> cases;
+};
+
+/// `CompilerIf cond ... [CompilerElseIf cond ...]* [CompilerElse ...]
+/// CompilerEndIf` - resolved entirely at compile time (oracle-verified: the
+/// *other* branches aren't even type-checked - a bogus call in a non-taken
+/// branch raises no error at all), unlike the structurally-identical
+/// `IfStmt`. `condition` is parsed the same way a runtime `If`'s is (the
+/// same comparison/`And`/`Or`/`Not` grammar - oracle-verified: a bare `=`
+/// comparison works directly, the same boolean-context rule as `If`), but
+/// `Sema` evaluates it with its own compile-time constant folder
+/// (`evalConstExpr`) rather than lowering it to a runtime check - see
+/// `Sema::visitBlock`'s own notes on how this node is *spliced out of the
+/// tree entirely* (replaced by its selected branch's own statements)
+/// before `Codegen` ever runs, so `Codegen` never needs its own case for
+/// this `StmtKind` beyond an exhaustiveness placeholder.
+struct CompilerIfStmt : Stmt {
+    CompilerIfStmt() : Stmt(StmtKind::CompilerIf) {}
+    struct Branch {
+        std::unique_ptr<Expr> condition; ///< Null only for the `CompilerElse` branch.
+        Block body;
+    };
+    std::vector<Branch> branches;
+};
+
+/// `CompilerSelect selector [CompilerCase v1[, v2, ...] ...]*
+/// [CompilerDefault ...] CompilerEndSelect` - the `CompilerIf`-family
+/// counterpart to `SelectStmt`, resolved away the same way.
+struct CompilerSelectStmt : Stmt {
+    CompilerSelectStmt() : Stmt(StmtKind::CompilerSelect) {}
+    struct CaseBranch {
+        std::vector<std::unique_ptr<Expr>> values; ///< Empty means `CompilerDefault`.
         Block body;
     };
     std::unique_ptr<Expr> selector;
