@@ -140,6 +140,7 @@ enum class StmtKind {
     Dim, IndexAssign, StructureDecl, FieldAssign,
     NewList, ForEach, NewMap, Declare,
     CompilerIf, CompilerSelect,
+    DataSection, DataLabel, Data, Read, Restore,
 };
 
 /// Base of every statement node.
@@ -371,6 +372,72 @@ struct CompilerSelectStmt : Stmt {
     };
     std::unique_ptr<Expr> selector;
     std::vector<CaseBranch> cases;
+};
+
+/// `DataSection ... EndDataSection` (M5b) - a flat, ordered sequence of
+/// `DataLabelStmt`/`DataStmt` entries (no other statement kind is legal
+/// inside one - enforced by the parser, which has its own dedicated
+/// DataSection-body loop rather than reusing the general statement
+/// dispatch). Oracle-verified: multiple `DataSection`s anywhere in the
+/// module - even inside a `Procedure` - are concatenated into one single,
+/// global, sequential data pool; `Read` continues seamlessly from one into
+/// the next, with no `Restore` needed at the boundary.
+struct DataSectionStmt : Stmt {
+    DataSectionStmt() : Stmt(StmtKind::DataSection) {}
+    Block body;
+};
+
+/// `name:` inside a `DataSection` - a `Restore` target. Oracle-verified:
+/// `Restore` can forward-reference a label defined *later* in the file (see
+/// `Sema::collectDataSections`'s own notes on why this needs a dedicated
+/// pre-pass rather than being resolved during the normal sequential walk).
+struct DataLabelStmt : Stmt {
+    DataLabelStmt() : Stmt(StmtKind::DataLabel) {}
+    std::string name;
+    std::string spelling;
+};
+
+/// `Data.<suffix> value[, value, ...]` - oracle-verified: the suffix is
+/// *required* ("A type or structure must be specified after 'Data'.",
+/// unlike most other suffixed constructs in this language, which default
+/// to Integer when omitted). Each value is a general expression (oracle-
+/// verified: `Data.l #Two + 1` - a `#Constant` arithmetic expression -
+/// compiles and reads back correctly), not just a bare literal.
+struct DataStmt : Stmt {
+    DataStmt() : Stmt(StmtKind::Data) {}
+    TypeSuffix suffix = TypeSuffix::None;
+    std::vector<std::unique_ptr<Expr>> values;
+};
+
+/// `Read[.suffix] varname` - oracle-verified to behave like a plain
+/// assignment (`varname = <next data pool value>`) for every purpose
+/// *except* what the destination variable's own type defaults to: an
+/// undeclared `varname` is auto-declared as Integer regardless of `Read`'s
+/// own suffix (oracle-verified: `Read.s s1` into a fresh `s1` leaves `s1`
+/// an Integer, not a String - printing `Val("hello")` = `0`, not
+/// `"hello"`), unlike e.g. a suffixed `Define`. `suffix` instead tells
+/// Codegen which runtime pool-reading function to call (`pbReadDataInt`/
+/// `Double`/`String`) - `TypeSuffix::None` (a bare `Read x`) defaults to
+/// Integer, matching the project's general suffix-optional convention
+/// (documented divergence: real PB's own bare `Read` appears to default to
+/// its platform-width `.i` rather than `.l`, which can desync the pool's
+/// byte-level cursor against mismatched-width `Data.l` items in real PB -
+/// not something this project's own pool model, which tracks one *logical
+/// item* per cursor step rather than raw bytes, can reproduce or needs to).
+struct ReadStmt : Stmt {
+    ReadStmt() : Stmt(StmtKind::Read) {}
+    TypeSuffix suffix = TypeSuffix::None;
+    std::string varName;
+    std::string varSpelling;
+};
+
+/// `Restore label` - oracle-verified: the label is *required* (a bare
+/// `Restore` with no argument is a syntax error, unlike `Return`-family
+/// statements elsewhere in the language).
+struct RestoreStmt : Stmt {
+    RestoreStmt() : Stmt(StmtKind::Restore) {}
+    std::string labelName;
+    std::string labelSpelling;
 };
 
 /// `For var = from To to [Step step] ... Next [var]`.

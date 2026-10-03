@@ -169,6 +169,25 @@ std::string Codegen::convert(const std::string& exprCode, ValueKind fromFamily, 
     return std::string("static_cast<") + cppType + ">(" + exprCode + ")";
 }
 
+std::string Codegen::convertReadValue(const std::string& readCall, ValueKind dataFamily, TypeSuffix targetSuffix) {
+    ValueKind targetFamily = familyOf(targetSuffix);
+    if (dataFamily == targetFamily) {
+        return convert(readCall, dataFamily, targetSuffix);
+    }
+    if (targetFamily == ValueKind::StringFamily) {
+        // dataFamily is Integer or Float here.
+        return dataFamily == ValueKind::IntegerFamily
+                   ? "easybasic::runtime::pbStr(" + readCall + ")"
+                   : "easybasic::runtime::PBString(std::to_string(" + readCall + "))";
+    }
+    if (dataFamily == ValueKind::StringFamily) {
+        // targetFamily is Integer or Float here.
+        return targetFamily == ValueKind::IntegerFamily ? "easybasic::runtime::pbVal(" + readCall + ")"
+                                                          : "std::strtod((" + readCall + ").bytes().c_str(), nullptr)";
+    }
+    return convert(readCall, dataFamily, targetSuffix); // Integer<->Float, not through String.
+}
+
 std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
     switch (expr.kind) {
         case ast::ExprKind::IntLiteral: {
@@ -596,6 +615,70 @@ void Codegen::genConstantsIn(const ast::Block& block) {
     }
 }
 
+void Codegen::genDataPool(const ast::Block& block) {
+    for (const auto& stmt : block) {
+        switch (stmt->kind) {
+            case ast::StmtKind::DataSection: {
+                const auto& dataSection = static_cast<const ast::DataSectionStmt&>(*stmt);
+                for (const auto& child : dataSection.body) {
+                    if (child->kind != ast::StmtKind::Data) {
+                        continue; // DataLabelStmt - no runtime code of its own; its index already came from Sema::collectDataSections.
+                    }
+                    const auto& data = static_cast<const ast::DataStmt&>(*child);
+                    bool floatContext = familyOf(data.suffix) == ValueKind::FloatFamily;
+                    for (const auto& value : data.values) {
+                        std::string code =
+                            convert(genExpr(*value, floatContext), sema_.classify(*value, floatContext), data.suffix);
+                        switch (familyOf(data.suffix)) {
+                            case ValueKind::StringFamily:
+                                out_ += "    easybasic::runtime::pbDataAddString(" + code + ");\n";
+                                break;
+                            case ValueKind::FloatFamily:
+                                out_ += "    easybasic::runtime::pbDataAddDouble(" + code + ");\n";
+                                break;
+                            case ValueKind::IntegerFamily:
+                                out_ += "    easybasic::runtime::pbDataAddInt(" + code + ");\n";
+                                break;
+                        }
+                    }
+                }
+                break;
+            }
+            case ast::StmtKind::If: {
+                const auto& ifStmt = static_cast<const ast::IfStmt&>(*stmt);
+                for (const auto& branch : ifStmt.branches) {
+                    genDataPool(branch.body);
+                }
+                break;
+            }
+            case ast::StmtKind::Select: {
+                const auto& sel = static_cast<const ast::SelectStmt&>(*stmt);
+                for (const auto& branch : sel.cases) {
+                    genDataPool(branch.body);
+                }
+                break;
+            }
+            case ast::StmtKind::For:
+                genDataPool(static_cast<const ast::ForStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::While:
+                genDataPool(static_cast<const ast::WhileStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::Repeat:
+                genDataPool(static_cast<const ast::RepeatStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::ForEach:
+                genDataPool(static_cast<const ast::ForEachStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::ProcedureDecl:
+                genDataPool(static_cast<const ast::ProcedureDeclStmt&>(*stmt).body);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 void Codegen::genDeclarePrototypes() {
     for (const auto& stmt : module_.statements) {
         if (stmt->kind != ast::StmtKind::Declare) {
@@ -789,12 +872,65 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
         }
         case ast::StmtKind::CompilerIf:
         case ast::StmtKind::CompilerSelect:
-            // Unreachable: Sema::visitBlock() splices every CompilerIf/
-            // CompilerSelect node out of the tree (replacing it with its
-            // selected branch's own statements) before Codegen ever runs -
-            // see Sema::visitBlock's own doc comment. This case exists
-            // purely so -Wswitch stays an exhaustiveness net for this enum.
+            // Unreachable: Sema::preResolveCompilerDirectives() splices
+            // every CompilerIf/CompilerSelect node out of the tree
+            // (replacing it with its selected branch's own statements)
+            // before Codegen ever runs - see its own doc comment. This case
+            // exists purely so -Wswitch stays an exhaustiveness net.
             break;
+        case ast::StmtKind::DataSection:
+        case ast::StmtKind::DataLabel:
+        case ast::StmtKind::Data:
+            // No code at this position at all: genDataPool() (called once,
+            // up front, at the very start of generated main()) already
+            // emitted every Data value's pbDataAddX() call, independent of
+            // where the DataSection textually appears - see its own doc
+            // comment.
+            break;
+        case ast::StmtKind::Read: {
+            const auto& read = static_cast<const ast::ReadStmt&>(stmt);
+            TypeSuffix dataSuffix = read.suffix == TypeSuffix::None ? TypeSuffix::Integer : read.suffix;
+            std::string readCall;
+            switch (familyOf(dataSuffix)) {
+                case ValueKind::StringFamily:
+                    readCall = "easybasic::runtime::pbReadDataString()";
+                    break;
+                case ValueKind::FloatFamily:
+                    readCall = "easybasic::runtime::pbReadDataDouble()";
+                    break;
+                case ValueKind::IntegerFamily:
+                    readCall = "easybasic::runtime::pbReadDataInt()";
+                    break;
+            }
+            if (debugMode_) {
+                // Oracle-verified: exhausting the data pool is a fatal
+                // error only in a debug (`-d`) build - see
+                // pbDataReadError's own doc comment.
+                out_ += "    if (!easybasic::runtime::pbDataHasMore()) { easybasic::runtime::pbDataReadError(); }\n";
+            }
+            TypeSuffix targetSuffix = sema_.typeOf(read.varName);
+            // `readCall` already returns a value whose C++ type genuinely
+            // matches `dataSuffix`'s own family (pbReadDataInt/Double/
+            // String each coerce internally from whatever the pool item's
+            // *actual* stored kind is - see datalib.hpp's own notes);
+            // convertReadValue then handles the second stage - `dataSuffix`
+            // (Read's own declared suffix) to `targetSuffix` (the
+            // destination variable's own type), which oracle-verified can
+            // itself be a legal cross-family String<->numeric coercion.
+            out_ += "    " + cppVarName(read.varName) + " = " +
+                    convertReadValue(readCall, familyOf(dataSuffix), targetSuffix) + ";\n";
+            break;
+        }
+        case ast::StmtKind::Restore: {
+            const auto& restore = static_cast<const ast::RestoreStmt&>(stmt);
+            auto index = sema_.dataLabelIndex(restore.labelName);
+            // Sema already rejected an unknown label with a diagnostic (the
+            // driver stops before Codegen once any error is recorded - see
+            // main.cpp), so reaching here with no index at all shouldn't
+            // happen; falling back to 0 keeps this defensive rather than UB.
+            out_ += "    easybasic::runtime::pbDataRestore(" + std::to_string(index.value_or(0)) + ");\n";
+            break;
+        }
         case ast::StmtKind::For: {
             const auto& forStmt = static_cast<const ast::ForStmt&>(stmt);
             TypeSuffix suffix = sema_.typeOf(forStmt.varName);
@@ -1029,6 +1165,7 @@ std::string Codegen::generate() {
     genDeclarePrototypes();
     genProcedures();
     out_ += "\nint main() {\n";
+    genDataPool(module_.statements);
     for (const auto& stmt : module_.statements) {
         genStmt(*stmt);
     }

@@ -29,7 +29,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M2** | `Procedure`/`ProcedureReturn` (incl. `.s`/`$` return forms), by-value parameters with defaults, recursion, isolated per-procedure scope | Done (see M2 notes below) - `Global`/`Shared`/`Protected` cross-scope access and static `Dim` arrays deferred to and closed by M3a/M3b; mutual recursion/`Declare`, call-argument type-checking, and constants in nested blocks deferred further, closed by a dedicated M2-closure pass (see its own notes) |
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
-| **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | In progress - `CompilerIf`/`CompilerSelect` + `#PB_Compiler_OS`/`#PB_OS_*`/`#PB_Compiler_Processor`/`#PB_Processor_*` done (M5a) |
+| **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | In progress - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a) and `DataSection`/`Data`/`Read`/`Restore` (M5b) done; `Macro` remains |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
 
@@ -1207,4 +1207,100 @@ to be internally distinct from the two confirmed x86/x64 values.
 **Deliberately deferred to a later M5 slice**: `DataSection`/`Data`/`Read`/`Restore`;
 non-recursive `Macro`/`EndMacro`; `IncludeFile`/`XIncludeFile`. None of these have been
 oracle-verified yet.
+
+## M5b Implementation Notes (`DataSection`/`Data`/`Read`/`Restore`)
+
+**Scope landed**: `DataSection`/`EndDataSection`, `name:` labels, `Data.<suffix> v1[, v2,
+...]`, `Read[.<suffix>] varname`, `Restore label`. Non-recursive `Macro`/`EndMacro` and
+`IncludeFile`/`XIncludeFile` remain for a later M5 slice.
+
+**`Data` requires an explicit type suffix - oracle-verified** ("A type or structure must be
+specified after 'Data'."), unlike almost every other suffixed construct in this language
+(`Define`, `For`, a bare `Read` itself), which default to Integer when the suffix is
+omitted. `Read` has no such requirement; a bare `Read x` is legal and, per this project's
+own convention, defaults to Integer (a *documented* divergence - real PB's own bare `Read`
+appears to default to its platform-width `.i`, which can desync its raw-byte cursor
+against mismatched-width `Data.l` items; this project's own pool tracks one logical item
+per cursor step rather than raw bytes, so this particular failure mode can't occur, and
+there's nothing to match it against).
+
+**The single most surprising oracle finding this slice turned up**: `Read[.suffix]
+varname` behaves exactly like a plain assignment (`varname = <next data pool value>`) for
+type-*checking* purposes - it is **not** type-checked against its own suffix at all, and
+critically, an *undeclared* `varname` is auto-declared as **Integer**, completely ignoring
+`Read`'s own suffix. `Read.s s1` into a fresh `s1` leaves `s1` an Integer, not a String -
+`Debug s1` then prints `Val("hello")` = `0`, not `"hello"`. Getting a String value out of
+`Read.s` requires pre-declaring the destination as `.s` first (`Define s1.s` then `Read.s
+s1`) - oracle-verified exactly this way. This single finding shaped the whole feature's
+Sema design: `Sema`'s own `Read` case is just `declareImplicit(varname, spelling,
+typeOf(varname), loc)` - the same idempotent "declare as Integer if new, otherwise leave
+alone" pattern the `Assign` case already uses - with **no** type-checking against `Read`'s
+own suffix at all, matching the oracle's complete silence on any such mismatch.
+
+**A second, related finding governs Codegen's own conversion logic**: real PB's `Read`
+genuinely allows a String<->numeric cross-family coercion (`Val()`/`Str()`-style) between
+the `Data` item's own type and the destination variable's type - something a normal PB
+*assignment* never allows (`Sema::checkAssignable` rejects a String<->numeric mix
+outright, and `Codegen::convert()` is written assuming that rejection already happened, so
+it can't be reused as-is here). A new `Codegen::convertReadValue` handles this one, genuine
+exception - cross-family String<->Integer/Double via `pbVal`/`pbStr`/`strtod`/
+`std::to_string`, falling back to the existing `convert()` for a same-family pair so its
+width/banker's-rounding logic isn't duplicated.
+
+**Exhausting the data pool is a *debug-mode-only* fatal error - oracle-verified**: `Read`ing
+past the last `Data` value under `-d` produces `[Debugger Error]  Read data error: no more
+data.` and a fatal exit (code 1); the exact same program compiled *without* `-d` just
+silently continues (release mode has no such check at all, exactly like `Debug` statements
+themselves vanishing in a release build). Codegen emits the `pbDataHasMore()` guard +
+`pbDataReadError()` call only when `debugMode_` is true, mirroring the `Debug` statement
+case's own established convention precisely. The exact message text/file-line reference
+isn't replicated byte-for-byte (no source-location plumbing reaches this runtime call
+today) - only the oracle-verified *contract* (debug-only fatal error on exhaustion) is.
+
+**Three oracle findings shaped the "resolve once, globally, before anything else" pre-pass
+architecture** (`Sema::collectDataSections`, run once over the whole `Module` before the
+main semantic walk): (1) multiple `DataSection`s anywhere in the file - even one nested
+inside a `Procedure` (oracle-verified: the resulting data is readable via the ordinary
+shared cursor, across separate calls to that Procedure too) - concatenate into one single,
+flat, global pool, with `Read` continuing seamlessly across the boundary with no `Restore`
+needed; (2) a bare `Restore` with no label is a syntax error - oracle-verified, unlike most
+other PB statements with an optional argument; (3) `Restore` can **forward-reference** a
+label defined *later* in the file (oracle-verified directly: `Restore LaterLabel` followed
+by `Read`, with the `LaterLabel:`/`Data` only appearing afterward, reads correctly) - which
+is what rules out resolving labels during the ordinary single top-to-bottom semantic walk,
+since a label's index has to be known before anything that might reference it, regardless
+of which one textually comes first.
+
+**Resolving `DataSection`/label-indexing correctly *together with* M5a's `CompilerIf`
+splicing required one further refactor**: a `DataSection` can legally sit inside a
+`CompilerIf` branch (not separately oracle-verified, but there is no reason real PB would
+treat it differently from a `Procedure`, which M5a already confirmed is legal there), and
+`collectDataSections` needs to see the tree in its *final* shape - with every `CompilerIf`/
+`CompilerSelect` already resolved away - or a label's computed index could disagree with
+what `Codegen`'s own, identically-shaped recursive scan (`genDataPool`) later emits. Rather
+than accept that as a known gap, M5a's own CompilerIf-splicing logic (previously inline
+inside `visitBlock`) was pulled out into its own standalone whole-Module pre-pass,
+`Sema::preResolveCompilerDirectives` - run first, before `collectDataSections` - so by the
+time label-indexing runs, no `CompilerIf`/`CompilerSelect` node exists anywhere in the tree
+at all. This pre-pass also does a lightweight preview of `ConstDecl`/`Enumeration`'s own
+value computation (just enough to populate `constantIntValues_`), preserving M5a's existing
+guarantee that a `CompilerIf` can reference a `#Constant` declared earlier in the same file
+- a property that would otherwise have been lost by moving CompilerIf resolution earlier
+than the main walk. `visitBlock` itself reverted to its original, simple form as a result.
+
+**A deliberate, documented divergence from real PB's own raw-memory-blob model**: this
+project's data pool is a `std::vector` of a small tagged variant (`PBDataValue`, one
+logical item per cursor step), not a byte-for-byte replica of PB's own internal
+representation (which appears to be a flat byte blob where `Read`'s own suffix determines
+exactly how many raw bytes to consume at the current byte offset, with **zero** runtime
+type tagging). For a program where every `Read` matches its corresponding `Data` item's
+own declared type - the overwhelming common, intended case - the two models are provably
+identical (verified directly against the oracle, including a `Restore`-based forward
+reference and a `DataSection` inside a `Procedure`, byte-for-byte). They diverge only for a
+*type-mismatched* sequence (e.g. `Read.l` immediately after a `Read.s` whose declared
+`Data.s` item was narrower or wider than a `.l`'s own byte width) - oracle-verified to
+desync real PB's own byte-level cursor, producing outright garbage on every subsequent
+read; this project's logical-item cursor can't (and doesn't try to) reproduce that specific
+garbage, since byte-for-byte ABI fidelity was never a goal of this project (the same
+principle already applied to `PeekS`/`PokeS`'s own `@stringVar` limitation in M4c).
 

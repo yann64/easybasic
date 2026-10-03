@@ -5,6 +5,7 @@
 // (mirroring eBasic's M6) lands; keep it a pure aggregator with no logic of
 // its own.
 
+#include "datalib.hpp"
 #include "datelib.hpp"
 #include "debug.hpp"
 #include "filelib.hpp"

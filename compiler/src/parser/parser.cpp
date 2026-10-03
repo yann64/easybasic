@@ -135,6 +135,15 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwCompilerSelect)) {
         return parseCompilerSelect();
     }
+    if (check(TokenKind::KwDataSection)) {
+        return parseDataSection();
+    }
+    if (check(TokenKind::KwRead)) {
+        return parseRead();
+    }
+    if (check(TokenKind::KwRestore)) {
+        return parseRestore();
+    }
     if (check(TokenKind::KwFor)) {
         return parseFor();
     }
@@ -567,6 +576,67 @@ std::unique_ptr<ast::Stmt> Parser::parseCompilerSelect() {
     }
 
     expect(TokenKind::KwCompilerEndSelect, "to close 'CompilerSelect'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseDataSection() {
+    auto stmt = std::make_unique<ast::DataSectionStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'DataSection'
+    skipStatementSeparators();
+    while (!check(TokenKind::KwEndDataSection) && !check(TokenKind::EndOfFile)) {
+        if (check(TokenKind::Identifier) && peek(1).kind == TokenKind::Colon) {
+            auto label = std::make_unique<ast::DataLabelStmt>();
+            label->loc = peek().loc;
+            const Token& nameTok = advance();
+            label->spelling = nameTok.text;
+            label->name = toLower(nameTok.text);
+            advance(); // ':'
+            stmt->body.push_back(std::move(label));
+        } else if (check(TokenKind::KwData)) {
+            stmt->body.push_back(parseDataStmt());
+        } else {
+            diagnostics_.error(peek().loc, "expected a label or 'Data' inside 'DataSection'");
+            advance(); // Avoid looping forever on an unexpected token.
+        }
+        skipStatementSeparators();
+    }
+    expect(TokenKind::KwEndDataSection, "to close 'DataSection'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseDataStmt() {
+    auto stmt = std::make_unique<ast::DataStmt>();
+    stmt->loc = peek().loc;
+    const Token& dataTok = advance(); // 'Data[.suffix]' - oracle-verified: the suffix is required.
+    stmt->suffix = dataTok.suffix;
+    if (stmt->suffix == TypeSuffix::None) {
+        diagnostics_.error(stmt->loc, "a type must be specified after 'Data'");
+    }
+    do {
+        stmt->values.push_back(parseExpr());
+    } while (match(TokenKind::Comma));
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseRead() {
+    auto stmt = std::make_unique<ast::ReadStmt>();
+    stmt->loc = peek().loc;
+    const Token& readTok = advance(); // 'Read[.suffix]'
+    stmt->suffix = readTok.suffix;
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'Read'");
+    stmt->varSpelling = nameTok.text;
+    stmt->varName = toLower(nameTok.text);
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseRestore() {
+    auto stmt = std::make_unique<ast::RestoreStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'Restore'
+    const Token& labelTok = expect(TokenKind::Identifier, "after 'Restore'"); // oracle-verified: required.
+    stmt->labelSpelling = labelTok.text;
+    stmt->labelName = toLower(labelTok.text);
     return stmt;
 }
 

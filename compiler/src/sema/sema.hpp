@@ -103,6 +103,10 @@ public:
 
     /// Returns nullptr if `lowerName` was never declared as a procedure.
     const ProcedureInfo* procedureInfo(const std::string& lowerName) const;
+    /// A Data label's flat index into the runtime data pool, or
+    /// `std::nullopt` if `lowerName` isn't a declared label - `Codegen`
+    /// uses this to emit `Restore label`'s own constant-index argument.
+    std::optional<std::size_t> dataLabelIndex(const std::string& lowerName) const;
 
     /// A declared array's element type and dimension count (1 or 2 - see
     /// ast::DimStmt's own doc comment on the current dimension limit).
@@ -371,6 +375,27 @@ private:
     /// there was no `CompilerElse`/`CompilerDefault`.
     void resolveCompilerIf(ast::Block& block, std::size_t index);
     void resolveCompilerSelect(ast::Block& block, std::size_t index);
+    /// Runs once, recursively, over the *entire* Module before any other
+    /// pass - resolves every CompilerIf/CompilerSelect node everywhere in
+    /// the tree (via resolveCompilerIf/resolveCompilerSelect), and along
+    /// the way does a light preview of ConstDecl/Enumeration's own value
+    /// computation (just enough to populate constantIntValues_, not the
+    /// full declareConst/symbols_ bookkeeping the real ConstDecl/
+    /// Enumeration case in visitStmt still does later) - needed so a
+    /// CompilerIf can fold a reference to a #Constant declared earlier in
+    /// the same file, exactly as it could before this was split out of
+    /// visitBlock into its own pre-pass.
+    void preResolveCompilerDirectives(ast::Block& block);
+    /// Runs once, recursively, over the entire (by now CompilerIf/
+    /// CompilerSelect-free) Module, after preResolveCompilerDirectives but
+    /// before visitBlock's own main walk - assigns each Data label
+    /// (dataLabels_) its flat index into the eventual runtime data pool,
+    /// and counts the pool's total size (dataCount_). Must run as its own
+    /// pass, not interleaved with the main walk, because `Restore` can
+    /// forward-reference a label defined later in the file (oracle-
+    /// verified) - the label table needs to be complete before any
+    /// Restore statement is resolved against it.
+    void collectDataSections(const ast::Block& block);
     void declare(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
                  SourceLoc loc);
     /// Like declare(), but for a name reached through PB's implicit-
@@ -484,6 +509,12 @@ private:
     /// String/Float constants are deliberately not tracked here (not
     /// needed for any oracle-verified `CompilerIf` usage).
     std::unordered_map<std::string, std::int64_t> constantIntValues_;
+    /// Every Data label's flat index into the eventual runtime data pool,
+    /// and the pool's total item count - both computed once by
+    /// collectDataSections(). `Codegen` reads these via dataLabelIndex()
+    /// when emitting a `Restore label`'s own constant-index argument.
+    std::unordered_map<std::string, std::size_t> dataLabels_;
+    std::size_t dataCount_ = 0;
     bool explicitEnabled_ = false;
     std::unordered_map<std::string, ProcedureInfo> procedures_;
     /// Names `Declare`d but not yet fulfilled by a matching `Procedure`,

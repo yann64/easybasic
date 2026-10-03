@@ -17,7 +17,9 @@ libraries (`Left`/`Mid`/`Str`/`Val`, `Sqr`/`Pow`/`Round`, `Peek*`/`Poke*`,
 `CreateFile`/`ReadFile`/`Loc`/`Lof`, `Date`/`Year`/`FormatDate`/`AddDate`), and
 `CompilerIf`/`CompilerSelect` with the `#PB_Compiler_OS`/`#PB_OS_*`/
 `#PB_Compiler_Processor`/`#PB_Processor_*` constants (resolved entirely at transpile time -
-non-taken branches are never type-checked, matching real PB) - all cross-checked against
+non-taken branches are never type-checked, matching real PB), and `DataSection`/`Data`/
+`Read`/`Restore` (a global, concatenated data pool with forward-referenceable labels and a
+debug-mode-only "out of data" fatal error, matching real PB exactly) - all cross-checked against
 PureBasic's own compiler, including real bugs (a target-typed `/`, a two-tier vs. one-tier
 bitwise precedence mix-up, a wrong initial assumption about primitive-typed pointers, an
 unaligned-memory-access UB in `Peek*`/`Poke*`) the differential test suite or a targeted

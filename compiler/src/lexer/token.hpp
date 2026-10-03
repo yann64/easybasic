@@ -65,6 +65,11 @@ enum class TokenKind {
     KwCompilerCase,
     KwCompilerDefault,
     KwCompilerEndSelect,
+    KwDataSection,      ///< `DataSection ... EndDataSection` (M5b).
+    KwEndDataSection,
+    KwData,             ///< `Data.suffix v1[, v2, ...]` inside a DataSection (M5b).
+    KwRead,             ///< `Read[.suffix] varname` (M5b).
+    KwRestore,          ///< `Restore label` (M5b).
     KwAnd,
     KwOr,
     KwNot,

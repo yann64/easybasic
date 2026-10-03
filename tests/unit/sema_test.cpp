@@ -1209,3 +1209,69 @@ TEST_CASE("Sema's builtinConstantValue resolves the #PB_OS_*/#PB_Processor_* con
     CHECK(Sema::builtinConstantValue("pb_processor_x86") == 2);
     CHECK(Sema::builtinConstantValue("pb_processor_x64") == 4);
 }
+
+TEST_CASE("Sema's parser requires an explicit type suffix after 'Data'", "[sema][datasection]") {
+    // Oracle-verified: "A type or structure must be specified after
+    // 'Data'." - unlike most other suffixed constructs in this language.
+    DiagnosticEngine diags;
+    parse("DataSection\nData 5\nEndDataSection", diags);
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema assigns a Data label its flat index into the pool", "[sema][datasection]") {
+    DiagnosticEngine diags;
+    auto module = parse("DataSection\nMyLabel:\nData.l 1, 2, 3\nEndDataSection", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    REQUIRE(sema.dataLabelIndex("mylabel").has_value());
+    CHECK(*sema.dataLabelIndex("mylabel") == 0);
+}
+
+TEST_CASE("Sema's Data label indices account for multiple DataSections concatenating", "[sema][datasection]") {
+    DiagnosticEngine diags;
+    auto module = parse(
+        "DataSection\nData.l 1, 2\nEndDataSection\nDataSection\nSecondLabel:\nData.l 3\nEndDataSection", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    REQUIRE(sema.dataLabelIndex("secondlabel").has_value());
+    CHECK(*sema.dataLabelIndex("secondlabel") == 2); // After the first DataSection's two items.
+}
+
+TEST_CASE("Sema's Restore can forward-reference a label defined later in the file", "[sema][datasection]") {
+    // Oracle-verified end-to-end (see docs/architecture/roadmap.md's M5b
+    // notes) - needs its own whole-Module pre-pass (collectDataSections),
+    // not resolvable during a single top-to-bottom walk.
+    DiagnosticEngine diags;
+    auto module = parse("Restore LaterLabel\nDataSection\nLaterLabel:\nData.l 1\nEndDataSection", diags);
+    Sema sema(diags);
+    CHECK(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects Restore of an undeclared Data label", "[sema][datasection]") {
+    DiagnosticEngine diags;
+    auto module = parse("Restore NoSuchLabel", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema's Read auto-declares a fresh destination as Integer regardless of its own suffix",
+          "[sema][datasection]") {
+    // Oracle-verified: `Read.s s1` into a *fresh* `s1` leaves it an
+    // Integer, not a String (see ast::ReadStmt's own doc comment) - unlike
+    // a suffixed Define.
+    DiagnosticEngine diags;
+    auto module = parse("DataSection\nData.s \"hi\"\nEndDataSection\nRead.s s1", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK(sema.typeOf("s1") == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema's Read leaves an already-declared destination's own type untouched", "[sema][datasection]") {
+    DiagnosticEngine diags;
+    auto module = parse("DataSection\nData.s \"hi\"\nEndDataSection\nDefine s.s\nRead.s s", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK(sema.typeOf("s") == TypeSuffix::String);
+}

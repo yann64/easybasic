@@ -61,6 +61,14 @@ private:
     /// not `Codegen`, is what actually resolves these.
     std::unique_ptr<ast::Stmt> parseCompilerIf();
     std::unique_ptr<ast::Stmt> parseCompilerSelect();
+    /// `DataSection ... EndDataSection` - has its own dedicated body-parsing
+    /// loop (not `parseBlockUntil`/`parseStatement`) since a DataSection's
+    /// body is syntactically restricted to just labels and `Data` lines;
+    /// see ast::DataSectionStmt's own doc comment.
+    std::unique_ptr<ast::Stmt> parseDataSection();
+    std::unique_ptr<ast::Stmt> parseDataStmt();
+    std::unique_ptr<ast::Stmt> parseRead();
+    std::unique_ptr<ast::Stmt> parseRestore();
     std::unique_ptr<ast::Stmt> parseFor();
     std::unique_ptr<ast::Stmt> parseWhile();
     std::unique_ptr<ast::Stmt> parseRepeat();

@@ -63,6 +63,18 @@ private:
     /// hasn't been a real gap in practice).
     void genProcedures();
     void genProcedureDecl(const ast::ProcedureDeclStmt& proc);
+    /// Emits one `pbDataAddInt`/`Double`/`String` call per `Data` value,
+    /// wherever a `DataSection` appears, as the very first statements in
+    /// generated `main()` - independent of where the `DataSection` is
+    /// textually written (oracle-verified: it has no runtime side effect at
+    /// its own source position, and multiple `DataSection`s concatenate
+    /// into a single pool - see ast::DataSectionStmt's own doc comment).
+    /// Recurses the same way genConstantsIn does (If/Select/For/While/
+    /// Repeat/ForEach/a ProcedureDecl's own body - oracle-verified a
+    /// DataSection can live inside a Procedure too), in the same order
+    /// Sema::collectDataSections already walked to assign each label's
+    /// index, which is what keeps the two consistent.
+    void genDataPool(const ast::Block& block);
     void genStmt(const ast::Stmt& stmt);
     void genBlock(const ast::Block& block);
     /// `floatContext` mirrors Sema::classify's own parameter: true exactly
@@ -91,6 +103,17 @@ private:
     /// applies (oracle-verified: 2.5->2, 3.5->4, -2.5->-2 - round-half-to-
     /// even, not truncation).
     static std::string convert(const std::string& exprCode, ValueKind fromFamily, TypeSuffix toSuffix);
+    /// Like `convert()`, but for `Read`'s own two-stage coercion - oracle-
+    /// verified that `Read.<suffix> varname` allows a String<->numeric
+    /// cross-family mix (`Val()`/`Str()`-style, e.g. `Read.s` into an
+    /// Integer-typed `varname` silently yields `Val("hello")` = `0`), unlike
+    /// a normal assignment, which Sema rejects outright for the same mix.
+    /// `convert()` itself can't be reused directly for a genuine cross-
+    /// family case since it assumes (correctly, everywhere *else*) that
+    /// Sema has already ruled that out. Falls back to `convert()` when the
+    /// families already match, to reuse its existing width/banker's-
+    /// rounding logic rather than duplicating it.
+    static std::string convertReadValue(const std::string& readCall, ValueKind dataFamily, TypeSuffix targetSuffix);
     /// The C++ identifier for a declared name, exactly as Sema keys it
     /// (`symbols_`/`declarationOrder()`/a procedure's `locals`) - a plain
     /// name gets the usual `v_` prefix, while a pointer's name (which always

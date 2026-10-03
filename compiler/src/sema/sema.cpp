@@ -387,6 +387,21 @@ void Sema::declareConst(const std::string& lowerName, const std::string& spellin
 }
 
 bool Sema::analyze(ast::Module& module) {
+    // Two whole-Module pre-passes, each needing to see the *entire* tree
+    // before any "real" per-statement semantic analysis begins:
+    //  1. preResolveCompilerDirectives splices away every CompilerIf/
+    //     CompilerSelect node (see its own doc comment) - must run first,
+    //     since collectDataSections below needs to see the tree in its
+    //     final, post-splicing shape (a DataSection originally nested
+    //     inside a CompilerIf branch only "exists" once that branch has
+    //     actually been selected and spliced in).
+    //  2. collectDataSections assigns each Data label a flat index into
+    //     the eventual runtime data pool, needed because `Restore` can
+    //     forward-reference a label defined later in the file (oracle-
+    //     verified) - impossible to resolve correctly with only a single
+    //     top-to-bottom walk.
+    preResolveCompilerDirectives(module.statements);
+    collectDataSections(module.statements);
     visitBlock(module.statements);
     // Every `Declare` must eventually be fulfilled by a matching
     // `Procedure` (oracle-verified: "The procedure 'name()' has been
@@ -401,21 +416,13 @@ bool Sema::analyze(ast::Module& module) {
 }
 
 void Sema::visitBlock(ast::Block& block) {
-    std::size_t i = 0;
-    while (i < block.size()) {
-        if (block[i]->kind == ast::StmtKind::CompilerIf) {
-            resolveCompilerIf(block, i);
-            continue; // Re-examine position `i` - now the first spliced-in
-                      // statement (which might itself be another
-                      // CompilerIf/CompilerSelect), or whatever originally
-                      // followed if nothing was spliced in.
-        }
-        if (block[i]->kind == ast::StmtKind::CompilerSelect) {
-            resolveCompilerSelect(block, i);
-            continue;
-        }
-        visitStmt(*block[i]);
-        ++i;
+    // No CompilerIf/CompilerSelect special-casing needed here any more -
+    // preResolveCompilerDirectives() (run once, recursively, over the whole
+    // Module before visitBlock is ever called - see Sema::analyze()) has
+    // already spliced every one of those nodes out of every block in the
+    // tree by this point.
+    for (auto& stmt : block) {
+        visitStmt(*stmt);
     }
 }
 
@@ -423,6 +430,142 @@ void Sema::visitNestedBlock(ast::Block& block) {
     ++controlFlowDepth_;
     visitBlock(block);
     --controlFlowDepth_;
+}
+
+void Sema::preResolveCompilerDirectives(ast::Block& block) {
+    std::size_t i = 0;
+    while (i < block.size()) {
+        ast::Stmt& stmt = *block[i];
+        switch (stmt.kind) {
+            case ast::StmtKind::ConstDecl: {
+                // A lightweight preview of what the real ConstDecl case
+                // (in visitStmt) will later do properly (declareConst,
+                // full type classification) - just enough so a CompilerIf
+                // reached *during this same pass* can already fold a
+                // reference to a #Constant declared earlier in the file.
+                // Harmless to recompute the same value again later.
+                auto& constDecl = static_cast<ast::ConstDeclStmt&>(stmt);
+                if (auto value = evalConstExpr(*constDecl.value)) {
+                    constantIntValues_[constDecl.name] = *value;
+                }
+                ++i;
+                continue;
+            }
+            case ast::StmtKind::Enumeration: {
+                auto& enumStmt = static_cast<ast::EnumerationStmt&>(stmt);
+                std::int64_t nextValue = 0;
+                for (auto& member : enumStmt.members) {
+                    if (member.explicitValue) {
+                        if (auto value = evalConstExpr(*member.explicitValue)) {
+                            nextValue = *value;
+                        }
+                    }
+                    constantIntValues_[member.name] = nextValue;
+                    ++nextValue;
+                }
+                ++i;
+                continue;
+            }
+            case ast::StmtKind::CompilerIf:
+                resolveCompilerIf(block, i);
+                continue; // Re-examine position `i` - see visitBlock's own
+                          // former version of this comment (now moved here).
+            case ast::StmtKind::CompilerSelect:
+                resolveCompilerSelect(block, i);
+                continue;
+            case ast::StmtKind::If: {
+                auto& ifStmt = static_cast<ast::IfStmt&>(stmt);
+                for (auto& branch : ifStmt.branches) {
+                    preResolveCompilerDirectives(branch.body);
+                }
+                break;
+            }
+            case ast::StmtKind::Select: {
+                auto& sel = static_cast<ast::SelectStmt&>(stmt);
+                for (auto& branch : sel.cases) {
+                    preResolveCompilerDirectives(branch.body);
+                }
+                break;
+            }
+            case ast::StmtKind::For:
+                preResolveCompilerDirectives(static_cast<ast::ForStmt&>(stmt).body);
+                break;
+            case ast::StmtKind::While:
+                preResolveCompilerDirectives(static_cast<ast::WhileStmt&>(stmt).body);
+                break;
+            case ast::StmtKind::Repeat:
+                preResolveCompilerDirectives(static_cast<ast::RepeatStmt&>(stmt).body);
+                break;
+            case ast::StmtKind::ForEach:
+                preResolveCompilerDirectives(static_cast<ast::ForEachStmt&>(stmt).body);
+                break;
+            case ast::StmtKind::ProcedureDecl:
+                preResolveCompilerDirectives(static_cast<ast::ProcedureDeclStmt&>(stmt).body);
+                break;
+            default:
+                break;
+        }
+        ++i;
+    }
+}
+
+void Sema::collectDataSections(const ast::Block& block) {
+    for (const auto& stmt : block) {
+        switch (stmt->kind) {
+            case ast::StmtKind::DataSection: {
+                // By this point preResolveCompilerDirectives() has already
+                // run over the whole Module, so every DataSection here -
+                // including one originally nested inside a CompilerIf
+                // branch - is one that genuinely survives, in the same
+                // flat order Codegen's own, identically-shaped recursive
+                // scan will later see (see genDataPool's own notes).
+                const auto& dataSection = static_cast<const ast::DataSectionStmt&>(*stmt);
+                for (const auto& child : dataSection.body) {
+                    if (child->kind == ast::StmtKind::DataLabel) {
+                        const auto& label = static_cast<const ast::DataLabelStmt&>(*child);
+                        dataLabels_[label.name] = dataCount_;
+                    } else {
+                        dataCount_ += static_cast<const ast::DataStmt&>(*child).values.size();
+                    }
+                }
+                break;
+            }
+            case ast::StmtKind::If: {
+                const auto& ifStmt = static_cast<const ast::IfStmt&>(*stmt);
+                for (const auto& branch : ifStmt.branches) {
+                    collectDataSections(branch.body);
+                }
+                break;
+            }
+            case ast::StmtKind::Select: {
+                const auto& sel = static_cast<const ast::SelectStmt&>(*stmt);
+                for (const auto& branch : sel.cases) {
+                    collectDataSections(branch.body);
+                }
+                break;
+            }
+            case ast::StmtKind::For:
+                collectDataSections(static_cast<const ast::ForStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::While:
+                collectDataSections(static_cast<const ast::WhileStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::Repeat:
+                collectDataSections(static_cast<const ast::RepeatStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::ForEach:
+                collectDataSections(static_cast<const ast::ForEachStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::ProcedureDecl:
+                // Oracle-verified legal: a DataSection inside a Procedure
+                // contributes to the same global, shared pool/cursor as a
+                // top-level one.
+                collectDataSections(static_cast<const ast::ProcedureDeclStmt&>(*stmt).body);
+                break;
+            default:
+                break;
+        }
+    }
 }
 
 void Sema::resolveCompilerIf(ast::Block& block, std::size_t index) {
@@ -774,12 +917,53 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::CompilerIf:
         case ast::StmtKind::CompilerSelect:
-            // Unreachable: visitBlock() never passes one of these to
-            // visitStmt() at all - it resolves and splices them away
-            // directly (see visitBlock's own doc comment). This case exists
-            // purely so -Wswitch stays an exhaustiveness net for this
-            // enum, matching the project's established convention.
+            // Unreachable: preResolveCompilerDirectives() (run once, before
+            // visitBlock's main walk even starts - see Sema::analyze())
+            // already resolves and splices away every one of these nodes
+            // directly. This case exists purely so -Wswitch stays an
+            // exhaustiveness net for this enum, matching the project's
+            // established convention.
             break;
+        case ast::StmtKind::DataLabel:
+        case ast::StmtKind::Data:
+            // Unreachable: these only ever exist inside a DataSectionStmt's
+            // own `body`, which the DataSection case below walks directly -
+            // they're never a direct child of any Block that visitBlock
+            // itself iterates. Exists purely for -Wswitch exhaustiveness.
+            break;
+        case ast::StmtKind::DataSection: {
+            auto& dataSection = static_cast<ast::DataSectionStmt&>(stmt);
+            for (auto& child : dataSection.body) {
+                if (child->kind == ast::StmtKind::Data) {
+                    for (auto& value : static_cast<ast::DataStmt&>(*child).values) {
+                        visitExpr(*value);
+                    }
+                }
+                // DataLabelStmt: nothing left to do - collectDataSections()
+                // already recorded its index in an earlier whole-Module
+                // pre-pass (see Sema::analyze()).
+            }
+            break;
+        }
+        case ast::StmtKind::Read: {
+            auto& read = static_cast<ast::ReadStmt&>(stmt);
+            // Oracle-verified: `Read[.suffix] varname` auto-declares an
+            // undeclared `varname` as Integer regardless of `Read`'s own
+            // suffix - exactly the same declareImplicit(name, spelling,
+            // typeOf(name), loc) pattern the `Assign` case above uses,
+            // which is already idempotent for an already-declared name
+            // (typeOf returns its existing suffix, so declare()'s own
+            // mismatch check sees no change at all).
+            declareImplicit(read.varName, read.varSpelling, typeOf(read.varName), read.loc);
+            break;
+        }
+        case ast::StmtKind::Restore: {
+            auto& restore = static_cast<ast::RestoreStmt&>(stmt);
+            if (!dataLabelIndex(restore.labelName)) {
+                diagnostics_.error(restore.loc, "'" + restore.labelSpelling + "' is not a declared Data label");
+            }
+            break;
+        }
         case ast::StmtKind::For: {
             auto& forStmt = static_cast<ast::ForStmt&>(stmt);
             TypeSuffix suffix = forStmt.suffix == TypeSuffix::None ? typeOf(forStmt.varName) : forStmt.suffix;
@@ -1427,6 +1611,11 @@ TypeSuffix Sema::constTypeOf(const std::string& lowerName) const {
 const Sema::ProcedureInfo* Sema::procedureInfo(const std::string& lowerName) const {
     auto it = procedures_.find(lowerName);
     return it == procedures_.end() ? nullptr : &it->second;
+}
+
+std::optional<std::size_t> Sema::dataLabelIndex(const std::string& lowerName) const {
+    auto it = dataLabels_.find(lowerName);
+    return it == dataLabels_.end() ? std::optional<std::size_t>{} : it->second;
 }
 
 const Sema::ArrayInfo* Sema::arrayInfo(const std::string& lowerName) const {
