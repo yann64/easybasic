@@ -31,7 +31,10 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
-| **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
+| **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Not started - scoped, see M7 scoping notes |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Not started - scoped, see M7 scoping notes |
+| **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Not started - scoped, see M7 scoping notes |
+| **M7d** | `Module`/`DeclareModule`/`EndModule` | Not started - scoped, see M7 scoping notes |
 
 ## M0 Implementation Notes
 
@@ -1476,4 +1479,145 @@ Catch2 unit test binary (in-process, no subprocess spawning at all, ~4s for all 
 `pbcxx` itself compiling every e2e test's own `input.pb` one at a time (no child-tracing needed,
 since the point is `pbcxx`'s *own* memory use, not `g++`'s - ~1-2s each). Verified clean on real
 CI via a manual `workflow_dispatch` trigger, not just locally.
+
+## M7 Scoping Notes
+
+M7 was left as "deferred/optional, not scoped" throughout M0-M6. This section records the scoping
+pass that splits it into four ordered sub-milestones - **threads (M7a) first, then GUI core (M7b),
+then `Interface`/`Module` last (M7c/M7d)** - per explicit user direction, since GUI alone is large
+enough that front-loading it would otherwise crowd out the smaller, self-contained pieces.
+
+**A major research resource for M7b**: a separate, independent project at
+`~/git/PureBasic/qt6_subsystem` spent 46 milestones empirically reverse-engineering real
+PureBasic's entire GUI command surface (by decoding the real, installed Qt5 subsystem's `.pbl`
+binaries and cross-referencing real official examples and, eventually, the real PureBasic IDE's own
+~100K-line source) while building a *Qt6 subsystem plugin* for PureBasic's own compiler - a
+fundamentally different target than this project's (a subsystem is a binary PureBasic's own
+compiler loads via its own ABI; `pbcxx` instead just needs its own runtime library functions,
+called directly from generated C++, with the right *PB-level* semantics - no subsystem-loading
+mechanism, `.pbl`/`.desc` packaging, or binary ABI compatibility needed at all). Despite the
+different target, that project's `docs/` are an extremely valuable *reference* for this scoping
+pass: a complete, empirically-verified catalog of real command signatures, argument orders, return
+conventions, event semantics, and a natural dependency-ordered implementation sequence (window/event
+core, basic gadgets, menu, statusbar/toolbar, systray, more gadgets, dialog, ...) - all independently
+confirmed against real PureBasic, not assumed. `pbcxx`'s own GUI work should still verify anything
+load-bearing against the oracle directly before relying on it (this project's own established
+practice), but doesn't need to re-derive this command catalog or ordering from scratch.
+
+### M7a: Threads
+
+Oracle-verified minimal API: `CreateThread(@Procedure(), param)` returns a thread ID; `IsThread`/
+`WaitThread`/`KillThread`; `CreateMutex()`/`LockMutex`/`UnlockMutex`/`FreeMutex`; `CreateSemaphore()`/
+`SignalSemaphore`/`WaitSemaphore`/`FreeSemaphore`. Maps cleanly onto `std::thread`/`std::mutex`/
+`std::counting_semaphore` in the runtime. One oracle-observed detail to not over-engineer: running
+threads without a `ThreadSafe` compiler mode produces a `[Debugger Warning]` (not an error) in real
+PB, about its own internal debugger/runtime structures needing locking - `pbcxx` doesn't share that
+internal-state-sharing concern (its own runtime is written thread-safely in ordinary C++ from the
+start), so this warning doesn't need replicating. Smallest, most self-contained of the four pieces -
+good first M7 slice.
+
+### M7b: GUI core (GTK3)
+
+GTK3 confirmed available for linking on both primary dev platforms: this Linux machine (3.24.52 via
+`pkg-config`) and the real Haiku machine (`gtk3`/`gtk3_devel` packages exist via `pkgman`, though
+`gtk3_devel` isn't installed yet - a setup step for whenever Haiku GUI work actually starts, not a
+blocker to scoping). Matches real PureBasic's own default Linux GUI backend (GTK3 since PB 6.0),
+per the user's explicit direction.
+
+**Deliberately phased, not planned end-to-end up front** - the reference project's own 46-milestone
+arc is itself evidence that "full PureBasic GUI" isn't a one-shot scope. Proposed first slices,
+each independently shippable and oracle-verified like every other milestone in this project:
+
+1. **Window + event core**: `OpenWindow`/`CloseWindow`/`IsWindow`/`ResizeWindow`/`HideWindow`,
+   `WindowEvent`/`WaitWindowEvent`, the `#PB_Event_*` constants (`CloseWindow`, `Gadget`, `Menu`,
+   `SizeWindow`, ...), `EventWindow`/`EventGadget`/`EventType`. This alone is enough for the
+   simplest real event-loop-driven programs.
+2. **Basic gadgets**: `ButtonGadget`/`TextGadget`/`StringGadget`/`CheckBoxGadget`/`FrameGadget` +
+   generic gadget management (`ResizeGadget`/`HideGadget`/`DisableGadget`/`FreeGadget`,
+   `SetGadgetText`/`GetGadgetText`, `SetGadgetState`/`GetGadgetState`).
+3. **`MessageRequester`** - the simplest modal dialog, and genuinely useful on its own (real PB code
+   uses it standalone constantly, independent of a full window - see the `Thread.pb` example).
+4. **`Menu`/`StatusBar`/`ToolBar`** - the next tier real small desktop apps commonly need.
+5. Further gadget types (`ListView`/`ComboBox`/`Option`/`ProgressBar`/`Image`/`Tree`/`ListIcon`/
+   `Panel`/...), the fuller `Requester` family (file/color/font/input pickers), `Dialog`/
+   `OpenXMLDialog`, and everything past that (2D/vector drawing, multimedia, 3D, web gadgets,
+   scripting, OpenGL, drag-drop, clipboard, printer, scintilla, ...) - explicitly open-ended,
+   scoped incrementally as real need (or interest) comes up, the same way M4's library coverage
+   grew one sub-letter at a time rather than being fully pre-planned.
+
+**Design stance, stated up front to avoid relitigating it per-slice**: `pbcxx`'s GUI runtime will
+call GTK3 directly from generated C++ (plain `gtk_window_new`/`gtk_button_new_with_label`/
+`g_signal_connect`/etc. wrapped in `runtime/include/easybasic/runtime/guilib.hpp`-style headers),
+not attempt to replicate PureBasic's own internal `PB_Object`/gadget-ID-table ABI or ship anything
+resembling a loadable subsystem plugin. PB's own event-loop model (`WaitWindowEvent()` as an
+explicit, PB-code-visible blocking poll) maps naturally onto GTK3's own main loop via
+`gtk_main_iteration()`-style pumping rather than `gtk_main()`'s normal callback-driven model, since
+real PB code structures its OWN control flow around the poll, not callbacks, for the base
+`WaitWindowEvent`-style API - the first oracle question to settle empirically once implementation
+starts, not assumed here.
+
+### M7c: `Interface`/`EndInterface`
+
+**Oracle-verified finding that reshapes this slice's design**: real PB's `Interface` is a thin
+syntactic layer over a *manually-built, programmer-visible vtable* - not an automatic OOP feature.
+A real, working example compiled and ran correctly:
+
+```purebasic
+Interface Shape
+  Area.d()
+  Name.s()
+EndInterface
+
+Structure CircleData
+  *VTable
+  radius.d
+EndStructure
+
+Procedure.d Circle_Area(*this.CircleData) : ProcedureReturn 3.14159 * *this\radius * *this\radius : EndProcedure
+Procedure.s Circle_Name(*this.CircleData) : ProcedureReturn "Circle" : EndProcedure
+
+DataSection
+  CircleVTable:
+  Data.i @Circle_Area()
+  Data.i @Circle_Name()
+EndDataSection
+
+c.CircleData
+c\VTable = ?CircleVTable
+c\radius = 5
+*shape.Shape = @c
+Debug *shape\Area()   ; 78.5397
+Debug *shape\Name()   ; Circle
+```
+
+The Structure's *first field* is a raw `*VTable` pointer; the `DataSection` lays out function
+addresses (`@Procedure()`) in the same order the `Interface` declares its methods; `?Label` (a new
+primitive, not yet implemented - see below) takes the compile-time address of that `DataSection`
+label; assigning a struct's address to an `Interface`-typed pointer is a bare reinterpretation, with
+**no compile-time conformance checking at all** - nothing verifies the vtable's function pointers'
+signatures actually match the `Interface`'s declared methods, exactly like a hand-written C vtable.
+This actually *simplifies* the implementation versus a "real OOP interface" assumption: `Sema` only
+needs, per declared `Interface`, an ordered list of method names (for resolving `\MethodName(args)`
+to a vtable slot index) - no structural type-checking between a `Structure` and the `Interface`s it's
+used through, since real PB does none either. `Codegen` lowers `*shape\Area()` to indexing the
+vtable pointer at `shape`'s own address by the method's declared position and calling through the
+resulting function-pointer type, with `*this` as an implicit first argument.
+
+**New prerequisite surfaced by this slice**: `?Label` (address of a `DataSection` label) is a
+genuinely separate primitive from M5b's own `Data`/`Read`/`Restore` cursor-based access - it hands
+back a raw, directly-usable pointer into the data pool rather than going through the sequential
+cursor at all. Not implemented as part of M5b (out of that milestone's own stated scope at the
+time); needs to land as a small prerequisite step within M7c rather than a retroactive M5b
+addition, since `Interface` is its only currently-known real use case.
+
+### M7d: `Module`/`DeclareModule`/`EndModule`
+
+Oracle-verified: `DeclareModule Name ... EndDeclareModule` (forward declarations/public `Global`s)
+paired with `Module Name ... EndModule` (the implementation, which can give those same `Global`s
+their initializers) and `Name::Member` qualified access from outside. Maps far more directly onto
+existing compiler infrastructure than `Interface` does - this is essentially a C++ `namespace`
+wrapped around already-supported `Procedure`/`Global` declarations, with `::`-qualified lookup
+added to name resolution. Likely the most mechanically straightforward of the four M7 pieces once
+reached, though not yet designed in detail (deprioritized to last, per the user's own explicit
+ordering).
 
