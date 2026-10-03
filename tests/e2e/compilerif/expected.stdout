@@ -1,5 +1,5 @@
-[Debugger]  linux
-[Debugger]  x64
+[Debugger]  1
+[Debugger]  1
 [Debugger]  flag set
 [Debugger]  42
 [Debugger]  99

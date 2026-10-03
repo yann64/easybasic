@@ -920,16 +920,17 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             // Unreachable: preResolveCompilerDirectives() (run once, before
             // visitBlock's main walk even starts - see Sema::analyze())
             // already resolves and splices away every one of these nodes
-            // directly. This case exists purely so -Wswitch stays an
-            // exhaustiveness net for this enum, matching the project's
-            // established convention.
-            break;
+            // directly.
         case ast::StmtKind::DataLabel:
         case ast::StmtKind::Data:
             // Unreachable: these only ever exist inside a DataSectionStmt's
             // own `body`, which the DataSection case below walks directly -
             // they're never a direct child of any Block that visitBlock
-            // itself iterates. Exists purely for -Wswitch exhaustiveness.
+            // itself iterates. Grouped with the CompilerIf/CompilerSelect
+            // case just above (rather than its own identical `break;`)
+            // since clang-tidy's bugprone-branch-clone flags two adjacent
+            // switch cases with the same body - both exist purely so
+            // -Wswitch stays an exhaustiveness net for this enum.
             break;
         case ast::StmtKind::DataSection: {
             auto& dataSection = static_cast<ast::DataSectionStmt&>(stmt);

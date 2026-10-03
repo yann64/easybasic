@@ -42,8 +42,12 @@ if ! "$PBCXX" "$PROGRAM" -o "$WORKDIR/pbcxx_bin" -d > "$WORKDIR/pbcxx_compile.lo
     exit 1
 fi
 
-"$WORKDIR/oracle_bin" > "$WORKDIR/oracle.stdout" 2>&1
-"$WORKDIR/pbcxx_bin" > "$WORKDIR/pbcxx.stdout" 2>&1
+# Run from inside WORKDIR, not wherever this script itself was invoked from
+# - see run_case.sh's own identical comment on why (a test program using a
+# plain relative filename needs somewhere unique and already cleaned up by
+# the trap above).
+( cd "$WORKDIR" && ./oracle_bin ) > "$WORKDIR/oracle.stdout" 2>&1
+( cd "$WORKDIR" && ./pbcxx_bin ) > "$WORKDIR/pbcxx.stdout" 2>&1
 
 if ! diff -u "$WORKDIR/oracle.stdout" "$WORKDIR/pbcxx.stdout"; then
     echo "FAIL: $PROGRAM - pbcxx's output disagrees with the real pbcompilerc"

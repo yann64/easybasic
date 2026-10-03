@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdio>
+#include <filesystem>
 
 #include <easybasic/runtime/filelib.hpp>
 
@@ -9,9 +10,16 @@ using namespace easybasic::runtime;
 namespace {
 /// A path unique enough per test case not to collide if tests ever run in
 /// parallel, cleaned up at the end of each TEST_CASE regardless of outcome.
+/// Built from `std::filesystem::temp_directory_path()` rather than a
+/// hardcoded `/tmp/...` - a real portability bug caught by this project's
+/// own first-ever Windows CI run (M6): `/tmp` doesn't exist on Windows, so
+/// every `fopen` here silently failed and every filelib test failed with
+/// it, with no connection to the actual runtime code being tested.
 struct ScratchPath {
     std::string path;
-    explicit ScratchPath(const char* name) : path(std::string("/tmp/easybasic_filelib_unittest_") + name) {
+    explicit ScratchPath(const char* name)
+        : path((std::filesystem::temp_directory_path() / (std::string("easybasic_filelib_unittest_") + name))
+                    .string()) {
         std::remove(path.c_str());
     }
     ~ScratchPath() { std::remove(path.c_str()); }

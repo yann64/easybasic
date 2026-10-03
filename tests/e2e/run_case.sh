@@ -23,7 +23,13 @@ if ! "$PBCXX" "$INPUT" -o "$BIN" -d > "$WORKDIR/compile.log" 2>&1; then
     exit 1
 fi
 
-if ! "$BIN" > "$WORKDIR/actual.stdout" 2>"$WORKDIR/actual.stderr"; then
+# Run from inside WORKDIR (not wherever this script itself happens to be
+# invoked from) so a test program using a plain relative filename (e.g. the
+# filelib test's own scratch files) writes somewhere unique and already
+# cleaned up by the trap above - a real portability gap this project's own
+# first-ever Windows CI run (M6) caught the hard way, via tests that
+# instead hardcoded absolute `/tmp/...` paths (not a real path on Windows).
+if ! ( cd "$WORKDIR" && ./case_bin ) > "$WORKDIR/actual.stdout" 2>"$WORKDIR/actual.stderr"; then
     echo "FAIL: $CASE_DIR - compiled binary exited non-zero"
     cat "$WORKDIR/actual.stderr"
     exit 1

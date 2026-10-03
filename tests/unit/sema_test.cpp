@@ -288,7 +288,12 @@ TEST_CASE("Sema resolves a field-access chain's type, including through nesting"
     Sema sema(diags);
     REQUIRE(sema.analyze(*module));
     CHECK_FALSE(diags.hasErrors());
-    auto* dbg = static_cast<ast::DebugStmt*>(module->statements[2].get());
+    // statements[0]/[1] are the two Structure declarations, [2] is `Define
+    // r.Rect`, and [3] is the `Debug` statement itself - this index was
+    // off by one until a UBSan vptr check (CI only; this machine's own
+    // local heap layout happened not to trip it) caught the resulting
+    // invalid downcast.
+    auto* dbg = static_cast<ast::DebugStmt*>(module->statements[3].get());
     CHECK(sema.resolveType(*dbg->value).suffix == TypeSuffix::Integer);
 }
 

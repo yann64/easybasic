@@ -875,9 +875,7 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             // Unreachable: Sema::preResolveCompilerDirectives() splices
             // every CompilerIf/CompilerSelect node out of the tree
             // (replacing it with its selected branch's own statements)
-            // before Codegen ever runs - see its own doc comment. This case
-            // exists purely so -Wswitch stays an exhaustiveness net.
-            break;
+            // before Codegen ever runs - see its own doc comment.
         case ast::StmtKind::DataSection:
         case ast::StmtKind::DataLabel:
         case ast::StmtKind::Data:
@@ -885,7 +883,11 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             // up front, at the very start of generated main()) already
             // emitted every Data value's pbDataAddX() call, independent of
             // where the DataSection textually appears - see its own doc
-            // comment.
+            // comment. Grouped with the CompilerIf/CompilerSelect case just
+            // above (rather than its own identical `break;`) since clang-
+            // tidy's bugprone-branch-clone flags two adjacent switch cases
+            // with the same body - both exist purely so -Wswitch stays an
+            // exhaustiveness net for this enum.
             break;
         case ast::StmtKind::Read: {
             const auto& read = static_cast<const ast::ReadStmt&>(stmt);

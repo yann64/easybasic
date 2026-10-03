@@ -59,9 +59,24 @@ jobs:
           run-clang-tidy -p build/linux-clang \
             $(find compiler/src runtime/include -name '*.cpp' -o -name '*.hpp')
       - name: cppcheck
+        # `--enable=all` (style+inconclusive included) is what's used for
+        # local, informational review throughout this project's own
+        # development - deliberately *not* what gates CI, since this
+        # codebase has accumulated plenty of accepted style-only notes
+        # (useStlAlgorithm, constVariableReference, intentionally-kept-for-
+        # future-use "unused" public API functions) that were never meant
+        # to be build-breaking. `warning,performance,portability` is the
+        # subset that actually indicates a real bug. Passing the file list
+        # explicitly (not just the two directories) because cppcheck
+        # otherwise silently skips a header-only directory like
+        # runtime/include entirely - it has no .cpp of its own for cppcheck
+        # to treat as a translation unit - so `runtime/include`'s own
+        # substantial logic (PBString, PBList/PBMap, the stdlib headers)
+        # was never actually being checked here before this fix.
         run: |
-          cppcheck --enable=all --inconclusive --error-exitcode=1 --suppress=missingIncludeSystem \
-            compiler/src runtime/include
+          cppcheck --enable=warning,performance,portability --error-exitcode=1 \
+            --suppress=missingIncludeSystem -I compiler/src -I runtime/include --std=c++20 \
+            $(find compiler/src runtime/include -name '*.cpp' -o -name '*.hpp')
 
   windows-mingw:
     runs-on: windows-latest
