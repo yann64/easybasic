@@ -30,7 +30,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
-| **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done except Haiku - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes); Haiku has a configured, SSH-reachable qemu VM but it's currently powered off/unreachable from this environment |
+| **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
 
 ## M0 Implementation Notes
@@ -1437,14 +1437,30 @@ test still exists for actually verifying the *real* platform-specific OS/Process
 against the live oracle, which stays meaningful since it only ever runs where `pbcompilerc` is
 installed (this Linux dev machine).
 
-**Haiku CI**: an SSH-reachable qemu VM (`haiku` host, pre-configured with its own key in
-`~/.ssh/config`) does exist for this - a planning assumption this project's docs had flagged as
-"once SSH access is scripted," which turns out to already be true - but the VM itself was
-unreachable ("No route to host") every time this session checked, most likely powered off.
-Registering it as a GitHub Actions self-hosted runner, or even just confirming `pbcxx` builds and
-the golden e2e suite passes there via a manual SSH session, remains blocked on the VM actually
-being up - not a code or CI-config problem, an infrastructure-availability one outside this
-session's reach.
+**Haiku CI - resolved once the machine itself came online**: a real Haiku machine (R1~beta6+
+development, hrev60192, x86_64) was unreachable earlier in this same session (wrong/stale IP, then
+genuinely powered off), but once reachable, `cmake --preset haiku` configured cleanly, the full
+build completed with zero warnings in this project's own code, and `ctest --preset haiku` passed
+230/231 on the first try. The one failure was a genuine bug in the `compilerif` e2e test's own
+earlier Windows-portability fix: it checked `#PB_Compiler_OS` against `#PB_OS_Windows`/`Linux`/
+`MacOS` only, forgetting `#PB_OS_Haiku` (a pbcxx-specific extension constant - Haiku isn't an
+officially PB-supported platform) - so `isKnownOS` read `0` instead of `1` when actually compiled
+*for* Haiku, a "portability fix" not accounting for this project's own actual target platform.
+Fixed by adding the missing `CompilerElseIf`; re-verified 231/231 afterward.
+
+**Automated Haiku CI - the official runner can't run on Haiku at all**: GitHub's own Actions runner
+is a .NET application, and Haiku has no .NET/Mono support whatsoever (confirmed: no `dotnet`/`mono`
+binary, no matching `pkgman` package). A `haiku` CI job was still added, but as a **self-hosted
+runner on the Linux dev machine** (labeled `haiku-bridge`, installed via the standard
+`config.sh`/`svc.sh install` flow as a systemd service) whose own steps run normally on Linux but
+reach over SSH to the real Haiku machine on the same LAN to do the actual rsync + `cmake --preset
+haiku` + `cmake --build` + `ctest` - scripting exactly what was just done by hand. Needed one fix
+after its first real run: `rsync` can create the leaf directory on the remote end but not a missing
+parent (`/boot/home/ci/` didn't exist yet), so the job now `mkdir -p`s the remote directory itself
+first rather than depending on that having been done manually. Both machines - this Linux one (for
+the bridge runner) and the Haiku one - need to be reachable for this job to pass; if either is off,
+the job fails or hangs rather than silently skipping, a real and accepted tradeoff of this design
+versus a GitHub-hosted runner.
 
 **Nightly Valgrind redesigned after discovering it was checking the wrong thing entirely**: the
 original `ctest -T memcheck` wraps each e2e test's own `bash run_case.sh ...` command; without

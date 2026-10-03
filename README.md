@@ -74,9 +74,10 @@ Three complementary test layers (see `tests/`):
   gracefully when `pbcompilerc` isn't installed (most CI runners).
 - **Unit tests** (`tests/unit/`, Catch2): Lexer/Parser/Sema/runtime in isolation.
 
-Plus, per-commit CI gates for clang-tidy/cppcheck and ASan/UBSan (Linux and Windows/MinGW), and a
-nightly Valgrind memcheck pass - see `.github/workflows/`. Haiku CI runs via a self-hosted qemu VM
-when it's reachable (M6).
+Plus, per-commit CI gates for clang-tidy/cppcheck and ASan/UBSan, on Linux, Windows/MinGW, and
+Haiku (via a self-hosted runner bridging to a real Haiku machine over SSH, since the official
+Actions runner needs .NET, which Haiku doesn't have), and a nightly Valgrind memcheck pass - see
+`.github/workflows/`.
 
 ## License
 
