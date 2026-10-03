@@ -156,8 +156,12 @@ jobs:
       - name: Sync source to the Haiku machine
         # --delete keeps the remote source tree exactly in sync with this
         # checkout; build/ is excluded so CMake's own incremental rebuild
-        # still applies between runs (full Haiku builds are slow).
+        # still applies between runs (full Haiku builds are slow). The
+        # mkdir -p first makes this self-sufficient rather than depending
+        # on the remote parent directory already existing - rsync can
+        # create the leaf directory itself but not missing parents.
         run: |
+          ssh -i "$HAIKU_SSH_KEY" -o StrictHostKeyChecking=accept-new "$HAIKU_HOST" "mkdir -p $HAIKU_REMOTE_DIR"
           rsync -az --delete --exclude='build/' --exclude='.git/' \
             -e "ssh -i $HAIKU_SSH_KEY -o StrictHostKeyChecking=accept-new" \
             ./ "$HAIKU_HOST:$HAIKU_REMOTE_DIR/"
