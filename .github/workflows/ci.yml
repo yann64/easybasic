@@ -87,6 +87,10 @@ jobs:
         #     constructors are deliberate, for PB's own value-semantics
         #     ergonomics (`s = "hi"` needs an implicit `const char*`
         #     conversion).
+        #   - shadowFunction: pblist.hpp's PBList::deleteElement() has a
+        #     local `current` that shadows the unrelated PBList::current()
+        #     member function - harmless (the local is never meant to call
+        #     the method), just a coincidental name reuse.
         # `compiler/src` is passed as a plain directory (cppcheck's normal
         # mode: scan each .cpp, pulling in its own headers via #include, so
         # a header's usage is seen in context) - but runtime/include's own
@@ -94,10 +98,17 @@ jobs:
         # directory with no .cpp of its own is otherwise silently never
         # scanned at all (confirmed: `cppcheck runtime/include` alone
         # errors with "could not find or open any of the paths given").
+        # Verified against cppcheck 2.13.0 specifically (Ubuntu 24.04's apt
+        # version, the same one `ubuntu-latest` installs here) via a local
+        # `docker run ubuntu:24.04` - this project's own dev machine runs a
+        # newer Ubuntu with a newer cppcheck (2.19.0) that silently
+        # tolerates some of what 2.13.0 flags, which is what made the first
+        # two attempts at this fix look clean locally and still fail here.
         run: |
           cppcheck --enable=style,warning,performance,portability --inconclusive --error-exitcode=1 \
             --suppress=useStlAlgorithm --suppress=constVariableReference \
             --suppress=unusedFunction --suppress=duplicateAssignExpression \
+            --suppress=shadowFunction \
             --suppress=noExplicitConstructor -I compiler/src -I runtime/include --std=c++20 \
             compiler/src $(find runtime/include -name '*.hpp')
 

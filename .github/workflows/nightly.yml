@@ -13,9 +13,42 @@ jobs:
       - name: Install valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
       - name: Configure
-        run: cmake --preset linux-gcc -DMEMORYCHECK_COMMAND=$(command -v valgrind) -DMEMORYCHECK_COMMAND_OPTIONS="--leak-check=full --error-exitcode=1"
+        run: cmake --preset linux-gcc
       - name: Build
         run: cmake --build --preset linux-gcc
-      - name: Test under Valgrind memcheck
-        working-directory: build/linux-gcc
-        run: ctest -T memcheck
+      # Deliberately *not* `ctest -T memcheck`: that wraps each e2e test's
+      # own `bash run_case.sh ...` command, so without `--trace-children=yes`
+      # Valgrind only ever instruments bash itself (a harmless, well-known
+      # leak inside bash's own parser, nothing to do with this project's own
+      # code) rather than the pbcxx/compiled-program child processes bash
+      # actually spawns - confirmed by inspecting a real memcheck run's own
+      # log, which reported the exact same "32+24 bytes lost" leak,
+      # attributed to `make_simple_command`/`yyparse` inside
+      # `/usr/bin/bash`, for every single e2e test. Adding
+      # `--trace-children=yes` instead makes Valgrind *also* trace into the
+      # g++ invocation pbcxx itself shells out to compile the generated
+      # C++ - correct, but tens of seconds per test under Valgrind's own
+      # instrumentation overhead, impractical for the full suite even as a
+      # nightly job. Running Valgrind directly on the two things this
+      # project actually wants checked - the Catch2 unit tests (in-process,
+      # no subprocess spawning, ~4s) and pbcxx itself compiling each e2e
+      # test's own input.pb (no child-tracing needed, since the point is
+      # pbcxx's *own* memory use, not g++'s - ~1-2s each) - is both faster
+      # and more meaningful than instrumenting a shell interpreter this
+      # project doesn't own.
+      - name: Valgrind - unit tests
+        run: |
+          valgrind --leak-check=full --error-exitcode=1 \
+            ./build/linux-gcc/tests/unit/easybasic_unit_tests
+      - name: Valgrind - pbcxx itself, compiling every e2e test program
+        run: |
+          status=0
+          for input in tests/e2e/*/input.pb; do
+            echo "::group::$input"
+            if ! valgrind --leak-check=full --error-exitcode=1 \
+                ./build/linux-gcc/compiler/pbcxx "$input" -o /tmp/vg_out -d; then
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $status
