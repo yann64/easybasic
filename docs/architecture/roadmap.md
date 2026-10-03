@@ -30,7 +30,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M3** | `Structure`, pointers, `NewList`/`NewMap` families, static `Dim` arrays, `Global`/`Shared`/`Protected` | Done - `Global`/`Shared`/`Protected` (M3a), static `Dim` arrays (M3b), `Structure` (M3c), pointers (M3d), `NewList` (M3e), and `NewMap` (M3f) all land |
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
-| **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Not started |
+| **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done except Haiku - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes); Haiku has a configured, SSH-reachable qemu VM but it's currently powered off/unreachable from this environment |
 | **M7 (deferred/optional)** | `Interface`, `Module`, threads; GUI/3D as a separate future effort | Not scoped |
 
 ## M0 Implementation Notes
@@ -1380,4 +1380,84 @@ project raises its own clear, distinct diagnostic for each (verified to actually
 both targeted `MacroExpander` unit tests and a full pbcxx run), not real PB's exact text.
 `IncludeFile`/`XIncludeFile` remain unimplemented and unverified - out of this milestone's
 stated scope from the start.
+
+## M6 Implementation Notes (CI, verified for real)
+
+**The headline finding**: this project's `ci.yml`/`nightly.yml` were written back in M0, matching
+the original plan's CI-wiring design, but had **never actually run** - the `github` remote had
+been silently failing every push since M0 due to a stale/wrong-account git credential, so GitHub
+saw an empty repository the whole time. Fixed by switching the active `gh` account, refreshing it
+with the `workflow` scope (needed to push changes under `.github/workflows/`), and replacing the
+stale cached credential. The very first real run, on 18 commits of accumulated history, failed 3
+of 5 jobs - every failure a genuine, previously-undetected bug, not a flake. Closing these out
+*is* M6's real work; the YAML itself needed only the cppcheck invocation fixed.
+
+**static-analysis (cppcheck)**: took three attempts to get right, each one only exposed by the
+*actual* CI environment, not local reasoning. (1) `--enable=all --error-exitcode=1` turned every
+accepted style-only note into a hard failure. (2) Narrowing to `--enable=warning,performance,
+portability` passed locally but still failed in CI: Ubuntu 24.04's apt cppcheck (2.13.0) is far
+older than this dev machine's own (2.19.0) and classifies several checks differently -
+`duplicateAssignExpression` lands under `warning` there, not `style`. (3) Even
+`--enable=style,warning,performance,portability` plus explicit suppressions still failed once
+more, since `--enable=all` (tried as an alternative) additionally pulls in `information`-severity
+notices, which this cppcheck version's `--error-exitcode` counts as failures too. The eventual fix
+- explicit `--suppress=` for five specific, already-reviewed style IDs (`useStlAlgorithm`,
+`constVariableReference`, `unusedFunction`, `duplicateAssignExpression`, `noExplicitConstructor`,
+`shadowFunction`), `--enable=style,warning,performance,portability` (never `all`) - was finally
+verified correctly by running cppcheck 2.13.0 itself, via a local `docker run ubuntu:24.04`,
+instead of trusting this machine's own newer version a third time. Also fixed a real, independent
+gap this exposed: `cppcheck compiler/src runtime/include` had *never* actually scanned
+`runtime/include`'s own substantial logic (PBString, PBList/PBMap, every stdlib header) at all -
+a header-only directory with no `.cpp` of its own isn't a translation unit cppcheck treats as
+checkable from a bare directory argument - fixed by passing its `.hpp` files explicitly.
+
+**sanitizers**: a genuine UBSan vptr-check failure, unrelated to M5 - `sema_test.cpp`'s field-
+access-chain test cast `module->statements[2]` to `ast::DebugStmt*` when the `Debug` statement was
+actually at index `[3]` (index `[2]` is `Define r.Rect`). This machine's own local heap layout
+never happened to trip the invalid downcast; CI's did. Also caught independently by a local
+`ctest -T memcheck` run (see below) before the CI fix even landed, confirming it wasn't a CI-
+environment fluke.
+
+**windows-mingw**: three real, previously-unverified portability bugs, found by actually building
+and running the full suite on Windows for the first time ever. (1)
+`runtime_filelib_test.cpp`'s `ScratchPath` hardcoded `/tmp/...`, not a real path on Windows -
+fixed with `std::filesystem::temp_directory_path()`. (2) The filelib e2e/e2e_diff `.pb` test had
+the identical bug in PB source itself (also hardcoded `/tmp/...` paths) - fixed by switching to
+plain relative filenames, which in turn required `run_case.sh`/`diff_against_pbcompilerc.sh` to
+`cd` into their own per-test scratch directory before running the compiled binary (previously
+they didn't, relying on the hardcoded absolute path instead - a design that also had a latent
+parallel-test-collision risk even on Linux, now closed too). (3) The `compilerif` golden e2e test
+printed the literal detected OS name (`"linux"`), correct only on the Linux/x64 machine it was
+captured on - genuinely wrong once actually compiled on Windows, which does select the
+`#PB_OS_Windows` branch there. Redesigned to assert the portable invariant ("exactly one known
+OS/Processor value matches") instead of a specific name, and moved the "non-taken branch isn't
+type-checked" check onto a condition that's false on every real platform (`#PB_Compiler_OS =
+99999`) rather than tied to one specific OS - the differential (`e2e_diff`) variant of the same
+test still exists for actually verifying the *real* platform-specific OS/Processor detection
+against the live oracle, which stays meaningful since it only ever runs where `pbcompilerc` is
+installed (this Linux dev machine).
+
+**Haiku CI**: an SSH-reachable qemu VM (`haiku` host, pre-configured with its own key in
+`~/.ssh/config`) does exist for this - a planning assumption this project's docs had flagged as
+"once SSH access is scripted," which turns out to already be true - but the VM itself was
+unreachable ("No route to host") every time this session checked, most likely powered off.
+Registering it as a GitHub Actions self-hosted runner, or even just confirming `pbcxx` builds and
+the golden e2e suite passes there via a manual SSH session, remains blocked on the VM actually
+being up - not a code or CI-config problem, an infrastructure-availability one outside this
+session's reach.
+
+**Nightly Valgrind redesigned after discovering it was checking the wrong thing entirely**: the
+original `ctest -T memcheck` wraps each e2e test's own `bash run_case.sh ...` command; without
+`--trace-children=yes`, Valgrind only ever instruments *bash's own interpreter*, not the `pbcxx`/
+compiled-program child processes bash spawns - confirmed directly by inspecting a real memcheck
+log, which reported the exact same "32 bytes direct + 24 indirect lost" leak, traced to
+`make_simple_command`/`yyparse` inside `/usr/bin/bash` itself, identically for every single e2e
+test regardless of which `.pb` program it ran. Adding `--trace-children=yes` does reach the right
+processes, but also traces into the `g++` invocation `pbcxx` itself shells out to - correct, but
+30+ seconds per e2e test under Valgrind's own instrumentation overhead, impractical for the full
+231-test suite even nightly. Replaced with two direct, untraced Valgrind invocations instead: the
+Catch2 unit test binary (in-process, no subprocess spawning at all, ~4s for all 183 cases) and
+`pbcxx` itself compiling every e2e test's own `input.pb` one at a time (no child-tracing needed,
+since the point is `pbcxx`'s *own* memory use, not `g++`'s - ~1-2s each). Verified clean on real
+CI via a manual `workflow_dispatch` trigger, not just locally.
 

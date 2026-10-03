@@ -74,8 +74,9 @@ Three complementary test layers (see `tests/`):
   gracefully when `pbcompilerc` isn't installed (most CI runners).
 - **Unit tests** (`tests/unit/`, Catch2): Lexer/Parser/Sema/runtime in isolation.
 
-Plus, per-commit CI gates for clang-tidy/cppcheck and ASan/UBSan, and a nightly Valgrind
-memcheck pass - see `.github/workflows/`.
+Plus, per-commit CI gates for clang-tidy/cppcheck and ASan/UBSan (Linux and Windows/MinGW), and a
+nightly Valgrind memcheck pass - see `.github/workflows/`. Haiku CI runs via a self-hosted qemu VM
+when it's reachable (M6).
 
 ## License
 
