@@ -39,6 +39,7 @@ struct PBWindowEvent {
     std::int64_t windowId = 0;
     std::int64_t gadgetId = 0;
     std::int64_t eventType = 0;
+    std::int64_t menuElementId = 0; ///< M7b's fourth GUI slice: `EventMenu()`'s own value.
 };
 
 inline std::deque<PBWindowEvent>& eventQueue() {
@@ -69,6 +70,69 @@ inline std::unordered_map<std::int64_t, GtkWidget*>& windowFixedTable() {
 inline std::unordered_map<std::int64_t, GtkWidget*>& gadgetTable() {
     static std::unordered_map<std::int64_t, GtkWidget*> table;
     return table;
+}
+
+/// M7b's fourth GUI slice: `Menu`/`StatusBar`. `#Menu` -> its `GtkMenuBar`
+/// (the direct child of a window's own vbox, reordered to position 0 so it
+/// always renders above the gadget area regardless of creation order
+/// relative to a status bar).
+inline std::unordered_map<std::int64_t, GtkWidget*>& menuTable() {
+    static std::unordered_map<std::int64_t, GtkWidget*> table;
+    return table;
+}
+
+/// `#Menu` -> every `MenuTitle()`'s own top-level `GtkMenuItem*`, in creation
+/// order - what `GetMenuTitleText`/`SetMenuTitleText`'s own 0-based `Titre`
+/// index addresses.
+inline std::unordered_map<std::int64_t, std::vector<GtkWidget*>>& menuTitleWidgets() {
+    static std::unordered_map<std::int64_t, std::vector<GtkWidget*>> table;
+    return table;
+}
+
+/// `#Menu` -> (`ElementID` -> its own `GtkCheckMenuItem*`) - every leaf
+/// `MenuItem()`, addressed by its own PB-level element ID (not creation
+/// order, unlike `menuTitleWidgets()`).
+inline std::unordered_map<std::int64_t, std::unordered_map<std::int64_t, GtkWidget*>>& menuItemWidgets() {
+    static std::unordered_map<std::int64_t, std::unordered_map<std::int64_t, GtkWidget*>> table;
+    return table;
+}
+
+/// `#Menu` -> a stack of `GtkMenu*`, the menu-building equivalent of
+/// `activeWindowId()`/`activeMenuId()` themselves: `MenuItem`/`MenuBar()`
+/// (the separator) always append to the *top* of this stack, `MenuTitle`
+/// resets it to a single fresh top-level submenu, and `OpenSubMenu`/
+/// `CloseSubMenu` push/pop a nested one - oracle-verified that all of these
+/// operate on whichever menu was most recently `CreateMenu`'d, exactly the
+/// same "current context" pattern gadgets use for their own active window.
+inline std::unordered_map<std::int64_t, std::vector<GtkWidget*>>& menuBuildStack() {
+    static std::unordered_map<std::int64_t, std::vector<GtkWidget*>> table;
+    return table;
+}
+
+inline std::int64_t& activeMenuId() {
+    static std::int64_t id = 0;
+    return id;
+}
+
+/// `#StatusBar` -> its own horizontal `GtkBox`, packed at the *end* of the
+/// window's vbox (so it renders below the gadget area).
+inline std::unordered_map<std::int64_t, GtkWidget*>& statusBarTable() {
+    static std::unordered_map<std::int64_t, GtkWidget*> table;
+    return table;
+}
+
+/// `#StatusBar` -> every `AddStatusBarField()`'s own `GtkFrame*` (wrapping a
+/// `GtkLabel`, for a visible field border matching a native status bar's
+/// look), in creation order - what `StatusBarText`'s own 0-based `Champ`
+/// index addresses.
+inline std::unordered_map<std::int64_t, std::vector<GtkWidget*>>& statusBarFieldFrames() {
+    static std::unordered_map<std::int64_t, std::vector<GtkWidget*>> table;
+    return table;
+}
+
+inline std::int64_t& activeStatusBarId() {
+    static std::int64_t id = 0;
+    return id;
 }
 
 /// Oracle-verified: gadget-creation functions (`ButtonGadget`, etc.) take
@@ -107,6 +171,15 @@ inline const char* windowStateKey() { return "pbcxx-window-state"; }
 // oracle-verified that it does, not just `EventGadget()`).
 inline const char* gadgetIdKey() { return "pbcxx-gadget-id"; }
 inline const char* gadgetWindowIdKey() { return "pbcxx-gadget-window-id"; }
+// Same idea again, for M7b's fourth GUI slice: a leaf menu item's own
+// element ID and owning window ID (read back by `onMenuItemActivate`), and
+// the owning window ID tagged directly on a `#Menu`'s `GtkMenuBar`/a
+// `#StatusBar`'s own `GtkBox` (read back by `destroyWindow`, the same way
+// it already prunes `gadgetTable()`).
+inline const char* menuElementIdKey() { return "pbcxx-menu-element-id"; }
+inline const char* menuWindowIdKey() { return "pbcxx-menu-window-id"; }
+inline const char* menuCheckedKey() { return "pbcxx-menu-checked"; }
+inline const char* statusBarWindowIdKey() { return "pbcxx-statusbar-window-id"; }
 
 /// The last known position/size for one window - `configure-event` fires
 /// for *any* geometry change without saying which part changed, so this is
@@ -196,6 +269,42 @@ inline void onGadgetClicked(GtkWidget* widget, gpointer) { queueGadgetEvent(widg
 /// `#PB_Event_Gadget` with `#PB_EventType_Change` (`768`).
 inline void onGadgetChanged(GtkWidget* widget, gpointer) { queueGadgetEvent(widget, 768); }
 
+/// Queues a `#PB_Event_Menu` for a leaf `MenuItem()`'s own `"activate"`
+/// signal, reading its element/window IDs back from `g_object_set_data`
+/// (set in `pbMenuItem`) - the menu equivalent of `queueGadgetEvent`.
+inline void onMenuItemActivate(GtkWidget* item, gpointer) {
+    auto elementId = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(item), menuElementIdKey()));
+    auto windowId = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(item), menuWindowIdKey()));
+    PBWindowEvent ev;
+    ev.type = 1; // #PB_Event_Menu
+    ev.windowId = windowId;
+    ev.menuElementId = elementId;
+    eventQueue().push_back(ev);
+}
+
+/// Every leaf `MenuItem()` is a `GtkCheckMenuItem` under the hood (needed so
+/// `SetMenuItemState`'s own checkmark has somewhere to render), but
+/// oracle-verified a real click does **not** change `GetMenuItemState()`'s
+/// own value (unlike a `CheckBoxGadget` toggle) - only an explicit
+/// `SetMenuItemState()` call does. GTK's own default `"activate"` handler
+/// unconditionally flips a `GtkCheckMenuItem`'s active state first, though,
+/// so this handler (connected to `"toggled"`, fired as a side effect of
+/// that flip) immediately reverts any change the *stored* `menuCheckedKey()`
+/// intent (updated only by `pbSetMenuItemState`) doesn't agree with -
+/// blocking itself around the corrective call the same way
+/// `pbSetGadgetState` already blocks around its own programmatic change, to
+/// avoid recursing into itself.
+inline void onMenuItemToggled(GtkWidget* item, gpointer) {
+    bool intended = reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(item), menuCheckedKey())) != 0;
+    bool actual = gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(item)) != 0;
+    if (actual == intended) {
+        return;
+    }
+    g_signal_handlers_block_by_func(item, reinterpret_cast<gpointer>(onMenuItemToggled), nullptr);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item), intended ? TRUE : FALSE);
+    g_signal_handlers_unblock_by_func(item, reinterpret_cast<gpointer>(onMenuItemToggled), nullptr);
+}
+
 /// Shared by `pbCloseWindow` and `pbOpenWindow`'s own "re-using an already-
 /// open ID destroys the old window" branch. Oracle-verified: closing a
 /// window implicitly frees all of its gadgets too (`IsGadget` on a gadget
@@ -210,6 +319,32 @@ inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
     for (auto it = gadgetTable().begin(); it != gadgetTable().end();) {
         auto owner = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(it->second), gadgetWindowIdKey()));
         it = (owner == windowId) ? gadgetTable().erase(it) : std::next(it);
+    }
+    // Same idea again for M7b's fourth GUI slice's own two per-window
+    // owned-widget tables - GTK will recursively destroy the actual
+    // GtkMenuBar/GtkBox widgets as children of `window` below, but
+    // `menuTable()`/`statusBarTable()` (and their own side tables) would
+    // otherwise be left holding dangling pointers, same risk `gadgetTable()`
+    // already had.
+    for (auto it = menuTable().begin(); it != menuTable().end();) {
+        auto owner = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(it->second), menuWindowIdKey()));
+        if (owner == windowId) {
+            menuTitleWidgets().erase(it->first);
+            menuItemWidgets().erase(it->first);
+            menuBuildStack().erase(it->first);
+            it = menuTable().erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = statusBarTable().begin(); it != statusBarTable().end();) {
+        auto owner = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(it->second), statusBarWindowIdKey()));
+        if (owner == windowId) {
+            statusBarFieldFrames().erase(it->first);
+            it = statusBarTable().erase(it);
+        } else {
+            ++it;
+        }
     }
     gtk_widget_destroy(window);
 }
@@ -275,8 +410,17 @@ inline std::int64_t pbOpenWindow(std::int64_t windowId, std::int64_t x, std::int
 
     // A GtkFixed child holds this window's gadgets (M7b's second GUI
     // slice) - see its own doc comment on `detail::windowFixedTable()`.
+    // It's wrapped in a vertical GtkBox (M7b's fourth GUI slice) rather than
+    // added to the window directly, so a later `CreateMenu`/`CreateStatusBar`
+    // on this same window has somewhere to pack a menu bar above it / a
+    // status bar below it without disturbing the fixed's own gadget
+    // coordinates - `pbCreateMenu`/`pbCreateStatusBar` find this vbox back
+    // via `gtk_bin_get_child` on the window handle they're given (`WindowID()`'s
+    // own return value), rather than needing a third id-keyed table here.
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_add(GTK_CONTAINER(window), vbox);
     GtkWidget* fixed = gtk_fixed_new();
-    gtk_container_add(GTK_CONTAINER(window), fixed);
+    gtk_box_pack_start(GTK_BOX(vbox), fixed, TRUE, TRUE, 0);
 
     gtk_widget_show_all(window);
 
@@ -310,6 +454,20 @@ inline std::int64_t pbCloseWindow(std::int64_t windowId) {
 /// ish nonzero value, not a clean `1` - simplified the same way
 /// `pbOpenWindow`'s own return value is (see its own notes).
 inline std::int64_t pbIsWindow(std::int64_t windowId) { return detail::windowTable().contains(windowId) ? 1 : 0; }
+
+/// M7b's fourth GUI slice needs a real native window handle for the first
+/// time: `CreateMenu`/`CreateStatusBar`'s own second argument is documented
+/// (and oracle-verified) to be real PB's own `WindowID(#Window)` - not the
+/// PB-level window ID `pbOpenWindow` already simplifies to a clean `1`/`0`
+/// for everywhere else. So, unlike every other GUI handle this project has
+/// simplified so far, `WindowID()`'s return value genuinely is load-bearing:
+/// `pbCreateMenu`/`pbCreateStatusBar` below `reinterpret_cast` it straight
+/// back into the real `GtkWidget*` it is, with no separate lookup table
+/// needed at all.
+inline std::int64_t pbWindowID(std::int64_t windowId) {
+    auto it = detail::windowTable().find(windowId);
+    return it != detail::windowTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
+}
 
 inline std::int64_t pbResizeWindow(std::int64_t windowId, std::int64_t x, std::int64_t y, std::int64_t width,
                                     std::int64_t height) {
@@ -391,6 +549,7 @@ inline std::int64_t pbWaitWindowEvent(std::int64_t timeoutMs = -1) {
 inline std::int64_t pbEventWindow() { return detail::currentEvent().windowId; }
 inline std::int64_t pbEventGadget() { return detail::currentEvent().gadgetId; }
 inline std::int64_t pbEventType() { return detail::currentEvent().eventType; }
+inline std::int64_t pbEventMenu() { return detail::currentEvent().menuElementId; }
 
 /// M7b's second GUI slice: basic gadgets. Oracle-verified return-value
 /// simplification, same as `pbOpenWindow`'s own (see its notes): real PB's
@@ -658,6 +817,442 @@ inline std::int64_t pbMessageRequester(const PBString& title, const PBString& te
     default:
         return 6; // #PB_MessageRequester_Yes - see this function's own doc comment.
     }
+}
+
+/// M7b's fourth GUI slice: `Menu`. `GtkMenuBar` is the natural GTK3 fit for
+/// real PB's own menu bar - oracle-verified `CreateMenu`'s second argument
+/// must be a real `WindowID()` handle (see `pbWindowID`'s own doc comment),
+/// reinterpret_cast straight back into the `GtkWidget*` it already is. Like
+/// `pbOpenWindow`'s own return value, real `CreateMenu` returns a native-
+/// handle-ish nonzero Integer, simplified here to a clean `1`/`0`.
+///
+/// `ToolBar` is **deliberately out of scope for this slice** - oracle-
+/// verified (via `ToolBarImageButton`'s own docs) that real PB has no way to
+/// create a toolbar button without an `ImageID` at all (`ToolBarButtonText`
+/// only *relabels* an already-`ToolBarImageButton`-created button) - and
+/// this project's Image library (`LoadImage`/`CreateImage`/`ImageID`) does
+/// not exist yet. Revisit once that lands; implementing `ToolBar` without it
+/// would mean either diverging from real PB's own button-creation contract
+/// or rushing a minimal Image library as an unplanned side effect of this
+/// slice, neither acceptable under this project's oracle-first standard.
+inline std::int64_t pbCreateMenu(std::int64_t menuId, std::int64_t windowHandle) {
+    detail::ensureGtkInit();
+    auto* window = reinterpret_cast<GtkWidget*>(windowHandle);
+    GtkWidget* vbox = gtk_bin_get_child(GTK_BIN(window));
+    GtkWidget* menuBar = gtk_menu_bar_new();
+    gtk_box_pack_start(GTK_BOX(vbox), menuBar, FALSE, FALSE, 0);
+    // Always force it back to the very top - `fixed` (and, now, possibly an
+    // already-existing status bar) may already have been packed into `vbox`
+    // before this call.
+    gtk_box_reorder_child(GTK_BOX(vbox), menuBar, 0);
+    gtk_widget_show(menuBar);
+
+    auto windowId = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(window), detail::windowIdKey()));
+    g_object_set_data(G_OBJECT(menuBar), detail::menuWindowIdKey(), reinterpret_cast<gpointer>(windowId));
+
+    // Oracle-verified: re-using an already-live #Menu ID replaces the old
+    // one, the same convention as `pbOpenWindow`/`placeGadget`.
+    auto old = detail::menuTable().find(menuId);
+    if (old != detail::menuTable().end()) {
+        gtk_widget_destroy(old->second);
+    }
+    detail::menuTable()[menuId] = menuBar;
+    detail::menuTitleWidgets()[menuId].clear();
+    detail::menuItemWidgets()[menuId].clear();
+    detail::menuBuildStack()[menuId].clear();
+    detail::activeMenuId() = menuId;
+    return 1;
+}
+
+/// Oracle-verified: `MenuTitle`/`MenuItem`/`MenuBar`/`OpenSubMenu`/
+/// `CloseSubMenu` all operate on whichever `#Menu` was most recently
+/// `CreateMenu`'d - no explicit `#Menu` argument exists for any of them,
+/// exactly the "current context" pattern M7b's second GUI slice already
+/// established for gadgets and `activeWindowId()`. `MenuTitle` resets this
+/// menu's own build stack to a single fresh top-level `GtkMenu`, which
+/// `MenuItem`/`MenuBar()` (the separator)/`OpenSubMenu` all then append
+/// into.
+inline std::int64_t pbMenuTitle(const PBString& text) {
+    auto menuId = detail::activeMenuId();
+    auto it = detail::menuTable().find(menuId);
+    if (it == detail::menuTable().end()) {
+        return 0;
+    }
+    GtkWidget* titleItem = gtk_menu_item_new_with_label(text.bytes().c_str());
+    GtkWidget* submenu = gtk_menu_new();
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(titleItem), submenu);
+    gtk_menu_shell_append(GTK_MENU_SHELL(it->second), titleItem);
+    gtk_widget_show(titleItem);
+    detail::menuTitleWidgets()[menuId].push_back(titleItem);
+    detail::menuBuildStack()[menuId] = {submenu};
+    return 1;
+}
+
+/// `ImageID` is accepted but not yet acted on - see this block's own leading
+/// doc comment on why Image-library-dependent features are out of scope for
+/// this slice. Every leaf item is a `GtkCheckMenuItem` - see
+/// `detail::onMenuItemToggled`'s own doc comment for why.
+inline std::int64_t pbMenuItem(std::int64_t elementId, const PBString& text, std::int64_t /*imageId*/ = 0) {
+    auto menuId = detail::activeMenuId();
+    auto stackIt = detail::menuBuildStack().find(menuId);
+    if (stackIt == detail::menuBuildStack().end() || stackIt->second.empty()) {
+        return 0;
+    }
+    GtkWidget* item = gtk_check_menu_item_new_with_label(text.bytes().c_str());
+    auto windowId = reinterpret_cast<std::int64_t>(
+        g_object_get_data(G_OBJECT(detail::menuTable()[menuId]), detail::menuWindowIdKey()));
+    g_object_set_data(G_OBJECT(item), detail::menuElementIdKey(), reinterpret_cast<gpointer>(elementId));
+    g_object_set_data(G_OBJECT(item), detail::menuWindowIdKey(), reinterpret_cast<gpointer>(windowId));
+    g_object_set_data(G_OBJECT(item), detail::menuCheckedKey(), reinterpret_cast<gpointer>(std::intptr_t{0}));
+    g_signal_connect(item, "activate", G_CALLBACK(detail::onMenuItemActivate), nullptr);
+    g_signal_connect(item, "toggled", G_CALLBACK(detail::onMenuItemToggled), nullptr);
+    gtk_menu_shell_append(GTK_MENU_SHELL(stackIt->second.back()), item);
+    gtk_widget_show(item);
+    detail::menuItemWidgets()[menuId][elementId] = item;
+    return 1;
+}
+
+inline std::int64_t pbMenuBar() {
+    auto menuId = detail::activeMenuId();
+    auto stackIt = detail::menuBuildStack().find(menuId);
+    if (stackIt == detail::menuBuildStack().end() || stackIt->second.empty()) {
+        return 0;
+    }
+    GtkWidget* sep = gtk_separator_menu_item_new();
+    gtk_menu_shell_append(GTK_MENU_SHELL(stackIt->second.back()), sep);
+    gtk_widget_show(sep);
+    return 1;
+}
+
+inline std::int64_t pbOpenSubMenu(const PBString& text, std::int64_t /*imageId*/ = 0) {
+    auto menuId = detail::activeMenuId();
+    auto stackIt = detail::menuBuildStack().find(menuId);
+    if (stackIt == detail::menuBuildStack().end() || stackIt->second.empty()) {
+        return 0;
+    }
+    GtkWidget* subItem = gtk_menu_item_new_with_label(text.bytes().c_str());
+    GtkWidget* submenu = gtk_menu_new();
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(subItem), submenu);
+    gtk_menu_shell_append(GTK_MENU_SHELL(stackIt->second.back()), subItem);
+    gtk_widget_show(subItem);
+    stackIt->second.push_back(submenu);
+    return 1;
+}
+
+inline std::int64_t pbCloseSubMenu() {
+    auto stackIt = detail::menuBuildStack().find(detail::activeMenuId());
+    if (stackIt == detail::menuBuildStack().end() || stackIt->second.size() <= 1) {
+        return 0;
+    }
+    stackIt->second.pop_back();
+    return 1;
+}
+
+/// Oracle-verified: real PB's own `IsMenu` also returns a native-handle-ish
+/// nonzero value - simplified the same way `pbIsWindow`'s own is.
+inline std::int64_t pbIsMenu(std::int64_t menuId) { return detail::menuTable().contains(menuId) ? 1 : 0; }
+
+/// `#PB_All` (`-1`) frees every remaining menu at once - oracle-verified via
+/// `FreeMenu`'s own docs.
+inline std::int64_t pbFreeMenu(std::int64_t menuId) {
+    if (menuId == -1) {
+        for (auto& [id, widget] : detail::menuTable()) {
+            gtk_widget_destroy(widget);
+        }
+        detail::menuTable().clear();
+        detail::menuTitleWidgets().clear();
+        detail::menuItemWidgets().clear();
+        detail::menuBuildStack().clear();
+        return 1;
+    }
+    auto it = detail::menuTable().find(menuId);
+    if (it == detail::menuTable().end()) {
+        return 0;
+    }
+    gtk_widget_destroy(it->second);
+    detail::menuTable().erase(it);
+    detail::menuTitleWidgets().erase(menuId);
+    detail::menuItemWidgets().erase(menuId);
+    detail::menuBuildStack().erase(menuId);
+    return 1;
+}
+
+inline std::int64_t pbHideMenu(std::int64_t menuId, std::int64_t state) {
+    auto it = detail::menuTable().find(menuId);
+    if (it == detail::menuTable().end()) {
+        return 0;
+    }
+    if (state != 0) {
+        gtk_widget_hide(it->second);
+    } else {
+        gtk_widget_show(it->second);
+    }
+    return 1;
+}
+
+inline std::int64_t pbDisableMenuItem(std::int64_t menuId, std::int64_t element, std::int64_t state) {
+    auto menuIt = detail::menuItemWidgets().find(menuId);
+    if (menuIt == detail::menuItemWidgets().end()) {
+        return 0;
+    }
+    auto itemIt = menuIt->second.find(element);
+    if (itemIt == menuIt->second.end()) {
+        return 0;
+    }
+    gtk_widget_set_sensitive(itemIt->second, state == 0 ? TRUE : FALSE);
+    return 1;
+}
+
+inline std::int64_t pbGetMenuItemState(std::int64_t menuId, std::int64_t element) {
+    auto menuIt = detail::menuItemWidgets().find(menuId);
+    if (menuIt == detail::menuItemWidgets().end()) {
+        return 0;
+    }
+    auto itemIt = menuIt->second.find(element);
+    if (itemIt == menuIt->second.end()) {
+        return 0;
+    }
+    return gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(itemIt->second)) != 0 ? 1 : 0;
+}
+
+/// Updates `menuCheckedKey()`'s own stored intent too (not just the real GTK
+/// state) - see `detail::onMenuItemToggled`'s own doc comment for why a
+/// later real click needs to read that back.
+inline std::int64_t pbSetMenuItemState(std::int64_t menuId, std::int64_t element, std::int64_t state) {
+    auto menuIt = detail::menuItemWidgets().find(menuId);
+    if (menuIt == detail::menuItemWidgets().end()) {
+        return 0;
+    }
+    auto itemIt = menuIt->second.find(element);
+    if (itemIt == menuIt->second.end()) {
+        return 0;
+    }
+    GtkWidget* item = itemIt->second;
+    g_object_set_data(G_OBJECT(item), detail::menuCheckedKey(),
+                       reinterpret_cast<gpointer>(static_cast<std::intptr_t>(state != 0 ? 1 : 0)));
+    g_signal_handlers_block_by_func(item, reinterpret_cast<gpointer>(detail::onMenuItemToggled), nullptr);
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(item), state != 0 ? TRUE : FALSE);
+    g_signal_handlers_unblock_by_func(item, reinterpret_cast<gpointer>(detail::onMenuItemToggled), nullptr);
+    return 1;
+}
+
+inline PBString pbGetMenuItemText(std::int64_t menuId, std::int64_t element) {
+    auto menuIt = detail::menuItemWidgets().find(menuId);
+    if (menuIt == detail::menuItemWidgets().end()) {
+        return PBString();
+    }
+    auto itemIt = menuIt->second.find(element);
+    if (itemIt == menuIt->second.end()) {
+        return PBString();
+    }
+    const char* text = gtk_menu_item_get_label(GTK_MENU_ITEM(itemIt->second));
+    return PBString(text != nullptr ? text : "");
+}
+
+inline std::int64_t pbSetMenuItemText(std::int64_t menuId, std::int64_t element, const PBString& text) {
+    auto menuIt = detail::menuItemWidgets().find(menuId);
+    if (menuIt == detail::menuItemWidgets().end()) {
+        return 0;
+    }
+    auto itemIt = menuIt->second.find(element);
+    if (itemIt == menuIt->second.end()) {
+        return 0;
+    }
+    gtk_menu_item_set_label(GTK_MENU_ITEM(itemIt->second), text.bytes().c_str());
+    return 1;
+}
+
+inline PBString pbGetMenuTitleText(std::int64_t menuId, std::int64_t titleIndex) {
+    auto it = detail::menuTitleWidgets().find(menuId);
+    if (it == detail::menuTitleWidgets().end() || titleIndex < 0 ||
+        static_cast<std::size_t>(titleIndex) >= it->second.size()) {
+        return PBString();
+    }
+    const char* text = gtk_menu_item_get_label(GTK_MENU_ITEM(it->second[static_cast<std::size_t>(titleIndex)]));
+    return PBString(text != nullptr ? text : "");
+}
+
+inline std::int64_t pbSetMenuTitleText(std::int64_t menuId, std::int64_t titleIndex, const PBString& text) {
+    auto it = detail::menuTitleWidgets().find(menuId);
+    if (it == detail::menuTitleWidgets().end() || titleIndex < 0 ||
+        static_cast<std::size_t>(titleIndex) >= it->second.size()) {
+        return 0;
+    }
+    gtk_menu_item_set_label(GTK_MENU_ITEM(it->second[static_cast<std::size_t>(titleIndex)]), text.bytes().c_str());
+    return 1;
+}
+
+/// Takes no `#Menu` argument at all, like every other menu-building function
+/// - operates on `activeMenuId()`. **A real, oracle-driven correction to the
+/// official docs mid-implementation**: the French help's own `MenuHeight()`
+/// page claims Linux (and MacOS) always return `0`, since "the menu bar
+/// isn't part of the window". Directly tested against this PB 6.50 beta 1 /
+/// GTK3 install instead of trusting that: a plain `Debug MenuHeight()` right
+/// after building a one-title, one-item menu read `27`, a real, nonzero
+/// rendered height - GTK3's own menu bar genuinely is embedded in the
+/// window's own content area (unlike an older native-X11-WM-chrome model
+/// the docs may predate), so `pbMenuHeight` returns the real allocated
+/// height, not a hardcoded `0`. Pending GTK events are drained first since
+/// a freshly built/shown menu bar may not have gone through a size-allocate
+/// pass yet (the oracle's own immediate, pre-event-loop read already
+/// reflected a settled size, so this draining is a defensive, not merely
+/// cosmetic, correctness step for `pbcxx`'s own single-process cycle).
+inline std::int64_t pbMenuHeight() {
+    auto it = detail::menuTable().find(detail::activeMenuId());
+    if (it == detail::menuTable().end()) {
+        return 0;
+    }
+    while (gtk_events_pending() != 0) {
+        gtk_main_iteration();
+    }
+    return gtk_widget_get_allocated_height(it->second);
+}
+
+/// Oracle-verified: real PB's own `MenuID` also returns a native-handle-ish
+/// value - unlike most of this project's own such simplifications, this one
+/// is replicated exactly (the real `GtkWidget*`), the same way `WindowID`'s
+/// own return value has to be (see its own doc comment) - `MenuID()` has no
+/// known real-PB consumer like `CreateMenu`'s own `WindowID` argument, but
+/// there is no more "obvious" simplified value to pick instead, and a raw
+/// pointer is no less meaningful here than real PB's own is.
+inline std::int64_t pbMenuID(std::int64_t menuId) {
+    auto it = detail::menuTable().find(menuId);
+    return it != detail::menuTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
+}
+
+/// M7b's fourth GUI slice: `StatusBar`. A plain `GtkStatusbar` doesn't model
+/// real PB's own multi-field, independently-widthed/aligned/bordered field
+/// list at all (it's a single text line with a context-ID message stack) -
+/// a horizontal `GtkBox` of one `GtkFrame`-wrapped `GtkLabel` per field is
+/// the natural fit instead, the same kind of "model PB's own shape, not
+/// whichever same-named GTK widget happens to exist" choice `GtkFixed` was
+/// for gadgets.
+inline std::int64_t pbCreateStatusBar(std::int64_t barId, std::int64_t windowHandle) {
+    detail::ensureGtkInit();
+    auto* window = reinterpret_cast<GtkWidget*>(windowHandle);
+    GtkWidget* vbox = gtk_bin_get_child(GTK_BIN(window));
+    GtkWidget* bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 1);
+    gtk_box_pack_end(GTK_BOX(vbox), bar, FALSE, FALSE, 0);
+    gtk_widget_show(bar);
+
+    auto windowId = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(window), detail::windowIdKey()));
+    g_object_set_data(G_OBJECT(bar), detail::statusBarWindowIdKey(), reinterpret_cast<gpointer>(windowId));
+
+    auto old = detail::statusBarTable().find(barId);
+    if (old != detail::statusBarTable().end()) {
+        gtk_widget_destroy(old->second);
+    }
+    detail::statusBarTable()[barId] = bar;
+    detail::statusBarFieldFrames()[barId].clear();
+    detail::activeStatusBarId() = barId;
+    return 1;
+}
+
+/// Takes no `#StatusBar` argument - operates on `activeStatusBarId()`, the
+/// same "current context" pattern `MenuTitle`/`MenuItem` above use.
+/// `Width = #PB_Ignore` (`-65535`, oracle-verified) auto-sizes the field to
+/// share whatever space is left, via `GtkBox`'s own `expand`/`fill` instead
+/// of an explicit size request.
+inline std::int64_t pbAddStatusBarField(std::int64_t width) {
+    auto barId = detail::activeStatusBarId();
+    auto it = detail::statusBarTable().find(barId);
+    if (it == detail::statusBarTable().end()) {
+        return 0;
+    }
+    GtkWidget* frame = gtk_frame_new(nullptr);
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_IN);
+    GtkWidget* label = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0F);
+    gtk_container_add(GTK_CONTAINER(frame), label);
+    bool autoSize = width == -65535; // #PB_Ignore
+    if (!autoSize) {
+        gtk_widget_set_size_request(frame, static_cast<int>(width), -1);
+    }
+    gtk_box_pack_start(GTK_BOX(it->second), frame, autoSize ? TRUE : FALSE, autoSize ? TRUE : FALSE, 0);
+    gtk_widget_show_all(frame);
+    detail::statusBarFieldFrames()[barId].push_back(frame);
+    return 1;
+}
+
+/// `Apparence`'s bits (`#PB_StatusBar_Raised`=1/`BorderLess`=2/`Center`=4/
+/// `Right`=8, oracle-verified) are independent, unlike `MessageRequester`'s
+/// own grouped flags - `Raised`/`BorderLess` both pick the field's own
+/// `GtkFrame` shadow style (mutually exclusive in practice; `BorderLess`
+/// wins if a caller somehow sets both) and `Center`/`Right` the label's own
+/// horizontal alignment (likewise mutually exclusive, `Right` winning).
+inline std::int64_t pbStatusBarText(std::int64_t barId, std::int64_t field, const PBString& text,
+                                     std::int64_t flags = 0) {
+    auto it = detail::statusBarFieldFrames().find(barId);
+    if (it == detail::statusBarFieldFrames().end() || field < 0 ||
+        static_cast<std::size_t>(field) >= it->second.size()) {
+        return 0;
+    }
+    GtkWidget* frame = it->second[static_cast<std::size_t>(field)];
+    GtkWidget* label = gtk_bin_get_child(GTK_BIN(frame));
+    gtk_label_set_text(GTK_LABEL(label), text.bytes().c_str());
+
+    float xalign = 0.0F;
+    if ((flags & 8) != 0) {
+        xalign = 1.0F; // #PB_StatusBar_Right
+    } else if ((flags & 4) != 0) {
+        xalign = 0.5F; // #PB_StatusBar_Center
+    }
+    gtk_label_set_xalign(GTK_LABEL(label), xalign);
+
+    GtkShadowType shadow = GTK_SHADOW_IN;
+    if ((flags & 2) != 0) {
+        shadow = GTK_SHADOW_NONE; // #PB_StatusBar_BorderLess
+    } else if ((flags & 1) != 0) {
+        shadow = GTK_SHADOW_OUT; // #PB_StatusBar_Raised
+    }
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), shadow);
+    return 1;
+}
+
+/// Oracle-verified: real PB's own `IsStatusBar` also returns a native-
+/// handle-ish nonzero value - simplified the same way `pbIsWindow`'s own is.
+inline std::int64_t pbIsStatusBar(std::int64_t barId) { return detail::statusBarTable().contains(barId) ? 1 : 0; }
+
+/// `#PB_All` (`-1`) frees every remaining status bar at once, the same
+/// convention as `pbFreeMenu`'s own.
+inline std::int64_t pbFreeStatusBar(std::int64_t barId) {
+    if (barId == -1) {
+        for (auto& [id, widget] : detail::statusBarTable()) {
+            gtk_widget_destroy(widget);
+        }
+        detail::statusBarTable().clear();
+        detail::statusBarFieldFrames().clear();
+        return 1;
+    }
+    auto it = detail::statusBarTable().find(barId);
+    if (it == detail::statusBarTable().end()) {
+        return 0;
+    }
+    gtk_widget_destroy(it->second);
+    detail::statusBarTable().erase(it);
+    detail::statusBarFieldFrames().erase(barId);
+    return 1;
+}
+
+/// See `pbMenuHeight`'s own doc comment for why pending events are drained
+/// first - the same freshly-built-widget-not-yet-size-allocated concern
+/// applies here too.
+inline std::int64_t pbStatusBarHeight(std::int64_t barId) {
+    auto it = detail::statusBarTable().find(barId);
+    if (it == detail::statusBarTable().end()) {
+        return 0;
+    }
+    while (gtk_events_pending() != 0) {
+        gtk_main_iteration();
+    }
+    return gtk_widget_get_allocated_height(it->second);
+}
+
+/// Oracle-verified native-handle-ish value, not replicated-for-a-reason the
+/// same way `pbMenuID`'s own is (see its doc comment).
+inline std::int64_t pbStatusBarID(std::int64_t barId) {
+    auto it = detail::statusBarTable().find(barId);
+    return it != detail::statusBarTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
 }
 
 } // namespace easybasic::runtime

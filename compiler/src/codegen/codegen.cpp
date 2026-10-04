@@ -158,6 +158,21 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"setgadgettext", "pbSetGadgetText"},   {"getgadgettext", "pbGetGadgetText"},
         {"setgadgetstate", "pbSetGadgetState"}, {"getgadgetstate", "pbGetGadgetState"},
         {"messagerequester", "pbMessageRequester"},
+        {"windowid", "pbWindowID"},
+        {"createmenu", "pbCreateMenu"},     {"menutitle", "pbMenuTitle"},
+        {"menuitem", "pbMenuItem"},         {"menubar", "pbMenuBar"},
+        {"opensubmenu", "pbOpenSubMenu"},   {"closesubmenu", "pbCloseSubMenu"},
+        {"ismenu", "pbIsMenu"},             {"freemenu", "pbFreeMenu"},
+        {"hidemenu", "pbHideMenu"},         {"disablemenuitem", "pbDisableMenuItem"},
+        {"getmenuitemstate", "pbGetMenuItemState"}, {"setmenuitemstate", "pbSetMenuItemState"},
+        {"getmenuitemtext", "pbGetMenuItemText"},   {"setmenuitemtext", "pbSetMenuItemText"},
+        {"getmenutitletext", "pbGetMenuTitleText"}, {"setmenutitletext", "pbSetMenuTitleText"},
+        {"menuheight", "pbMenuHeight"},     {"menuid", "pbMenuID"},
+        {"eventmenu", "pbEventMenu"},
+        {"createstatusbar", "pbCreateStatusBar"},   {"addstatusbarfield", "pbAddStatusBarField"},
+        {"statusbartext", "pbStatusBarText"},       {"isstatusbar", "pbIsStatusBar"},
+        {"freestatusbar", "pbFreeStatusBar"},       {"statusbarheight", "pbStatusBarHeight"},
+        {"statusbarid", "pbStatusBarID"},
     };
     return "easybasic::runtime::" + names.at(lowerName);
 }

@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done - see M7a notes (`KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately deferred) |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First three slices done (Window + event core, basic gadgets, `MessageRequester` - see M7b notes); `Menu`/`StatusBar`/`ToolBar`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar` - see M7b notes); `ToolBar` (blocked on an Image library - see the fourth slice's own notes) and everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Not started - scoped, see M7 scoping notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Not started - scoped, see M7 scoping notes |
 
@@ -1988,4 +1988,128 @@ added for the same reason the first GUI slice's close-button behavior never got 
 genuinely blocking dialog needs without risking an e2e test that hangs forever if something regresses
 - unit-test coverage with the safe `g_timeout_add` technique above was judged sufficient confidence
 for this slice.
+
+## M7b Implementation Notes (GUI core, fourth slice: `Menu`/`StatusBar`)
+
+**Scope landed**: `CreateMenu`/`MenuTitle`/`MenuItem`/`MenuBar` (the separator)/`OpenSubMenu`/
+`CloseSubMenu`, generic menu management (`IsMenu`/`FreeMenu`/`HideMenu`/`DisableMenuItem`), the
+state/text accessors (`GetMenuItemState`/`SetMenuItemState`/`GetMenuItemText`/`SetMenuItemText`/
+`GetMenuTitleText`/`SetMenuTitleText`), `MenuHeight`/`MenuID`, `EventMenu`; `CreateStatusBar`/
+`AddStatusBarField`/`StatusBarText` + `IsStatusBar`/`FreeStatusBar`/`StatusBarHeight`/`StatusBarID`;
+and `WindowID` - a real, load-bearing gap-filler this slice needed before any of the above could work
+at all (see its own notes below). `#PB_StatusBar_*` (`Raised`=1/`BorderLess`=2/`Center`=4/`Right`=8)
+and the general-purpose `#PB_Ignore`=-65535/`#PB_All`=-1 (surprisingly, oracle-verified to share the
+same value as `#PB_Any`) constants are all oracle-verified via direct `Debug #PB_X` probes.
+
+**`ToolBar` is deliberately out of scope for this slice, unlike the roadmap's own original "Menu/
+StatusBar/ToolBar" grouping** - a real, oracle-discovered blocker, not a time-budget cut: real PB has
+no way to create a toolbar button without an `ImageID` at all (`ToolBarImageButton` is the *only*
+button-creation function; `ToolBarButtonText` only *relabels* an already-created one, and requires the
+toolbar to have been created with `#PB_ToolBar_Text` in the first place). This project's Image library
+(`LoadImage`/`CreateImage`/`ImageID`) doesn't exist yet - implementing `ToolBar` now would mean either
+diverging from real PB's own button-creation contract or rushing a minimal, unplanned Image library as
+a side effect of this slice, neither acceptable under this project's oracle-first standard. Revisit once
+an Image library milestone lands.
+
+**`WindowID` had to be implemented as a prerequisite, not a extension of this slice's own planned
+scope** - oracle-verified `CreateMenu`/`CreateStatusBar`'s own second argument must be real PB's own
+`WindowID(#Window)` return value, not the plain PB-level window ID every other GUI builtin accepts
+directly. Unlike every native-handle-ish return value this project has simplified to a clean `1`/`0` so
+far (`OpenWindow`, `IsWindow`, gadget creation, ...), `WindowID()`'s own return value is genuinely
+load-bearing - real programs pass it straight into another function. `pbWindowID` therefore returns the
+*real* `GtkWidget*` for the window, reinterpret_cast to an `int64_t`, and `pbCreateMenu`/
+`pbCreateStatusBar` reinterpret_cast it straight back - no separate id-to-handle lookup table needed at
+all, since the handle already *is* the real pointer.
+
+**Oracle-verified architectural finding, the same "current context" pattern M7b's second GUI slice
+established for gadgets, extended to two more unrelated areas independently**: `MenuTitle`/`MenuItem`/
+`MenuBar`/`OpenSubMenu`/`CloseSubMenu` all operate on whichever `#Menu` was most recently `CreateMenu`'d
+(confirmed directly: with two menus created, building continues into the second one, not the first) -
+not an isolated gadget-specific quirk, but a general PB idiom this project hadn't previously confirmed
+extends elsewhere. `AddStatusBarField` (no `#StatusBar` argument at all) is the identical pattern for
+`CreateStatusBar`. `guilib.hpp`'s own `detail::activeMenuId()`/`detail::activeStatusBarId()` mirror
+`detail::activeWindowId()` exactly.
+
+**A second, more surprising oracle correction to the official (French) help docs themselves, found by
+testing instead of trusting them**: `MenuHeight()`'s own help page claims Linux (and MacOS) always
+return `0`, since "the menu bar isn't part of the window" there. Directly tested against this PB 6.50
+beta 1 / GTK3 install instead: a plain `Debug MenuHeight()` right after building a one-title, one-item
+menu read `27`, a real nonzero rendered height - GTK3's own menu bar genuinely is embedded in the
+window's own content area on this install (unlike whatever older native-X11-WM-chrome model the docs
+may predate), so `pbMenuHeight` returns the real allocated height of the `GtkMenuBar` widget, not a
+hardcoded `0` - and `pbcxx`'s own generated binary reproduced the oracle's exact value (`27`) for an
+identical menu, not just a plausible-looking nonzero number. A documented lesson for this project's own
+methodology, not just a `pbcxx` implementation detail: even official PureBasic documentation needs
+oracle verification before being trusted, the same standing instruction `docs/developer/oracle-
+testing.md` already gives for third-party claims generally.
+
+**A leaf `MenuItem` is a `GtkCheckMenuItem`, not a plain `GtkMenuItem`, needed so `SetMenuItemState`'s
+own checkmark has somewhere to render (`MenuItem()` has no separate "checkable" declaration form in
+real PB at all - any item can be checked via the state accessors)** - but oracle-verified via direct
+`xdotool` click simulation under Xvfb against the real `pbcompilerc` binary (the same technique the
+second/third GUI slices used) that a real click does **not** change `GetMenuItemState()`'s own value,
+unlike a `CheckBoxGadget` toggle. GTK's own default `"activate"` handler for a `GtkCheckMenuItem`
+unconditionally flips its active state first, though, so `detail::onMenuItemToggled` (connected to
+`"toggled"`, fired as a side effect of that flip) immediately reverts any change that disagrees with the
+item's own stored `menuCheckedKey()` intent (updated only by `pbSetMenuItemState`) - blocking itself
+around the corrective call the same way `pbSetGadgetState` already blocks around its own programmatic
+change, to avoid recursing into itself. Verified end-to-end against `pbcxx`'s own compiled output too
+(not just the runtime library in isolation): a real `xdotool` click against a compiled `pbcxx` binary
+produced the identical oracle-verified `EventMenu()`/`EventWindow()`/post-click `GetMenuItemState()`
+values the real `pbcompilerc` binary did for the same `.pb` source.
+
+**A real structural change to `pbOpenWindow` itself, needed for a menu bar and a status bar to have
+somewhere to attach without disturbing gadget coordinates**: every window's sole child used to be the
+`GtkFixed` gadgets are placed into directly; it's now a vertical `GtkBox` ("vbox") holding the `GtkFixed`
+(expand/fill, so it still consumes all otherwise-unused space), with `pbCreateMenu` packing a menu bar
+at the top (`gtk_box_pack_start` + `gtk_box_reorder_child` to force position `0`, regardless of creation
+order relative to a status bar) and `pbCreateStatusBar` packing a status bar at the bottom
+(`gtk_box_pack_end`). `pbCreateMenu`/`pbCreateStatusBar` find this vbox back via `gtk_bin_get_child` on
+the window handle (`WindowID()`'s own real pointer) they're given, rather than needing a third id-keyed
+lookup table - this is also *why* `WindowID()` returning the real pointer (not a simplified `1`/`0`)
+mattered architecturally, not just for oracle fidelity. Existing gadget coordinates are unaffected (the
+`GtkFixed`'s own top-left origin doesn't move relative to itself), and a gadget now correctly starts
+below any menu bar - matching real PB's own documented reason `MenuHeight()` exists in the first place
+(the `HideMenu()` doc example uses it to reposition a gadget when a menu bar's presence toggles). All 17
+pre-existing GUI unit tests (window/gadget/`MessageRequester`) still pass unchanged against this
+restructuring, confirming it's additive, not a behavior change for anything built before this slice.
+
+**`StatusBar` deliberately does *not* reuse any single built-in GTK "statusbar" widget** - a plain
+`GtkStatusbar` is a single text line with a push/pop context-ID message stack, nothing like real PB's
+own multi-field, independently-widthed/aligned/bordered field list (oracle-verified: two fields with
+different widths, alignments, and border styles coexist side by side). A horizontal `GtkBox` of one
+`GtkFrame`-wrapped `GtkLabel` per field is the natural fit instead - the same "model PB's own shape, not
+whichever same-named GTK widget happens to exist" choice `GtkFixed` already was for gadgets over M7b's
+second slice. `Width = #PB_Ignore` auto-sizes a field via the box's own `expand`/`fill` instead of an
+explicit size request; `StatusBarText`'s `Apparence` flags independently pick the frame's shadow type
+(`Raised`/`BorderLess`) and the label's horizontal alignment (`Center`/`Right`).
+
+**Every menu/status-bar-management function PB's own docs describe as returning `Aucune` ("none") is
+still modeled as Integer-returning, success/not-found `1`/`0`** - the identical, already-established
+divergence `ResizeGadget`/`HideGadget`/`DisableGadget`/`FreeGadget` (M7b's second slice) and
+`ResizeWindow`/`HideWindow`/`CloseWindow` (its first) already chose over real PB's own undocumented or
+nonexistent return values, applied consistently here rather than re-litigated per function.
+
+**Window/menu/status-bar cleanup needed a third parallel owned-widget scan, extending `destroyWindow`'s
+existing pattern rather than introducing a new one**: `pbCreateMenu`/`pbCreateStatusBar` tag their own
+top-level widget with the owning PB window ID (`g_object_set_data`, the same convention
+`gadgetWindowIdKey()` already established for gadgets), and `destroyWindow` now also scans
+`menuTable()`/`statusBarTable()` for entries owned by the window being closed, erasing their own side
+tables (`menuTitleWidgets`/`menuItemWidgets`/`menuBuildStack`/`statusBarFieldFrames`) alongside the
+`GtkWidget*` table entry itself - GTK already recursively destroys the actual child widgets when the
+window is destroyed, but these id-keyed C++ tables would otherwise be left holding dangling pointers,
+the exact same risk `gadgetTable()` already had and was already fixed for.
+
+**Testing**: extended `runtime_guilib_test.cpp` with `WindowID`'s own handle round-trip, `CreateMenu`/
+`IsMenu`/`FreeMenu`, full menu-building + text/state-accessor round-trips, `DisableMenuItem`/`HideMenu`
+sensitivity/visibility effects, a real menu-item activation (`gtk_menu_item_activate`, the menu
+equivalent of the second slice's own `gtk_button_clicked` technique) verifying both the queued event and
+the not-auto-toggled state regression, window-close cleanup for both menus and status bars, and a full
+`CreateStatusBar`/`AddStatusBarField`/`StatusBarText` round-trip. A third golden e2e case
+(`tests/e2e/gui_menu_statusbar`) covers deterministic creation/management/accessor round-trips the same
+way the second slice's own `gui_basic_gadgets` case does, for the same reason (the oracle-verified
+return-value simplifications above would fail a literal stdout diff even on fully correct behavior) -
+simulated-click coverage stays in the Catch2 unit tests only, consistent with every GUI slice so far.
+All 278 tests (across both `linux-gcc` and `linux-clang`) pass, including the 261 that predate this
+slice - confirming the `pbOpenWindow` vbox restructuring is additive.
 

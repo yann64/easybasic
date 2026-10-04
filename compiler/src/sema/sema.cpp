@@ -381,6 +381,46 @@ void Sema::registerGuiLibBuiltins() {
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
         {"messagerequester", TypeSuffix::Integer, {TypeSuffix::String, TypeSuffix::String, TypeSuffix::Integer}, 2},
+        // M7b's fourth GUI slice: Menu/StatusBar. WindowID is a real gap-
+        // filler this slice needed too - oracle-verified CreateMenu/
+        // CreateStatusBar's own second argument must be real PB's own
+        // WindowID(#Window), not the plain PB-level window ID every other
+        // GUI builtin takes directly (see guilib.hpp's pbWindowID doc
+        // comment).
+        {"windowid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"createmenu", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        // MenuTitle/MenuItem/MenuBar/OpenSubMenu/CloseSubMenu all operate on
+        // whichever #Menu was most recently CreateMenu'd - no #Menu
+        // argument at all (oracle-verified, see guilib.hpp's own
+        // menuBuildStack doc comment).
+        {"menutitle", TypeSuffix::Integer, {TypeSuffix::String}, 1},
+        // ImageID is optional and accepted-but-ignored - see guilib.hpp's
+        // pbMenuItem doc comment (Image library out of scope).
+        {"menuitem", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String, TypeSuffix::Integer}, 2},
+        {"menubar", TypeSuffix::Integer, {}, 0},
+        {"opensubmenu", TypeSuffix::Integer, {TypeSuffix::String, TypeSuffix::Integer}, 1},
+        {"closesubmenu", TypeSuffix::Integer, {}, 0},
+        {"ismenu", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"freemenu", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"hidemenu", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"disablemenuitem", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"getmenuitemstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"setmenuitemstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"getmenuitemtext", TypeSuffix::String, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"setmenuitemtext", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String}, 3},
+        {"getmenutitletext", TypeSuffix::String, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"setmenutitletext", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String}, 3},
+        {"menuheight", TypeSuffix::Integer, {}, 0},
+        {"menuid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"eventmenu", TypeSuffix::Integer, {}, 0},
+        {"createstatusbar", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"addstatusbarfield", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"statusbartext", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String, TypeSuffix::Integer}, 3},
+        {"isstatusbar", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"freestatusbar", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"statusbarheight", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"statusbarid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
     };
     for (const auto& sig : signatures) {
         ProcedureInfo info;
@@ -398,6 +438,11 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "buttongadget",  "textgadget",  "stringgadget",     "checkboxgadget", "framegadget",
         "isgadget",      "freegadget",  "resizegadget",     "hidegadget",     "disablegadget",
         "setgadgettext", "getgadgettext", "setgadgetstate", "getgadgetstate", "messagerequester",
+        "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
+        "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
+        "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
+        "createstatusbar", "addstatusbarfield", "statusbartext", "isstatusbar", "freestatusbar", "statusbarheight",
+        "statusbarid",
     };
     return names.contains(lowerName);
 }
@@ -515,6 +560,21 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_messagerequester_yes", 6},
         {"pb_messagerequester_no", 7},
         {"pb_messagerequester_cancel", 2},
+        // M7b's fourth GUI slice: Menu/StatusBar. `#PB_StatusBar_*` is
+        // oracle-verified via a direct `Debug #PB_StatusBar_Xxx` probe -
+        // independent bits, unlike MessageRequester's own grouped flags.
+        // `#PB_Ignore`/`#PB_All` are general-purpose PB sentinels (not GUI-
+        // specific), first needed by this slice (`AddStatusBarField`'s
+        // auto-size width, `FreeMenu`/`FreeStatusBar`'s "free everything")
+        // but oracle-verified standalone, not assumed from context -
+        // surprisingly, both share the same value (`-1`) in real PB.
+        {"pb_statusbar_raised", 1},
+        {"pb_statusbar_borderless", 2},
+        {"pb_statusbar_center", 4},
+        {"pb_statusbar_right", 8},
+        {"pb_ignore", -65535},
+        {"pb_all", -1},
+        {"pb_any", -1},
     };
     return table;
 }

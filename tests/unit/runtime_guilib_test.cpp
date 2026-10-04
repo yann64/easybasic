@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <thread>
 
 #include <easybasic/runtime/guilib.hpp>
@@ -381,4 +382,169 @@ TEST_CASE("MessageRequester YesNoCancel reports Cancel correctly", "[runtime][gu
     }
     g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_CANCEL));
     CHECK(pbMessageRequester(PBString("Title"), PBString("Text"), 2) == 2); // #PB_MessageRequester_Cancel
+}
+
+TEST_CASE("WindowID returns the real window handle, usable to re-find the window",
+          "[runtime][guilib]") {
+    // Oracle-verified: unlike every other GUI handle this project has
+    // simplified to a clean 1/0, WindowID()'s own return value is genuinely
+    // load-bearing - it's what CreateMenu/CreateStatusBar's own second
+    // argument must be (see pbWindowID's own doc comment).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    CHECK(pbWindowID(300) == 0); // unknown window ID
+    pbOpenWindow(300, 10, 10, 100, 100, PBString("Test"));
+    std::int64_t handle = pbWindowID(300);
+    CHECK(handle != 0);
+    CHECK(reinterpret_cast<GtkWidget*>(handle) == detail::windowTable().at(300));
+    pbCloseWindow(300);
+}
+
+TEST_CASE("CreateMenu/IsMenu/FreeMenu round-trip", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(301, 10, 10, 200, 100, PBString("Test"));
+    CHECK(pbIsMenu(1) == 0);
+    CHECK(pbCreateMenu(1, pbWindowID(301)) == 1);
+    CHECK(pbIsMenu(1) == 1);
+    pbFreeMenu(1);
+    CHECK(pbIsMenu(1) == 0);
+    pbCloseWindow(301);
+}
+
+TEST_CASE("Menu building (MenuTitle/MenuItem/MenuBar/OpenSubMenu/CloseSubMenu) + text/state accessors",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(302, 10, 10, 200, 100, PBString("Test"));
+    pbCreateMenu(1, pbWindowID(302));
+    pbMenuTitle(PBString("File"));
+    pbMenuItem(10, PBString("Open"));
+    pbMenuBar(); // separator
+    pbOpenSubMenu(PBString("Recent"));
+    pbMenuItem(11, PBString("A"));
+    pbCloseSubMenu();
+    pbMenuItem(12, PBString("Quit"));
+    pbMenuTitle(PBString("Edit"));
+    pbMenuItem(13, PBString("Cut"));
+
+    CHECK(pbGetMenuItemText(1, 10).bytes() == "Open");
+    pbSetMenuItemText(1, 10, PBString("Renamed"));
+    CHECK(pbGetMenuItemText(1, 10).bytes() == "Renamed");
+
+    CHECK(pbGetMenuTitleText(1, 0).bytes() == "File");
+    CHECK(pbGetMenuTitleText(1, 1).bytes() == "Edit");
+    pbSetMenuTitleText(1, 0, PBString("Fichier"));
+    CHECK(pbGetMenuTitleText(1, 0).bytes() == "Fichier");
+
+    // Oracle-verified default: a plain MenuItem starts unchecked.
+    CHECK(pbGetMenuItemState(1, 10) == 0);
+    pbSetMenuItemState(1, 10, 1);
+    CHECK(pbGetMenuItemState(1, 10) == 1);
+    pbSetMenuItemState(1, 10, 0);
+    CHECK(pbGetMenuItemState(1, 10) == 0);
+
+    CHECK(pbMenuHeight() > 0);
+    CHECK(pbMenuID(1) == reinterpret_cast<std::int64_t>(detail::menuTable().at(1)));
+
+    pbCloseWindow(302);
+}
+
+TEST_CASE("DisableMenuItem/HideMenu affect sensitivity/visibility, not tracked state",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(303, 10, 10, 200, 100, PBString("Test"));
+    pbCreateMenu(1, pbWindowID(303));
+    pbMenuTitle(PBString("File"));
+    pbMenuItem(10, PBString("Open"));
+
+    GtkWidget* item = detail::menuItemWidgets().at(1).at(10);
+    pbDisableMenuItem(1, 10, 1);
+    CHECK(gtk_widget_get_sensitive(item) == FALSE);
+    pbDisableMenuItem(1, 10, 0);
+    CHECK(gtk_widget_get_sensitive(item) == TRUE);
+
+    GtkWidget* menuBar = detail::menuTable().at(1);
+    pbHideMenu(1, 1);
+    CHECK(gtk_widget_get_visible(menuBar) == FALSE);
+    pbHideMenu(1, 0);
+    CHECK(gtk_widget_get_visible(menuBar) == TRUE);
+
+    pbCloseWindow(303);
+}
+
+TEST_CASE("A real menu item activation queues #PB_Event_Menu and leaves GetMenuItemState unchanged",
+          "[runtime][guilib]") {
+    // Oracle-verified (via xdotool click simulation against the real
+    // pbcompilerc binary under Xvfb): clicking a plain MenuItem does *not*
+    // change its own checked state - only an explicit SetMenuItemState()
+    // call does. `gtk_menu_item_activate` here is the programmatic
+    // equivalent of `gtk_button_clicked` in the gadget tests above - it
+    // drives the exact same "activate" signal path a real click does.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(304, 10, 10, 200, 100, PBString("Test"));
+    pbCreateMenu(1, pbWindowID(304));
+    pbMenuTitle(PBString("File"));
+    pbMenuItem(10, PBString("Open"));
+    drainEvents();
+
+    GtkWidget* item = detail::menuItemWidgets().at(1).at(10);
+    gtk_menu_item_activate(GTK_MENU_ITEM(item));
+
+    CHECK(pbWindowEvent() == 1); // #PB_Event_Menu
+    CHECK(pbEventMenu() == 10);
+    CHECK(pbEventWindow() == 304);
+    CHECK(pbGetMenuItemState(1, 10) == 0);
+
+    pbCloseWindow(304);
+}
+
+TEST_CASE("Closing a window frees its own menus and status bars too", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(305, 10, 10, 200, 100, PBString("Test"));
+    pbCreateMenu(1, pbWindowID(305));
+    pbCreateStatusBar(1, pbWindowID(305));
+    CHECK(pbIsMenu(1) == 1);
+    CHECK(pbIsStatusBar(1) == 1);
+
+    pbCloseWindow(305);
+    CHECK(pbIsMenu(1) == 0);
+    CHECK(pbIsStatusBar(1) == 0);
+}
+
+TEST_CASE("CreateStatusBar/AddStatusBarField/StatusBarText round-trip", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(306, 10, 10, 300, 100, PBString("Test"));
+    CHECK(pbIsStatusBar(1) == 0);
+    CHECK(pbCreateStatusBar(1, pbWindowID(306)) == 1);
+    CHECK(pbIsStatusBar(1) == 1);
+
+    pbAddStatusBarField(100);
+    pbAddStatusBarField(-65535); // #PB_Ignore
+    CHECK(pbStatusBarText(1, 0, PBString("Area 1")) == 1);
+    CHECK(pbStatusBarText(1, 1, PBString("Area 2"), 8) == 1); // #PB_StatusBar_Right
+    CHECK(pbStatusBarText(1, 2, PBString("No such field")) == 0);
+
+    GtkWidget* frame0 = detail::statusBarFieldFrames().at(1).at(0);
+    GtkWidget* label0 = gtk_bin_get_child(GTK_BIN(frame0));
+    CHECK(std::string(gtk_label_get_text(GTK_LABEL(label0))) == "Area 1");
+
+    CHECK(pbStatusBarHeight(1) > 0);
+    CHECK(pbStatusBarID(1) == reinterpret_cast<std::int64_t>(detail::statusBarTable().at(1)));
+
+    pbFreeStatusBar(1);
+    CHECK(pbIsStatusBar(1) == 0);
+
+    pbCloseWindow(306);
 }
