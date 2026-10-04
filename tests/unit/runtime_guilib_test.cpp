@@ -122,3 +122,204 @@ TEST_CASE("pbWaitWindowEvent returns 0 after its timeout elapses with no event",
     CHECK(elapsed >= 80); // Loose lower bound to avoid flakiness.
     pbCloseWindow(103);
 }
+
+TEST_CASE("Gadget creation round-trips through IsGadget/GetGadgetText/FreeGadget", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(200, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbIsGadget(1) == 0);
+
+    CHECK(pbButtonGadget(1, 10, 10, 100, 30, PBString("Click me")) == 1);
+    CHECK(pbIsGadget(1) == 1);
+    CHECK(pbGetGadgetText(1).bytes() == "Click me");
+
+    CHECK(pbTextGadget(2, 10, 50, 100, 20, PBString("Label")) == 1);
+    CHECK(pbStringGadget(3, 10, 80, 100, 20, PBString("init")) == 1);
+    CHECK(pbCheckBoxGadget(4, 10, 110, 100, 20, PBString("Check")) == 1);
+    CHECK(pbFrameGadget(5, 10, 140, 150, 40, PBString("Frame")) == 1);
+
+    CHECK(pbFreeGadget(1) == 1);
+    CHECK(pbIsGadget(1) == 0);
+    CHECK(pbFreeGadget(1) == 0); // Already freed - harmless.
+
+    pbCloseWindow(200);
+}
+
+TEST_CASE("GetGadgetText/SetGadgetText dispatch correctly per real gadget type", "[runtime][guilib]") {
+    // Oracle-verified: ButtonGadget, TextGadget, StringGadget,
+    // CheckBoxGadget, and FrameGadget all support GetGadgetText/
+    // SetGadgetText for their own primary display text (button/checkbox
+    // label, static label, entry content, frame title respectively).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(201, 10, 10, 200, 200, PBString("Test"));
+    pbButtonGadget(1, 10, 10, 100, 30, PBString("Original"));
+    pbTextGadget(2, 10, 50, 100, 20, PBString("Original"));
+    pbStringGadget(3, 10, 80, 100, 20, PBString("Original"));
+    pbCheckBoxGadget(4, 10, 110, 100, 20, PBString("Original"));
+    pbFrameGadget(5, 10, 140, 150, 40, PBString("Original"));
+
+    for (std::int64_t id = 1; id <= 5; ++id) {
+        CHECK(pbGetGadgetText(id).bytes() == "Original");
+        pbSetGadgetText(id, PBString("Changed"));
+        CHECK(pbGetGadgetText(id).bytes() == "Changed");
+    }
+
+    pbCloseWindow(201);
+}
+
+TEST_CASE("GetGadgetState/SetGadgetState round-trip on a CheckBoxGadget", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(202, 10, 10, 200, 200, PBString("Test"));
+    pbCheckBoxGadget(1, 10, 10, 150, 20, PBString("Check"));
+
+    CHECK(pbGetGadgetState(1) == 0); // Oracle-verified: unchecked by default.
+    CHECK(pbSetGadgetState(1, 1) == 1);
+    CHECK(pbGetGadgetState(1) == 1);
+    CHECK(pbSetGadgetState(1, 0) == 1);
+    CHECK(pbGetGadgetState(1) == 0);
+
+    pbCloseWindow(202);
+}
+
+TEST_CASE("SetGadgetState/SetGadgetText do not queue a spurious #PB_Event_Gadget", "[runtime][guilib]") {
+    // Oracle-verified real bug this project's own gadget-event signal
+    // wiring hit and fixed: gtk_toggle_button_set_active/gtk_entry_set_text
+    // fire the same "toggled"/"changed" GTK signals a real user
+    // click/keystroke does, but real PB's own SetGadgetState/SetGadgetText
+    // generate no event at all - confirmed directly (a drained event poll
+    // loop immediately after each call reports zero gadget events).
+    // Fixed by blocking the signal handler around just that one
+    // programmatic change (see pbSetGadgetState/pbSetGadgetText's own doc
+    // comments).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(203, 10, 10, 200, 200, PBString("Test"));
+    pbCheckBoxGadget(1, 10, 10, 150, 20, PBString("Check"));
+    pbStringGadget(2, 10, 50, 150, 20, PBString("init"));
+    drainEvents();
+
+    pbSetGadgetState(1, 1);
+    pbSetGadgetText(2, PBString("changed via code"));
+    drainEvents();
+    CHECK(pbWindowEvent() == 0);
+
+    pbCloseWindow(203);
+}
+
+TEST_CASE("A real click (gtk_button_clicked) queues #PB_Event_Gadget with #PB_EventType_LeftClick",
+          "[runtime][guilib]") {
+    // gtk_button_clicked is a public GTK API that emits the exact same
+    // "clicked" signal a real pointer click does - the gadget-event
+    // equivalent of the window close-button test's own direct signal-
+    // emission technique, for the same reason (no window manager in this
+    // headless environment to mediate a real pointer event reliably).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(204, 10, 10, 200, 200, PBString("Test"));
+    pbButtonGadget(1, 10, 10, 100, 30, PBString("Click me"));
+    drainEvents();
+
+    GtkWidget* button = detail::gadgetTable().at(1);
+    gtk_button_clicked(GTK_BUTTON(button));
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventWindow() == 204);
+    CHECK(pbEventGadget() == 1);
+    CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
+
+    pbCloseWindow(204);
+}
+
+TEST_CASE("A real toggle (gtk_toggle_button_set_active) queues #PB_Event_Gadget with "
+          "#PB_EventType_LeftClick for a CheckBoxGadget",
+          "[runtime][guilib]") {
+    // Oracle-verified: a checkbox toggle reports LeftClick (0), not Change
+    // (768), as its own EventType() - unlike StringGadget's own Change
+    // event below. This test deliberately does NOT go through
+    // pbSetGadgetState (which blocks the signal specifically to avoid this
+    // event - see the spurious-event test above); it drives the same
+    // gtk_toggle_button_set_active call a real click ultimately triggers,
+    // unblocked, to verify the signal wiring itself still works.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(205, 10, 10, 200, 200, PBString("Test"));
+    pbCheckBoxGadget(1, 10, 10, 150, 20, PBString("Check"));
+    drainEvents();
+
+    GtkWidget* checkbox = detail::gadgetTable().at(1);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(checkbox), TRUE);
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 1);
+    CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
+
+    pbCloseWindow(205);
+}
+
+TEST_CASE("Real typing (gtk_entry_set_text via GtkEditable) queues #PB_Event_Gadget with "
+          "#PB_EventType_Change for a StringGadget",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(206, 10, 10, 200, 200, PBString("Test"));
+    pbStringGadget(1, 10, 10, 150, 20, PBString(""));
+    drainEvents();
+
+    // gtk_entry_set_text itself is what pbSetGadgetText uses too, but that
+    // function deliberately blocks its own "changed" handler - calling the
+    // raw GTK API directly here instead exercises the unblocked signal
+    // path a real keystroke drives.
+    GtkWidget* entry = detail::gadgetTable().at(1);
+    gtk_entry_set_text(GTK_ENTRY(entry), "typed");
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 1);
+    CHECK(pbEventType() == 768); // #PB_EventType_Change
+
+    pbCloseWindow(206);
+}
+
+TEST_CASE("A new gadget is placed into the most recently opened window, not an earlier one",
+          "[runtime][guilib]") {
+    // Oracle-verified: gadget-creation functions take no window parameter
+    // at all - PB places a new gadget into whichever window was most
+    // recently opened (see guilib.hpp's own activeWindowId() doc comment).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(207, 10, 10, 100, 100, PBString("First"));
+    pbOpenWindow(208, 150, 10, 100, 100, PBString("Second"));
+    pbButtonGadget(1, 10, 10, 50, 20, PBString("B"));
+    drainEvents();
+
+    GtkWidget* button = detail::gadgetTable().at(1);
+    GtkWidget* secondWindow = detail::windowTable().at(208);
+    CHECK(gtk_widget_get_toplevel(button) == secondWindow);
+
+    pbCloseWindow(207);
+    pbCloseWindow(208);
+}
+
+TEST_CASE("Closing a window frees its own gadgets too", "[runtime][guilib]") {
+    // Oracle-verified: IsGadget on a gadget that belonged to a just-closed
+    // window returns 0 (closing a window implicitly frees its own
+    // gadgets).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(209, 10, 10, 100, 100, PBString("Test"));
+    pbButtonGadget(1, 10, 10, 50, 20, PBString("B"));
+    CHECK(pbIsGadget(1) == 1);
+
+    pbCloseWindow(209);
+    CHECK(pbIsGadget(1) == 0);
+}

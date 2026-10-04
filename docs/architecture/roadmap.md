@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done - see M7a notes (`KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately deferred) |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First slice done (Window + event core - see M7b notes); gadgets/`MessageRequester`/`Menu`/`StatusBar`/`ToolBar`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First two slices done (Window + event core, basic gadgets - see M7b notes); `MessageRequester`/`Menu`/`StatusBar`/`ToolBar`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Not started - scoped, see M7 scoping notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Not started - scoped, see M7 scoping notes |
 
@@ -1838,4 +1838,94 @@ font cache, first touched by `gtk_init()` - not a `pbcxx` leak.
 `ToolBar`, and everything else in the phased scope above. Haiku verification (needs `gtk3_devel`
 installed there first) and Windows/MinGW GUI linking feasibility are both still open, deferred
 rather than blocking this slice.
+
+## M7b Implementation Notes (GUI core, second slice: basic gadgets)
+
+**Scope landed**: `ButtonGadget`/`TextGadget`/`StringGadget`/`CheckBoxGadget`/`FrameGadget`,
+`IsGadget`/`FreeGadget`/`ResizeGadget`/`HideGadget`/`DisableGadget`, and the text/state accessors
+`GetGadgetText`/`SetGadgetText`/`GetGadgetState`/`SetGadgetState`. The `#PB_EventType_*` constants
+needed to interpret gadget events (`LeftClick`=0, `RightClick`=1, `LeftDoubleClick`=2, `Focus`=256,
+`LostFocus`=512, `Change`=768) were oracle-verified by direct `Debug #PB_EventType_X` probes.
+
+**Oracle-verified finding that reshapes this whole slice's design**: gadget-creation functions take
+*no* window parameter at all, unlike this project's own first instinct going in. Confirmed directly:
+with two windows open, a gadget created afterward lands in the **second** one (`EventWindow()`
+reports it when the gadget is later clicked), not the first - real PB tracks an implicit "active
+window" context, always the most recently opened one (real PB's own escape hatch for retargeting
+this, `UseGadgetList`, is not implemented in this slice - a deliberately deferred gap, the same kind
+as `#PB_Window_*` flags were for the first GUI slice). Mapped onto a single `detail::activeWindowId()`
+global, set by every `pbOpenWindow` call and read by every gadget-creation function.
+
+**`GtkFixed` as the natural container for PB's absolute-pixel gadget model**: unlike GTK's usual
+box/grid layout managers, `GtkFixed` takes explicit `x, y` placement (`gtk_fixed_put`) for each
+child, matching PB's own `Gadget(#Gadget, x, y, width, height, ...)` signature directly. One
+`GtkFixed` is created per window (a child of the window itself, added right after the window in
+`pbOpenWindow`) and tracked in a new `detail::windowFixedTable()`; every gadget-creation function
+places its widget into the active window's own `GtkFixed`, which is also how `pbResizeGadget` moves
+a gadget later (`gtk_fixed_move`, found via `gtk_widget_get_parent`).
+
+**`FrameGadget` is not a real container** - oracle cross-checked against ordinary PB usage: other
+gadgets placed with coordinates that visually overlap a `FrameGadget`'s own area are independent
+sibling widgets at the window level, not children reparented into the frame. This matches `GtkFixed`
+placement exactly (every gadget, including `FrameGadget` itself, is just another direct child of the
+window's one `GtkFixed`) - no special-casing needed.
+
+**Oracle-verified return-value simplification, same stance as `pbOpenWindow`'s own**: all five
+gadget-creation functions, and `IsGadget`, return a native-handle-ish nonzero Integer in real PB, not
+a clean `1` - simplified to `1`/`0` the same way. More surprisingly, oracle-verified that
+`ResizeGadget`/`HideGadget`/`DisableGadget`/`FreeGadget` (and, cross-checked at the same time,
+`ResizeWindow`/`HideWindow`/`CloseWindow` from the first GUI slice) all return a **plain `0`**
+regardless of success in real PB - not a success flag at all, just an unused/implementation-detail
+return slot. `pbcxx`'s own versions return `1` on success/`0` if the ID wasn't found instead, a
+documented, deliberate divergence (a more informative value with no real program likely depending on
+PB's own literal `0`).
+
+**`GetGadgetText`/`SetGadgetText` dispatch on the gadget's own real GTK widget type** rather than
+needing five separate accessor pairs: `GTK_IS_ENTRY` (StringGadget's content), `GTK_IS_BUTTON`
+(covers both ButtonGadget's label *and* CheckBoxGadget's, since `GtkToggleButton` is itself a
+`GtkButton` subclass - oracle-confirmed both are readable/writable this way), `GTK_IS_LABEL`
+(TextGadget), `GTK_IS_FRAME` (FrameGadget's title) - all oracle-verified to support
+`GetGadgetText`/`SetGadgetText` for their own primary display text. `GetGadgetState`/
+`SetGadgetState` only do something meaningful for `GTK_IS_TOGGLE_BUTTON` (CheckBoxGadget's checked
+state, oracle-verified to default to unchecked/`0`); every other gadget type harmlessly no-ops.
+
+**Two real bugs found by oracle cross-checking, not by a failing test**: `SetGadgetState` and
+`SetGadgetText` on a `StringGadget` were both initially implemented as plain `gtk_toggle_button_
+set_active`/`gtk_entry_set_text` calls - but GTK fires the exact same `"toggled"`/`"changed"`
+signals for a *programmatic* change as for a real user click/keystroke, so the first working version
+of both functions silently queued a spurious, incorrect `#PB_Event_Gadget`. Oracle-verified real PB
+does **not** generate any event at all from either function (confirmed directly: a drained event
+poll loop immediately after each call reports zero gadget events) - fixed by wrapping just the
+programmatic GTK call in `g_signal_handlers_block_by_func`/`_unblock_by_func` around the specific
+signal handler, leaving real user-driven toggles/typing (verified separately, unblocked) still
+working correctly.
+
+**Gadget click/toggle/change event types, oracle-verified via `xdotool` mouse-click/keystroke
+simulation** (the same technique the first GUI slice used for move/resize/repaint events, extended
+here since gadget clicks - unlike a window's close button - don't need a window manager to simulate:
+a raw pointer click at the gadget's own screen coordinates works directly): a `ButtonGadget` click
+*and* a `CheckBoxGadget` toggle both report `#PB_EventType_LeftClick` (`0`) as their `EventType()` -
+**not** `#PB_EventType_Change`, which would have been the more "obvious" guess for a checkbox.
+`StringGadget` typing reports `#PB_EventType_Change` (`768`) on every keystroke (each character
+queues its own event) and also `#PB_EventType_Focus` (`256`) when first clicked into - the Focus/
+LostFocus pair is a deliberately deferred gap in this slice (not wired to any GTK signal), so
+`pbcxx`'s own `StringGadget` doesn't emit it; only the per-keystroke `Change` events are implemented.
+`TextGadget`/`FrameGadget` are purely static/display gadgets in real PB - no signal wiring at all.
+
+**Closing a window frees its own gadgets too**, oracle-verified (`IsGadget` on a gadget belonging to
+a just-closed window returns `0`). `gtk_widget_destroy` on a window already recursively destroys its
+`GtkFixed` and every gadget GTK-side, but `gadgetTable()` itself would otherwise be left holding
+dangling pointers - a new shared `detail::destroyWindow` helper (used by both `pbCloseWindow` and
+`pbOpenWindow`'s own "re-using an already-open ID" branch) scans for and erases every gadget actually
+owned by that window first.
+
+**Testing**: extended `runtime_guilib_test.cpp` with gadget creation/management/text/state round-
+trips, the two spurious-event bugs above (regression tests), real click/toggle/typing event-type
+verification (via `gtk_button_clicked`/`gtk_toggle_button_set_active`/`gtk_entry_set_text` driven
+directly, the gadget-event equivalent of the first slice's own close-button signal-emission
+technique), the active-window-placement behavior, and the window-close-frees-gadgets behavior. A
+second golden e2e case (`tests/e2e/gui_basic_gadgets`) covers creation/management/accessor round-
+trips deterministically (no simulated click/keystroke, same reasoning as the first slice's own e2e
+case for not attempting an e2e_diff test here: the oracle-verified return-value simplifications would
+fail a literal stdout diff even on fully correct behavior).
 

@@ -339,6 +339,44 @@ void Sema::registerGuiLibBuiltins() {
         {"eventwindow", TypeSuffix::Integer, {}, 0},
         {"eventgadget", TypeSuffix::Integer, {}, 0},
         {"eventtype", TypeSuffix::Integer, {}, 0},
+        // M7b's second GUI slice: basic gadgets. Oracle-verified: gadget-
+        // creation functions take *no* window parameter at all (a new
+        // gadget always lands in whichever window was most recently opened
+        // - see guilib.hpp's own `activeWindowId()` doc comment); Text$ is
+        // required, Flags is optional (oracle-verified: all five accept a
+        // trailing numeric Flags, and all five also compile fine without
+        // it).
+        {"buttongadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer},
+         6},
+        {"textgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer},
+         6},
+        {"stringgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer},
+         6},
+        {"checkboxgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer},
+         6},
+        {"framegadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer},
+         6},
+        {"isgadget", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"freegadget", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"resizegadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         5},
+        {"hidegadget", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"disablegadget", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"setgadgettext", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"getgadgettext", TypeSuffix::String, {TypeSuffix::Integer}, 1},
+        {"setgadgetstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"getgadgetstate", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
     };
     for (const auto& sig : signatures) {
         ProcedureInfo info;
@@ -351,8 +389,11 @@ void Sema::registerGuiLibBuiltins() {
 
 bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
     static const std::unordered_set<std::string> names = {
-        "openwindow",  "closewindow", "iswindow",       "resizewindow", "hidewindow",
-        "windowevent", "waitwindowevent", "eventwindow", "eventgadget", "eventtype",
+        "openwindow",    "closewindow", "iswindow",         "resizewindow",   "hidewindow",
+        "windowevent",   "waitwindowevent", "eventwindow",  "eventgadget",    "eventtype",
+        "buttongadget",  "textgadget",  "stringgadget",     "checkboxgadget", "framegadget",
+        "isgadget",      "freegadget",  "resizegadget",     "hidegadget",     "disablegadget",
+        "setgadgettext", "getgadgettext", "setgadgetstate", "getgadgetstate",
     };
     return names.contains(lowerName);
 }

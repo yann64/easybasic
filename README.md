@@ -5,7 +5,7 @@ compiles the generated C++ with a real backend compiler (g++/clang++).
 
 ## Status
 
-`M0`-`M6` done, M7a (threads) and M7b's first GUI-core slice done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
+`M0`-`M6` done, M7a (threads) and M7b's first two GUI-core slices done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
 operator/precedence table (arithmetic, bitwise, comparisons, logical), `If`/`Select`/
 `For`/`While`/`Repeat`, `EnableExplicit`, `#Name`/`Enumeration` constants,
 `Procedure`/`ProcedureReturn` with recursion and genuinely isolated per-procedure scope,
@@ -24,9 +24,12 @@ debug-mode-only "out of data" fatal error, matching real PB exactly), and non-re
 since a macro parameter is pasted as raw, unparenthesized text rather than a pre-evaluated
 value - oracle-verified), threads (`CreateThread`/`IsThread`/`WaitThread`, re-entrant `Mutex`,
 `Semaphore`, plus `@ProcedureName()` - a procedure's own address - and `Delay`/
-`ElapsedMilliseconds`), and GTK3-backed GUI window/event core (`OpenWindow`/`CloseWindow`/
-`IsWindow`/`ResizeWindow`/`HideWindow`, `WindowEvent`/`WaitWindowEvent`,
-`EventWindow`/`EventGadget`/`EventType`, the `#PB_Event_*`/`#PB_Window_*` constants - an
+`ElapsedMilliseconds`), and GTK3-backed GUI window/event core and basic gadgets
+(`OpenWindow`/`CloseWindow`/`IsWindow`/`ResizeWindow`/`HideWindow`, `WindowEvent`/
+`WaitWindowEvent`, `EventWindow`/`EventGadget`/`EventType`, the `#PB_Event_*`/
+`#PB_Window_*`/`#PB_EventType_*` constants, `ButtonGadget`/`TextGadget`/`StringGadget`/
+`CheckBoxGadget`/`FrameGadget`, `IsGadget`/`FreeGadget`/`ResizeGadget`/`HideGadget`/
+`DisableGadget`/`GetGadgetText`/`SetGadgetText`/`GetGadgetState`/`SetGadgetState` - an
 optional build-time dependency, only pulled in for a program that actually calls a GUI
 command) - all cross-checked against PureBasic's own compiler, including
 real bugs (a target-typed `/`, a two-tier vs. one-tier bitwise precedence mix-up, a wrong

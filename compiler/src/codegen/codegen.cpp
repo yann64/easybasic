@@ -150,6 +150,13 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"hidewindow", "pbHideWindow"},   {"windowevent", "pbWindowEvent"},
         {"waitwindowevent", "pbWaitWindowEvent"}, {"eventwindow", "pbEventWindow"},
         {"eventgadget", "pbEventGadget"}, {"eventtype", "pbEventType"},
+        {"buttongadget", "pbButtonGadget"},     {"textgadget", "pbTextGadget"},
+        {"stringgadget", "pbStringGadget"},     {"checkboxgadget", "pbCheckBoxGadget"},
+        {"framegadget", "pbFrameGadget"},       {"isgadget", "pbIsGadget"},
+        {"freegadget", "pbFreeGadget"},         {"resizegadget", "pbResizeGadget"},
+        {"hidegadget", "pbHideGadget"},         {"disablegadget", "pbDisableGadget"},
+        {"setgadgettext", "pbSetGadgetText"},   {"getgadgettext", "pbGetGadgetText"},
+        {"setgadgetstate", "pbSetGadgetState"}, {"getgadgetstate", "pbGetGadgetState"},
     };
     return "easybasic::runtime::" + names.at(lowerName);
 }
