@@ -685,3 +685,142 @@ TEST_CASE("CreateImageMenu behaves like CreateMenu; MenuItem/OpenSubMenu accept 
     pbFreeImage(440);
     pbCloseWindow(307);
 }
+
+// M7b's sixth GUI slice: ToolBar.
+
+TEST_CASE("CreateToolBar/IsToolBar/FreeToolBar round-trip", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(308, 10, 10, 200, 100, PBString("Test"));
+    CHECK(pbIsToolBar(1) == 0);
+    CHECK(pbCreateToolBar(1, pbWindowID(308)) == 1);
+    CHECK(pbIsToolBar(1) == 1);
+    CHECK(pbFreeToolBar(1) == 0); // Oracle-verified: no return value - see pbFreeToolBar's own doc comment.
+    CHECK(pbIsToolBar(1) == 0);
+    pbCloseWindow(308);
+}
+
+TEST_CASE("ToolBarImageButton/ToolBarSeparator build a real toolbar; Get/SetToolBarButtonState round-trip",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(309, 10, 10, 200, 100, PBString("Test"));
+    pbCreateToolBar(1, pbWindowID(309));
+    pbCreateImage(450, 16, 16);
+
+    CHECK(pbToolBarImageButton(10, pbImageID(450)) == 0); // Oracle-verified: no return value.
+    CHECK(pbToolBarSeparator() == 0);                     // Oracle-verified: no return value.
+    CHECK(pbToolBarImageButton(11, pbImageID(450), 1) == 0); // #PB_ToolBar_Toggle
+
+    // Oracle-verified default: a fresh Toggle button starts released.
+    CHECK(pbGetToolBarButtonState(1, 11) == 0);
+    pbSetToolBarButtonState(1, 11, 1);
+    CHECK(pbGetToolBarButtonState(1, 11) == 1);
+    pbSetToolBarButtonState(1, 11, 0);
+    CHECK(pbGetToolBarButtonState(1, 11) == 0);
+
+    // A plain (non-Toggle) button has no checked state at all.
+    CHECK(pbGetToolBarButtonState(1, 10) == 0);
+
+    CHECK(pbToolBarHeight(1) > 0);
+    CHECK(pbToolBarID(1) == reinterpret_cast<std::int64_t>(detail::toolBarTable().at(1)));
+
+    pbFreeImage(450);
+    pbCloseWindow(309);
+}
+
+TEST_CASE("DisableToolBarButton/ToolBarButtonText/ToolBarToolTip affect the real widget",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(310, 10, 10, 200, 100, PBString("Test"));
+    pbCreateToolBar(1, pbWindowID(310), 4); // #PB_ToolBar_Text
+    pbCreateImage(451, 16, 16);
+    pbToolBarImageButton(10, pbImageID(451), 0, PBString("Open"));
+
+    GtkWidget* button = detail::toolBarButtonWidgets().at(1).at(10);
+    CHECK(gtk_widget_get_sensitive(button) == TRUE);
+    pbDisableToolBarButton(1, 10, 1);
+    CHECK(gtk_widget_get_sensitive(button) == FALSE);
+    pbDisableToolBarButton(1, 10, 0);
+    CHECK(gtk_widget_get_sensitive(button) == TRUE);
+
+    CHECK(std::string(gtk_tool_button_get_label(GTK_TOOL_BUTTON(button))) == "Open");
+    pbToolBarButtonText(1, 10, PBString("Renamed"));
+    CHECK(std::string(gtk_tool_button_get_label(GTK_TOOL_BUTTON(button))) == "Renamed");
+
+    CHECK(gtk_widget_get_tooltip_text(button) == nullptr);
+    pbToolBarToolTip(1, 10, PBString("A tip"));
+    // gtk_widget_get_tooltip_text returns a caller-owned, newly allocated
+    // string (per its own GTK docs) - g_free it rather than leaking it.
+    gchar* tooltip = gtk_widget_get_tooltip_text(button);
+    CHECK(std::string(tooltip) == "A tip");
+    g_free(tooltip);
+    pbToolBarToolTip(1, 10, PBString("")); // Oracle-verified: an empty string removes it.
+    CHECK(gtk_widget_get_tooltip_text(button) == nullptr);
+
+    pbFreeImage(451);
+    pbCloseWindow(310);
+}
+
+TEST_CASE("A real toolbar button click queues #PB_Event_Menu, the same route a real MenuItem uses",
+          "[runtime][guilib]") {
+    // Oracle-verified (via CreateToolBar's own docs): toolbar button clicks
+    // are detected the same way menu events are, via EventMenu() - not
+    // #PB_Event_Gadget. `g_signal_emit_by_name(..., "clicked")` here is the
+    // toolbar-button equivalent of `gtk_menu_item_activate` in the menu
+    // test above - GtkToolButton has no dedicated "activate" function of
+    // its own to call instead.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(311, 10, 10, 200, 100, PBString("Test"));
+    pbCreateToolBar(1, pbWindowID(311));
+    pbCreateImage(452, 16, 16);
+    pbToolBarImageButton(20, pbImageID(452));
+    drainEvents();
+
+    GtkWidget* button = detail::toolBarButtonWidgets().at(1).at(20);
+    g_signal_emit_by_name(button, "clicked");
+
+    CHECK(pbWindowEvent() == 1); // #PB_Event_Menu
+    CHECK(pbEventMenu() == 20);
+    CHECK(pbEventWindow() == 311);
+
+    pbFreeImage(452);
+    pbCloseWindow(311);
+}
+
+TEST_CASE("CreateToolBar reorders below an already-existing menu, above one created afterward",
+          "[runtime][guilib]") {
+    // Oracle-verified (CreateToolBar's own example and real-world usage):
+    // a toolbar always renders below the menu bar, regardless of which was
+    // created first - see pbCreateToolBar's own doc comment on why this
+    // needs its own explicit check, unlike pbCreateMenu's unconditional
+    // "always force myself to 0".
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(312, 10, 10, 200, 100, PBString("Test"));
+    pbCreateMenu(1, pbWindowID(312));
+    pbCreateToolBar(1, pbWindowID(312));
+
+    GtkWidget* window = detail::windowTable().at(312);
+    GtkWidget* vbox = gtk_bin_get_child(GTK_BIN(window));
+    GtkWidget* menuWidget = detail::menuTable().at(1);
+    GtkWidget* toolbarWidget = detail::toolBarTable().at(1);
+    GList* children = gtk_container_get_children(GTK_CONTAINER(vbox));
+    int menuPos = g_list_index(children, menuWidget);
+    int toolbarPos = g_list_index(children, toolbarWidget);
+    g_list_free(children);
+    CHECK(menuPos >= 0);
+    CHECK(toolbarPos >= 0);
+    CHECK(menuPos < toolbarPos);
+
+    pbFreeMenu(1);
+    pbFreeToolBar(1);
+    pbCloseWindow(312);
+}

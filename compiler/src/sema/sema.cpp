@@ -451,6 +451,22 @@ void Sema::registerGuiLibBuiltins() {
         // Windows-only - accepted but not acted on, same simplification
         // already used elsewhere for an OS-specific niceity.
         {"createimagemenu", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        // M7b's sixth GUI slice: ToolBar, unblocked by the Image library
+        // (fifth slice) - see guilib.hpp's pbCreateToolBar doc comment for
+        // why this was deferred until then.
+        {"createtoolbar", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"toolbarimagebutton", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"toolbarseparator", TypeSuffix::Integer, {}, 0},
+        {"istoolbar", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"freetoolbar", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"disabletoolbarbutton", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"gettoolbarbuttonstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"settoolbarbuttonstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"toolbarbuttontext", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String}, 3},
+        {"toolbartooltip", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String}, 3},
+        {"toolbarheight", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"toolbarid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
     };
     for (const auto& sig : signatures) {
         ProcedureInfo info;
@@ -473,7 +489,9 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
         "createstatusbar", "addstatusbarfield", "statusbartext", "isstatusbar", "freestatusbar", "statusbarheight",
         "statusbarid", "createimage", "loadimage", "isimage", "freeimage", "imageid", "imagewidth", "imageheight",
-        "createimagemenu",
+        "createimagemenu", "createtoolbar", "toolbarimagebutton", "toolbarseparator", "istoolbar", "freetoolbar",
+        "disabletoolbarbutton", "gettoolbarbuttonstate", "settoolbarbuttonstate", "toolbarbuttontext",
+        "toolbartooltip", "toolbarheight", "toolbarid",
     };
     return names.contains(lowerName);
 }
@@ -606,6 +624,15 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_ignore", -65535},
         {"pb_all", -1},
         {"pb_any", -1},
+        // ToolBar (M7b's sixth GUI slice) - oracle-verified via a direct
+        // `Debug #PB_ToolBar_Xxx` probe, same independent-bits shape as
+        // `#PB_StatusBar_*`'s own.
+        {"pb_toolbar_small", 1},
+        {"pb_toolbar_large", 2},
+        {"pb_toolbar_text", 4},
+        {"pb_toolbar_inlinetext", 8},
+        {"pb_toolbar_normal", 0},
+        {"pb_toolbar_toggle", 1},
     };
     return table;
 }

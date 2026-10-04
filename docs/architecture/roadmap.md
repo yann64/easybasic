@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First five slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu` - see M7b notes); `ToolBar` and everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Six slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar` - see M7b notes); further gadget types/`Requester` family/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Two slices done (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection - see M7d notes); `Macro`/`Interface` inside a Module deliberately deferred |
 
@@ -2264,6 +2264,68 @@ was extended to copy over any such extra fixture file alongside `input.pb`/`expe
 reusable generalization rather than a one-off special case, since a later `ToolBar` slice will need the
 same thing for its own icon files). All 325 tests (across `linux-gcc`/`linux-clang`/
 `linux-clang-sanitize`) pass, including the 317 that predate this slice.
+
+## M7b Implementation Notes (GUI core, sixth slice: `ToolBar`)
+
+**Scope landed**: `CreateToolBar`/`ToolBarImageButton`/`ToolBarSeparator`/`IsToolBar`/`FreeToolBar`/
+`DisableToolBarButton`/`GetToolBarButtonState`/`SetToolBarButtonState`/`ToolBarButtonText`/
+`ToolBarToolTip`/`ToolBarHeight`/`ToolBarID` - the feature the fourth slice's own notes identified as
+blocked on an Image library, which the fifth slice then provided. `#PB_ToolBar_InlineText`
+(`CreateToolBar`'s own Windows-only `Options` bit) has no equivalent on this GTK3 backend - not
+implemented, the same treatment `CreateImageMenu`'s own Windows-only `Options` bit already got.
+
+**`GtkToolbar` is the natural GTK3 fit**, with `GtkToolButton`/`GtkToggleToolButton` for
+`ToolBarImageButton`'s own `#PB_ToolBar_Normal`/`#PB_ToolBar_Toggle` modes and
+`gtk_separator_tool_item_new()` for `ToolBarSeparator` - none of these are deprecated (unlike
+`GtkImageMenuItem`, see the fifth slice's own notes), so no custom `GtkBox` reconstruction was needed
+here the way attaching an image to a menu item required.
+
+**Oracle-verified: toolbar button clicks are detected the same way menu events are** - `EventMenu()`,
+not `#PB_Event_Gadget` - confirmed directly in `CreateToolBar`'s own docs ("la détection des évènements
+sur les barres d'outils est similaire à celle des menus, et nécessite donc la commande EventMenu()").
+Reused `detail::onMenuItemActivate` directly for a toolbar button's own `"clicked"` signal, rather than
+writing a second, nearly-identical handler - the exact same event-queuing shape already serves both.
+
+**`#PB_ToolBar_*` constant values** (`Small`=1/`Large`=2/`Text`=4/`InlineText`=8 for `CreateToolBar`'s
+own `Options`; `Normal`=0/`Toggle`=1 for `ToolBarImageButton`'s own `Mode`) are oracle-verified via a
+direct `Debug #PB_ToolBar_Xxx` probe, the same independent-bits shape `#PB_StatusBar_*`'s own already
+has. `Small`/`Large` decide the pixel size (16/24) `ToolBarImageButton` scales its own `ImageID` to,
+stored per-toolbar at `CreateToolBar` time rather than threaded through every button call.
+
+**A real positioning problem `pbCreateMenu`'s own "always force myself to position 0"
+`gtk_box_reorder_child` trick doesn't solve by itself**: a toolbar must render *below* an existing menu
+bar, but *at* position 0 if there's no menu at all - unlike the menu/toolbar pair's own simpler
+sibling, `pbCreateStatusBar` (always `pack_end`, no menu-aware positioning needed since nothing else
+competes for "the very bottom"). Solved by checking whether any `menuTable()` entry already belongs to
+the same window at `CreateToolBar` time, reordering to position `1` if so and `0` otherwise - a toolbar
+created *before* the menu still ends up correctly below it once the menu's own unconditional "force
+myself to 0" runs later, since reordering an existing child to the front always pushes everything else
+back by one. Verified directly (not just reasoned through): a dedicated test creates the menu first,
+then the toolbar, and walks the actual `GtkBox` child list (`gtk_container_get_children`) to confirm
+the menu's own index is lower.
+
+**Oracle-verified: every `ToolBarXxx` function documented as returning "Aucune" (no return value at
+all) is treated the same way `KillThread`'s own M7a precedent already established** - always `0`,
+regardless of success or failure, rather than inventing an internal success/failure signal real PB
+itself doesn't expose. `CreateToolBar`/`IsToolBar` (real, documented non-zero-vs-zero returns) get the
+same clean `1`/`0` simplification every other creation/`IsX` function in this library already has;
+`GetToolBarButtonState` (a real, documented non-zero-if-pressed boolean) gets the same treatment too.
+
+**Testing**: extended `runtime_guilib_test.cpp` with `CreateToolBar`/`IsToolBar`/`FreeToolBar`,
+`ToolBarImageButton`/`ToolBarSeparator` building a real toolbar plus a `#PB_ToolBar_Toggle` button's
+own state round-trip (including that a plain, non-Toggle button has no checked state to report at
+all), `DisableToolBarButton`/`ToolBarButtonText`/`ToolBarToolTip` against the real widget, a real
+button click (`g_signal_emit_by_name(..., "clicked")` - the toolbar-button equivalent of
+`gtk_menu_item_activate`'s own technique, since `GtkToolButton` has no dedicated "activate" function
+of its own) confirming it queues `#PB_Event_Menu`, and the menu/toolbar ordering test described above.
+A fifth golden e2e case (`tests/e2e/gui_toolbar`) covers deterministic round-trips the same way
+`gui_image` does, reusing its own shipped `test.bmp` fixture. All 332 tests (across
+`linux-gcc`/`linux-clang`/`linux-clang-sanitize`) pass, including the 325 that predate this slice.
+
+With this, every slice of the fourth slice's own original "Menu/StatusBar/ToolBar" grouping is done,
+closing out that specific thread - item 5 of M7b's own phased scope (further gadget types, the fuller
+`Requester` family, `Dialog`, and everything past that) remains open and unscoped, consistent with this
+project's "incremental, as real need comes up" GUI philosophy stated when M7b itself was first planned.
 
 ## M7c Implementation Notes (`Interface`/`EndInterface`)
 

@@ -198,6 +198,12 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"isimage", "pbIsImage"},           {"freeimage", "pbFreeImage"},
         {"imageid", "pbImageID"},           {"imagewidth", "pbImageWidth"},
         {"imageheight", "pbImageHeight"},   {"createimagemenu", "pbCreateImageMenu"},
+        {"createtoolbar", "pbCreateToolBar"}, {"toolbarimagebutton", "pbToolBarImageButton"},
+        {"toolbarseparator", "pbToolBarSeparator"}, {"istoolbar", "pbIsToolBar"},
+        {"freetoolbar", "pbFreeToolBar"}, {"disabletoolbarbutton", "pbDisableToolBarButton"},
+        {"gettoolbarbuttonstate", "pbGetToolBarButtonState"}, {"settoolbarbuttonstate", "pbSetToolBarButtonState"},
+        {"toolbarbuttontext", "pbToolBarButtonText"}, {"toolbartooltip", "pbToolBarToolTip"},
+        {"toolbarheight", "pbToolBarHeight"}, {"toolbarid", "pbToolBarID"},
     };
     return "easybasic::runtime::" + names.at(lowerName);
 }

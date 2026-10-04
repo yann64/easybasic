@@ -146,6 +146,35 @@ inline std::unordered_map<std::int64_t, GdkPixbuf*>& imageTable() {
     return table;
 }
 
+/// M7b's sixth GUI slice: `ToolBar`. `#ToolBar` -> its own `GtkToolbar`.
+inline std::unordered_map<std::int64_t, GtkWidget*>& toolBarTable() {
+    static std::unordered_map<std::int64_t, GtkWidget*> table;
+    return table;
+}
+
+/// `#ToolBar` -> (`Button` -> its own `GtkToolButton*`/`GtkToggleToolButton*`)
+/// - what `DisableToolBarButton`/`Get`/`SetToolBarButtonState`/
+/// `ToolBarButtonText`/`ToolBarToolTip` all address, the same shape
+/// `menuItemWidgets()` already has for leaf `MenuItem()`s.
+inline std::unordered_map<std::int64_t, std::unordered_map<std::int64_t, GtkWidget*>>& toolBarButtonWidgets() {
+    static std::unordered_map<std::int64_t, std::unordered_map<std::int64_t, GtkWidget*>> table;
+    return table;
+}
+
+/// `#ToolBar` -> the pixel size `ToolBarImageButton` should scale its own
+/// `ImageID` to - oracle-verified `CreateToolBar`'s own `#PB_ToolBar_Small`
+/// (16, the default) vs `#PB_ToolBar_Large` (24) `Options` bit, decided once
+/// at creation time rather than threaded through every button call.
+inline std::unordered_map<std::int64_t, int>& toolBarIconPixelSize() {
+    static std::unordered_map<std::int64_t, int> table;
+    return table;
+}
+
+inline std::int64_t& activeToolBarId() {
+    static std::int64_t id = 0;
+    return id;
+}
+
 /// Oracle-verified: gadget-creation functions (`ButtonGadget`, etc.) take
 /// *no* window parameter at all - PB places a new gadget into whichever
 /// window was *most recently opened* (confirmed directly: with two windows
@@ -191,6 +220,7 @@ inline const char* menuElementIdKey() { return "pbcxx-menu-element-id"; }
 inline const char* menuWindowIdKey() { return "pbcxx-menu-window-id"; }
 inline const char* menuCheckedKey() { return "pbcxx-menu-checked"; }
 inline const char* statusBarWindowIdKey() { return "pbcxx-statusbar-window-id"; }
+inline const char* toolBarWindowIdKey() { return "pbcxx-toolbar-window-id"; }
 
 /// The last known position/size for one window - `configure-event` fires
 /// for *any* geometry change without saying which part changed, so this is
@@ -353,6 +383,17 @@ inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
         if (owner == windowId) {
             statusBarFieldFrames().erase(it->first);
             it = statusBarTable().erase(it);
+        } else {
+            ++it;
+        }
+    }
+    // Same idea again for M7b's sixth GUI slice's own owned-widget table.
+    for (auto it = toolBarTable().begin(); it != toolBarTable().end();) {
+        auto owner = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(it->second), toolBarWindowIdKey()));
+        if (owner == windowId) {
+            toolBarButtonWidgets().erase(it->first);
+            toolBarIconPixelSize().erase(it->first);
+            it = toolBarTable().erase(it);
         } else {
             ++it;
         }
@@ -1474,6 +1515,244 @@ inline std::int64_t pbImageWidth(std::int64_t imageId) {
 inline std::int64_t pbImageHeight(std::int64_t imageId) {
     auto it = detail::imageTable().find(imageId);
     return it != detail::imageTable().end() ? gdk_pixbuf_get_height(it->second) : 0;
+}
+
+/// M7b's sixth GUI slice: `ToolBar`, unblocked by the Image library (fifth
+/// slice) landing first - oracle-verified (`ToolBarImageButton`'s own docs)
+/// that real PB has no way to create a toolbar button without an `ImageID`
+/// at all. `GtkToolbar` is the natural GTK3 fit. Oracle-verified real
+/// `CreateToolBar`'s own "non-zero on success" is a native-handle-ish
+/// value, not a clean `1` - simplified the same way every other creation
+/// function in this library already is.
+///
+/// `#PB_ToolBar_Small`/`#PB_ToolBar_Large` decide the pixel size
+/// `ToolBarImageButton` scales its own image to (16/24 - stored per-toolbar
+/// in `toolBarIconPixelSize()`, consulted there); `#PB_ToolBar_Text` maps to
+/// `GTK_TOOLBAR_BOTH` (icon with its own label below, when a button
+/// actually supplies one). `#PB_ToolBar_InlineText` is real PB's own
+/// Windows-only option (label beside the icon) - not implemented, the same
+/// "no equivalent on this backend" treatment `CreateImageMenu`'s own
+/// Windows-only `Options` bit already gets.
+///
+/// Oracle-verified: a real toolbar is positioned right below an existing
+/// menu bar, above the gadget area - `gtk_box_reorder_child` alone (the
+/// same trick `pbCreateMenu` already uses to always force itself to
+/// position 0) isn't quite enough here, since *this* widget needs to land
+/// at position 0 *unless* a menu already exists for the same window, in
+/// which case it must go to position 1 instead (right after it) - a menu
+/// created *afterward* still ends up above the toolbar regardless, since
+/// `pbCreateMenu`'s own unconditional "always force myself to 0" already
+/// pushes anything already there (including a toolbar) down by one.
+inline std::int64_t pbCreateToolBar(std::int64_t toolBarId, std::int64_t windowHandle, std::int64_t options = 1) {
+    detail::ensureGtkInit();
+    auto* window = reinterpret_cast<GtkWidget*>(windowHandle);
+    GtkWidget* vbox = gtk_bin_get_child(GTK_BIN(window));
+    GtkWidget* toolbar = gtk_toolbar_new();
+    bool hasText = (options & 4) != 0; // #PB_ToolBar_Text
+    gtk_toolbar_set_style(GTK_TOOLBAR(toolbar), hasText ? GTK_TOOLBAR_BOTH : GTK_TOOLBAR_ICONS);
+    gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
+
+    bool windowHasMenu = false;
+    auto windowId = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(window), detail::windowIdKey()));
+    for (auto& [id, menuWidget] : detail::menuTable()) {
+        auto owner = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(menuWidget), detail::menuWindowIdKey()));
+        if (owner == windowId) {
+            windowHasMenu = true;
+            break;
+        }
+    }
+    gtk_box_reorder_child(GTK_BOX(vbox), toolbar, windowHasMenu ? 1 : 0);
+    gtk_widget_show(toolbar);
+
+    g_object_set_data(G_OBJECT(toolbar), detail::toolBarWindowIdKey(), reinterpret_cast<gpointer>(windowId));
+
+    // Oracle-verified elsewhere (OpenWindow/CreateMenu): re-using an
+    // already-live ID replaces the old one, applied the same way here too.
+    auto old = detail::toolBarTable().find(toolBarId);
+    if (old != detail::toolBarTable().end()) {
+        gtk_widget_destroy(old->second);
+    }
+    detail::toolBarTable()[toolBarId] = toolbar;
+    detail::toolBarButtonWidgets()[toolBarId].clear();
+    detail::toolBarIconPixelSize()[toolBarId] = (options & 2) != 0 ? 24 : 16; // #PB_ToolBar_Large : #PB_ToolBar_Small
+    detail::activeToolBarId() = toolBarId;
+    return 1;
+}
+
+/// Oracle-verified: no return value ("Aucune") - always returns `0`, the
+/// same established convention as `pbKillThread`'s own (see its doc
+/// comment). Operates on whichever `#ToolBar` was most recently
+/// `CreateToolBar`'d - the same "current context" pattern `MenuItem`'s own
+/// already established for `#Menu`, applied here independently (confirmed
+/// directly in real PB's own docs: `ToolBarImageButton`'s remarks say only
+/// that `CreateToolBar` must have been called first, with no `#ToolBar`
+/// argument of its own).
+///
+/// Click events are oracle-verified (via this function's own docs) to
+/// route through the *same* `#PB_Event_Menu`/`EventMenu()` mechanism real
+/// menu items use, not `#PB_Event_Gadget` - so this reuses
+/// `detail::onMenuItemActivate` directly rather than a separate handler,
+/// tagging the button with the same `menuElementIdKey`/`menuWindowIdKey`
+/// `MenuItem()`'s own leaf items already use.
+inline std::int64_t pbToolBarImageButton(std::int64_t buttonId, std::int64_t imageId, std::int64_t mode = 0,
+                                          const PBString& text = PBString()) {
+    auto toolBarId = detail::activeToolBarId();
+    auto toolBarIt = detail::toolBarTable().find(toolBarId);
+    if (toolBarIt == detail::toolBarTable().end()) {
+        return 0;
+    }
+    int iconSize = detail::toolBarIconPixelSize().count(toolBarId) != 0 ? detail::toolBarIconPixelSize()[toolBarId] : 16;
+    GtkWidget* iconImage = nullptr;
+    auto imageIt = detail::imageTable().find(imageId);
+    if (imageIt != detail::imageTable().end()) {
+        GdkPixbuf* scaled = gdk_pixbuf_scale_simple(imageIt->second, iconSize, iconSize, GDK_INTERP_BILINEAR);
+        if (scaled != nullptr) {
+            iconImage = gtk_image_new_from_pixbuf(scaled);
+            g_object_unref(scaled);
+        }
+    }
+    bool toggle = mode == 1; // #PB_ToolBar_Toggle
+    GtkToolItem* item = toggle ? gtk_toggle_tool_button_new() : gtk_tool_button_new(iconImage, text.bytes().c_str());
+    if (toggle) {
+        gtk_tool_button_set_icon_widget(GTK_TOOL_BUTTON(item), iconImage);
+        gtk_tool_button_set_label(GTK_TOOL_BUTTON(item), text.bytes().c_str());
+    }
+    auto windowId = reinterpret_cast<std::int64_t>(
+        g_object_get_data(G_OBJECT(toolBarIt->second), detail::toolBarWindowIdKey()));
+    g_object_set_data(G_OBJECT(item), detail::menuElementIdKey(), reinterpret_cast<gpointer>(buttonId));
+    g_object_set_data(G_OBJECT(item), detail::menuWindowIdKey(), reinterpret_cast<gpointer>(windowId));
+    g_signal_connect(item, "clicked", G_CALLBACK(detail::onMenuItemActivate), nullptr);
+    gtk_toolbar_insert(GTK_TOOLBAR(toolBarIt->second), item, -1);
+    gtk_widget_show_all(GTK_WIDGET(item));
+    detail::toolBarButtonWidgets()[toolBarId][buttonId] = GTK_WIDGET(item);
+    return 0;
+}
+
+/// See `pbToolBarImageButton`'s own doc comment on "Aucune"/current-context.
+inline std::int64_t pbToolBarSeparator() {
+    auto toolBarIt = detail::toolBarTable().find(detail::activeToolBarId());
+    if (toolBarIt == detail::toolBarTable().end()) {
+        return 0;
+    }
+    GtkToolItem* sep = gtk_separator_tool_item_new();
+    gtk_toolbar_insert(GTK_TOOLBAR(toolBarIt->second), sep, -1);
+    gtk_widget_show(GTK_WIDGET(sep));
+    return 0;
+}
+
+/// Oracle-verified: deliberately crash-proof for any argument - real PB's
+/// own docs say so explicitly, the same "IsX created so a bad handle can
+/// never crash" family `IsImage`/`IsWindow`/`IsMenu` already belong to.
+inline std::int64_t pbIsToolBar(std::int64_t toolBarId) { return detail::toolBarTable().contains(toolBarId) ? 1 : 0; }
+
+/// `#PB_All` (`-1`) frees every remaining toolbar at once - the same
+/// established convention as `pbFreeMenu`/`pbFreeStatusBar`/`pbFreeImage`.
+/// Oracle-verified no return value ("Aucune") - always returns `0`.
+inline std::int64_t pbFreeToolBar(std::int64_t toolBarId) {
+    if (toolBarId == -1) {
+        for (auto& [id, widget] : detail::toolBarTable()) {
+            gtk_widget_destroy(widget);
+        }
+        detail::toolBarTable().clear();
+        detail::toolBarButtonWidgets().clear();
+        detail::toolBarIconPixelSize().clear();
+        return 0;
+    }
+    auto it = detail::toolBarTable().find(toolBarId);
+    if (it != detail::toolBarTable().end()) {
+        gtk_widget_destroy(it->second);
+        detail::toolBarTable().erase(it);
+        detail::toolBarButtonWidgets().erase(toolBarId);
+        detail::toolBarIconPixelSize().erase(toolBarId);
+    }
+    return 0;
+}
+
+/// Oracle-verified no return value ("Aucune") - always returns `0`.
+inline std::int64_t pbDisableToolBarButton(std::int64_t toolBarId, std::int64_t button, std::int64_t state) {
+    auto barIt = detail::toolBarButtonWidgets().find(toolBarId);
+    if (barIt != detail::toolBarButtonWidgets().end()) {
+        auto buttonIt = barIt->second.find(button);
+        if (buttonIt != barIt->second.end()) {
+            gtk_widget_set_sensitive(buttonIt->second, state == 0 ? TRUE : FALSE);
+        }
+    }
+    return 0;
+}
+
+/// Oracle-verified: non-zero while a `#PB_ToolBar_Toggle` button is pressed,
+/// zero otherwise - simplified to a clean `1`/`0`, the same treatment every
+/// other real "non-zero/zero" return in this library already gets.
+inline std::int64_t pbGetToolBarButtonState(std::int64_t toolBarId, std::int64_t button) {
+    auto barIt = detail::toolBarButtonWidgets().find(toolBarId);
+    if (barIt == detail::toolBarButtonWidgets().end()) {
+        return 0;
+    }
+    auto buttonIt = barIt->second.find(button);
+    if (buttonIt == barIt->second.end() || !GTK_IS_TOGGLE_TOOL_BUTTON(buttonIt->second)) {
+        return 0;
+    }
+    return gtk_toggle_tool_button_get_active(GTK_TOGGLE_TOOL_BUTTON(buttonIt->second)) != FALSE ? 1 : 0;
+}
+
+/// Oracle-verified no return value ("Aucune") - always returns `0`.
+inline std::int64_t pbSetToolBarButtonState(std::int64_t toolBarId, std::int64_t button, std::int64_t state) {
+    auto barIt = detail::toolBarButtonWidgets().find(toolBarId);
+    if (barIt != detail::toolBarButtonWidgets().end()) {
+        auto buttonIt = barIt->second.find(button);
+        if (buttonIt != barIt->second.end() && GTK_IS_TOGGLE_TOOL_BUTTON(buttonIt->second)) {
+            gtk_toggle_tool_button_set_active(GTK_TOGGLE_TOOL_BUTTON(buttonIt->second), state != 0 ? TRUE : FALSE);
+        }
+    }
+    return 0;
+}
+
+/// Oracle-verified no return value ("Aucune") - always returns `0`.
+inline std::int64_t pbToolBarButtonText(std::int64_t toolBarId, std::int64_t button, const PBString& text) {
+    auto barIt = detail::toolBarButtonWidgets().find(toolBarId);
+    if (barIt != detail::toolBarButtonWidgets().end()) {
+        auto buttonIt = barIt->second.find(button);
+        if (buttonIt != barIt->second.end()) {
+            gtk_tool_button_set_label(GTK_TOOL_BUTTON(buttonIt->second), text.bytes().c_str());
+        }
+    }
+    return 0;
+}
+
+/// Oracle-verified no return value ("Aucune") - always returns `0`. An
+/// empty `Texte$` removes the tooltip - oracle-verified via this function's
+/// own docs; `gtk_widget_set_tooltip_text` with an empty string already
+/// does exactly that.
+inline std::int64_t pbToolBarToolTip(std::int64_t toolBarId, std::int64_t button, const PBString& text) {
+    auto barIt = detail::toolBarButtonWidgets().find(toolBarId);
+    if (barIt != detail::toolBarButtonWidgets().end()) {
+        auto buttonIt = barIt->second.find(button);
+        if (buttonIt != barIt->second.end()) {
+            gtk_widget_set_tooltip_text(buttonIt->second, text.bytes().empty() ? nullptr : text.bytes().c_str());
+        }
+    }
+    return 0;
+}
+
+/// See `pbMenuHeight`'s own doc comment for why pending events are drained
+/// first - the same freshly-built-widget-not-yet-size-allocated concern
+/// applies here too.
+inline std::int64_t pbToolBarHeight(std::int64_t toolBarId) {
+    auto it = detail::toolBarTable().find(toolBarId);
+    if (it == detail::toolBarTable().end()) {
+        return 0;
+    }
+    while (gtk_events_pending() != 0) {
+        gtk_main_iteration();
+    }
+    return gtk_widget_get_allocated_height(it->second);
+}
+
+/// Oracle-verified native-handle-ish value, not replicated-for-a-reason the
+/// same way `pbMenuID`'s own is (see its doc comment).
+inline std::int64_t pbToolBarID(std::int64_t toolBarId) {
+    auto it = detail::toolBarTable().find(toolBarId);
+    return it != detail::toolBarTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
 }
 
 } // namespace easybasic::runtime
