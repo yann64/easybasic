@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -549,6 +550,31 @@ private:
     /// diagnostics, since Codegen (classify's other caller) never runs
     /// unless Sema::analyze() already finished with zero errors.
     const InterfaceMethodInfo* resolveInterfaceMethod(const ast::MethodCallExpr& call) const;
+
+    /// M7d: resolves a bare or `Module::Member`-qualified `name` (already
+    /// lowercased) to its final lookup key, mutating it in place - see the
+    /// .cpp file's own doc comment for the full algorithm (own module's
+    /// namespace first, then each active `UseModule` import, then - only
+    /// while inside a module - a real builtin; anything else left over
+    /// becomes a fresh implicit declaration within that module's own
+    /// namespace). `exists` is `symbols_.contains`/`procedures_.contains`,
+    /// whichever table the caller cares about; `isBuiltin` is the matching
+    /// "is this actually one of PB's own commands" check (always-false for
+    /// a variable reference - there's no such thing as a builtin global
+    /// variable - or the union of every `isXxxBuiltinName` for a call), used
+    /// only for the final fallback once inside a module, so a same-named
+    /// *user* top-level declaration is correctly NOT visible from inside a
+    /// module (oracle-verified "sealed box" model) while a real PB command
+    /// still is.
+    void resolveModuleQualifiedName(std::string& name, const std::function<bool(const std::string&)>& exists,
+                                     const std::function<bool(const std::string&)>& isBuiltin) const;
+    /// For an already-`Module::Member`-qualified `qualifiedName` (containing
+    /// "::"), reports the oracle-verified "Module item '<member>' is not
+    /// declared as public." diagnostic if `Member` isn't in `Module`'s own
+    /// public set (`modulePublicMembers_`) and the reference isn't from
+    /// `Module`'s own code (own-module access is always allowed, public or
+    /// private). A no-op for a plain, unqualified name.
+    void checkModuleAccess(const std::string& qualifiedName, SourceLoc loc) const;
     /// Handles one of the four names `isPointerBuiltinName` recognizes,
     /// returning true if `call.name` was one of them (and hence fully
     /// handled here - the caller must not also treat it as an array read or
@@ -649,6 +675,25 @@ private:
     std::unordered_map<std::string, StructureInfo> structures_;
     std::vector<std::pair<std::string, StructureInfo>> structureOrder_;
     std::unordered_map<std::string, InterfaceInfo> interfaces_;
+    /// M7d: the module whose own body is currently being visited (lowercased
+    /// name), or empty at top level/inside an ordinary (non-module)
+    /// Procedure. PB modules don't nest (enforced: a `Module`/`DeclareModule`
+    /// found while this is already non-empty is rejected), so a single
+    /// field - not a stack - is enough, the same reasoning
+    /// `currentProcedureReturnSuffix_` already relies on.
+    std::string currentModule_;
+    /// M7d: modules currently imported via `UseModule` (unqualified lookup
+    /// falls back to each of these, in order, after the current module's
+    /// own namespace) - a plain vector, not a set, since PB's own ordering/
+    /// ambiguity rules here aren't independently oracle-verified; mutated
+    /// by `UseModuleStmt`/`UnuseModuleStmt`, and saved/restored around a
+    /// `Module`'s own body visit so an import used only internally there
+    /// doesn't leak past its own `EndModule`.
+    std::vector<std::string> activeImports_;
+    /// M7d: every module's own public member set (plain, unqualified member
+    /// names - "createferrari", not "ferrari::createferrari"), populated
+    /// while visiting its `DeclareModuleStmt`. Checked by `checkModuleAccess`.
+    std::unordered_map<std::string, std::unordered_set<std::string>> modulePublicMembers_;
     /// The return suffix of the procedure whose body is currently being
     /// visited, used by a nested `ProcedureReturn`'s own type checking; only
     /// meaningful while `insideProcedure_` is true (PB procedures don't

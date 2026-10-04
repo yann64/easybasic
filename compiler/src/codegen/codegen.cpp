@@ -192,12 +192,30 @@ std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName
 Codegen::Codegen(const ast::Module& module, const Sema& sema, bool debugMode)
     : module_(module), sema_(sema), debugMode_(debugMode) {}
 
+namespace {
+/// M7d: every Sema-internal module-qualified key uses a literal "::"
+/// separator (e.g. "ferrari::createferrari") - never a legal C++ identifier
+/// substring, so the one place that actually emits a name as C++ source
+/// text replaces it with something that is.
+std::string sanitizeModuleQualifier(const std::string& name) {
+    std::string result = name;
+    std::size_t pos = 0;
+    while ((pos = result.find("::", pos)) != std::string::npos) {
+        result.replace(pos, 2, "_M_");
+        pos += 3;
+    }
+    return result;
+}
+} // namespace
+
 std::string Codegen::cppVarName(const std::string& name) {
     if (!name.empty() && name.front() == '*') {
-        return "vp_" + name.substr(1);
+        return "vp_" + sanitizeModuleQualifier(name.substr(1));
     }
-    return "v_" + name;
+    return "v_" + sanitizeModuleQualifier(name);
 }
+
+std::string Codegen::cppProcName(const std::string& name) { return "f_" + sanitizeModuleQualifier(name); }
 
 Sema::ResolvedType Codegen::pointeeTypeOf(const std::string& pointerKey) const {
     if (currentProcInfo_ != nullptr) {
@@ -310,7 +328,7 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                     // call followed by address-of its result (see Sema's
                     // matching visitExpr case for why this can't just fall
                     // through to the generic path below).
-                    return "reinterpret_cast<std::int64_t>(&f_" + call.name + ")";
+                    return "reinterpret_cast<std::int64_t>(&" + cppProcName(call.name) + ")";
                 }
             }
             return "reinterpret_cast<std::int64_t>(&(" + genExpr(*addr.operand, false) + "))";
@@ -500,7 +518,7 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
             } else if (Sema::isGuiLibBuiltinName(call.name)) {
                 calleeName = guiLibRuntimeName(call.name);
             } else {
-                calleeName = "f_" + call.name;
+                calleeName = cppProcName(call.name);
             }
             std::string code = calleeName + "(";
             for (std::size_t i = 0; i < call.args.size(); ++i) {
@@ -893,30 +911,54 @@ void Codegen::genDataLabelArrays() {
 }
 
 void Codegen::genDeclarePrototypes() {
-    for (const auto& stmt : module_.statements) {
-        if (stmt->kind != ast::StmtKind::Declare) {
-            continue;
-        }
-        const auto& decl = static_cast<const ast::DeclareStmt&>(*stmt);
-        const Sema::ProcedureInfo* info = sema_.procedureInfo(decl.name);
-        TypeSuffix returnSuffix = info != nullptr ? info->returnSuffix : TypeSuffix::Integer;
-        out_ += std::string(cppTypeFor(returnSuffix)) + " f_" + decl.name + "(";
-        for (std::size_t i = 0; i < decl.params.size(); ++i) {
-            if (i != 0) {
-                out_ += ", ";
+    // A plain, top-level-only loop (PB doesn't nest procedures, so a
+    // `Declare` was never found anywhere else) - extended for M7d: a
+    // DeclareModuleStmt's own body is the *only* other place a `Declare`
+    // can appear (a module's own public procedure signatures), one level
+    // of nesting, never more (modules don't nest).
+    auto emitPrototypesIn = [this](const ast::Block& block) {
+        for (const auto& stmt : block) {
+            if (stmt->kind != ast::StmtKind::Declare) {
+                continue;
             }
-            TypeSuffix paramSuffix =
-                info != nullptr && i < info->paramSuffixes.size() ? info->paramSuffixes[i] : TypeSuffix::Integer;
-            out_ += cppTypeFor(paramSuffix);
+            const auto& decl = static_cast<const ast::DeclareStmt&>(*stmt);
+            const Sema::ProcedureInfo* info = sema_.procedureInfo(decl.name);
+            TypeSuffix returnSuffix = info != nullptr ? info->returnSuffix : TypeSuffix::Integer;
+            out_ += std::string(cppTypeFor(returnSuffix)) + " " + cppProcName(decl.name) + "(";
+            for (std::size_t i = 0; i < decl.params.size(); ++i) {
+                if (i != 0) {
+                    out_ += ", ";
+                }
+                TypeSuffix paramSuffix = info != nullptr && i < info->paramSuffixes.size() ? info->paramSuffixes[i]
+                                                                                            : TypeSuffix::Integer;
+                out_ += cppTypeFor(paramSuffix);
+            }
+            out_ += ");\n";
         }
-        out_ += ");\n";
+    };
+    emitPrototypesIn(module_.statements);
+    for (const auto& stmt : module_.statements) {
+        if (stmt->kind == ast::StmtKind::DeclareModule) {
+            emitPrototypesIn(static_cast<const ast::DeclareModuleStmt&>(*stmt).body);
+        }
     }
 }
 
 void Codegen::genProcedures() {
+    // Same top-level-only-plus-one-level-of-Module-nesting shape as
+    // genDeclarePrototypes's own (M7d): a ModuleStmt's own body is the
+    // *only* other place a real `Procedure` definition can appear.
+    auto emitProceduresIn = [this](const ast::Block& block) {
+        for (const auto& stmt : block) {
+            if (stmt->kind == ast::StmtKind::ProcedureDecl) {
+                genProcedureDecl(static_cast<const ast::ProcedureDeclStmt&>(*stmt));
+            }
+        }
+    };
+    emitProceduresIn(module_.statements);
     for (const auto& stmt : module_.statements) {
-        if (stmt->kind == ast::StmtKind::ProcedureDecl) {
-            genProcedureDecl(static_cast<const ast::ProcedureDeclStmt&>(*stmt));
+        if (stmt->kind == ast::StmtKind::Module) {
+            emitProceduresIn(static_cast<const ast::ModuleStmt&>(*stmt).body);
         }
     }
 }
@@ -925,7 +967,7 @@ void Codegen::genProcedureDecl(const ast::ProcedureDeclStmt& proc) {
     const Sema::ProcedureInfo* info = sema_.procedureInfo(proc.name);
     TypeSuffix returnSuffix = info != nullptr ? info->returnSuffix : TypeSuffix::Integer;
 
-    out_ += std::string(cppTypeFor(returnSuffix)) + " f_" + proc.name + "(";
+    out_ += std::string(cppTypeFor(returnSuffix)) + " " + cppProcName(proc.name) + "(";
     for (std::size_t i = 0; i < proc.params.size(); ++i) {
         if (i != 0) {
             out_ += ", ";
@@ -1309,6 +1351,41 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
         case ast::StmtKind::StructureDecl: // NOLINT(bugprone-branch-clone) - already emitted by genStructures().
             break;
         case ast::StmtKind::InterfaceDecl: // NOLINT(bugprone-branch-clone) - pure metadata, consumed by Sema only.
+            break;
+        case ast::StmtKind::DeclareModule: {
+            // Oracle-verified: a DeclareModule section's own code runs at
+            // its own textual position, same as a Module section's (see
+            // ModuleStmt's own doc comment) - only its `Global`
+            // declarators can carry real runtime code (an initializer);
+            // `Declare` itself emits nothing here (genDeclarePrototypes()
+            // already emitted its real C++ prototype, before main()).
+            const auto& decl = static_cast<const ast::DeclareModuleStmt&>(stmt);
+            for (const auto& bodyStmt : decl.body) {
+                if (bodyStmt->kind == ast::StmtKind::Define) {
+                    genStmt(*bodyStmt);
+                }
+            }
+            break;
+        }
+        case ast::StmtKind::Module: {
+            // Oracle-verified: a Module's own top-level body isn't just
+            // declarations - ordinary executable code runs right there, at
+            // its own textual position (see Sema's identical note on its
+            // own Module case) - so every statement is genStmt'd here,
+            // unlike DeclareModule's own Define-only case just above.
+            // ProcedureDecl/Declare/UseModule/UnuseModule already have
+            // their own no-op cases in this very switch (already emitted
+            // elsewhere, or carry no runtime code at all), so this needs
+            // no separate statement-kind filtering of its own.
+            const auto& mod = static_cast<const ast::ModuleStmt&>(stmt);
+            for (const auto& bodyStmt : mod.body) {
+                genStmt(*bodyStmt);
+            }
+            break;
+        }
+        case ast::StmtKind::UseModule: // NOLINT(bugprone-branch-clone) - compile-time only, consumed by Sema.
+            break;
+        case ast::StmtKind::UnuseModule: // NOLINT(bugprone-branch-clone) - compile-time only, consumed by Sema.
             break;
         case ast::StmtKind::NewList: // NOLINT(bugprone-branch-clone) - already emitted by generate() itself.
             break;

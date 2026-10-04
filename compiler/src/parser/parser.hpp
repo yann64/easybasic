@@ -37,6 +37,15 @@ private:
     /// restricted (no statements, no bodies - see ast::InterfaceDeclStmt's
     /// own doc comment).
     std::unique_ptr<ast::Stmt> parseInterfaceDecl();
+    /// `DeclareModule`/`Module` (M7d) - both just `Name \n <body> \n
+    /// End...` (parsed via the ordinary `parseBlockUntil`/`parseStatement`
+    /// machinery, unlike e.g. `parseDataSection`'s own dedicated loop -
+    /// `Sema`, not the Parser, enforces which statement kinds are actually
+    /// legal inside each).
+    std::unique_ptr<ast::Stmt> parseDeclareModule();
+    std::unique_ptr<ast::Stmt> parseModuleDecl();
+    std::unique_ptr<ast::Stmt> parseUseModule();
+    std::unique_ptr<ast::Stmt> parseUnuseModule();
     std::unique_ptr<ast::Stmt> parseNewList();
     std::unique_ptr<ast::Stmt> parseNewMap();
     /// `ForEach name() ... Next` - `name` is always a bare, already-declared

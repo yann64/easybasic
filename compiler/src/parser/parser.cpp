@@ -189,6 +189,18 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwInterface)) {
         return parseInterfaceDecl();
     }
+    if (check(TokenKind::KwDeclareModule)) {
+        return parseDeclareModule();
+    }
+    if (check(TokenKind::KwModule)) {
+        return parseModuleDecl();
+    }
+    if (check(TokenKind::KwUseModule)) {
+        return parseUseModule();
+    }
+    if (check(TokenKind::KwUnuseModule)) {
+        return parseUnuseModule();
+    }
     if (check(TokenKind::KwNewList)) {
         return parseNewList();
     }
@@ -387,6 +399,50 @@ std::unique_ptr<ast::Stmt> Parser::parseInterfaceDecl() {
     return stmt;
 }
 
+std::unique_ptr<ast::Stmt> Parser::parseDeclareModule() {
+    auto stmt = std::make_unique<ast::DeclareModuleStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'DeclareModule'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'DeclareModule'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    stmt->body = parseBlockUntil({TokenKind::KwEndDeclareModule});
+    expect(TokenKind::KwEndDeclareModule, "to close 'DeclareModule'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseModuleDecl() {
+    auto stmt = std::make_unique<ast::ModuleStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'Module'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'Module'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    stmt->body = parseBlockUntil({TokenKind::KwEndModule});
+    expect(TokenKind::KwEndModule, "to close 'Module'");
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseUseModule() {
+    auto stmt = std::make_unique<ast::UseModuleStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'UseModule'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'UseModule'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    return stmt;
+}
+
+std::unique_ptr<ast::Stmt> Parser::parseUnuseModule() {
+    auto stmt = std::make_unique<ast::UnuseModuleStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'UnuseModule'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'UnuseModule'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    return stmt;
+}
+
 std::unique_ptr<ast::Stmt> Parser::parseConstDecl() {
     SourceLoc loc = advance().loc; // '#'
     const Token& nameTok = expect(TokenKind::Identifier, "after '#'");
@@ -445,6 +501,20 @@ std::unique_ptr<ast::Stmt> Parser::parseIdentifierStatement() {
     }
 
     const Token& nameTok = advance(); // Identifier
+    std::string spelling = nameTok.text;
+    std::string name = toLower(nameTok.text);
+    TypeSuffix suffix = nameTok.suffix;
+    if (check(TokenKind::ColonColon)) {
+        // `Module::Member` (M7d) - an explicitly qualified reference or
+        // call-statement target, mirroring parsePrimaryAtom's identical
+        // handling for the expression-context case - see Sema's own module
+        // name-resolution notes.
+        advance(); // '::'
+        const Token& memberTok = expect(TokenKind::Identifier, "after '::'");
+        spelling += "::" + memberTok.text;
+        name += "::" + toLower(memberTok.text);
+        suffix = memberTok.suffix;
+    }
 
     std::unique_ptr<ast::Expr> base;
     if (check(TokenKind::LParen)) {
@@ -454,8 +524,8 @@ std::unique_ptr<ast::Stmt> Parser::parseIdentifierStatement() {
         advance(); // '('
         auto call = std::make_unique<ast::CallExpr>();
         call->loc = loc;
-        call->spelling = nameTok.text;
-        call->name = toLower(nameTok.text);
+        call->spelling = spelling;
+        call->name = name;
         if (!check(TokenKind::RParen)) {
             do {
                 call->args.push_back(parseExpr());
@@ -466,9 +536,9 @@ std::unique_ptr<ast::Stmt> Parser::parseIdentifierStatement() {
     } else {
         auto ref = std::make_unique<ast::VarRefExpr>();
         ref->loc = loc;
-        ref->spelling = nameTok.text;
-        ref->name = toLower(nameTok.text);
-        ref->suffix = nameTok.suffix;
+        ref->spelling = spelling;
+        ref->name = name;
+        ref->suffix = suffix;
         base = std::move(ref);
     }
 
@@ -1122,6 +1192,19 @@ std::unique_ptr<ast::Expr> Parser::parsePrimaryAtom() {
         }
         case TokenKind::Identifier: {
             advance();
+            std::string spelling = tok.text;
+            std::string name = toLower(tok.text);
+            TypeSuffix suffix = tok.suffix;
+            if (check(TokenKind::ColonColon)) {
+                // `Module::Member` (M7d) - an explicitly qualified
+                // reference, resolvable regardless of UseModule - see
+                // Sema's own module name-resolution notes.
+                advance(); // '::'
+                const Token& memberTok = expect(TokenKind::Identifier, "after '::'");
+                spelling += "::" + memberTok.text;
+                name += "::" + toLower(memberTok.text);
+                suffix = memberTok.suffix;
+            }
             if (check(TokenKind::LParen)) {
                 // `Name(args)` as a value - a call expression, not a
                 // variable reference (PB requires parens for a call, so
@@ -1129,8 +1212,8 @@ std::unique_ptr<ast::Expr> Parser::parsePrimaryAtom() {
                 advance(); // '('
                 auto call = std::make_unique<ast::CallExpr>();
                 call->loc = tok.loc;
-                call->spelling = tok.text;
-                call->name = toLower(tok.text);
+                call->spelling = spelling;
+                call->name = name;
                 if (!check(TokenKind::RParen)) {
                     do {
                         call->args.push_back(parseExpr());
@@ -1141,9 +1224,9 @@ std::unique_ptr<ast::Expr> Parser::parsePrimaryAtom() {
             }
             auto ref = std::make_unique<ast::VarRefExpr>();
             ref->loc = tok.loc;
-            ref->spelling = tok.text;
-            ref->name = toLower(tok.text);
-            ref->suffix = tok.suffix;
+            ref->spelling = spelling;
+            ref->name = name;
+            ref->suffix = suffix;
             return ref;
         }
         case TokenKind::Hash: {

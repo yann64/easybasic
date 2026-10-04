@@ -1444,3 +1444,132 @@ TEST_CASE("Sema's dataLabelAddressable is false for an empty label (no Data item
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+namespace {
+/// M7d: a minimal, valid DeclareModule/Module pair - public Init
+/// unqualified access from inside, a private helper, and a public Global -
+/// the shared scaffolding several Module test cases below build on.
+const char* kModuleScaffold = R"(
+DeclareModule Ferrari
+  Declare CreateFerrari()
+  Global Initialized = 0
+EndDeclareModule
+Module Ferrari
+  Procedure Private()
+    Initialized = 1
+  EndProcedure
+  Procedure CreateFerrari()
+    Private()
+  EndProcedure
+EndModule
+)";
+} // namespace
+
+TEST_CASE("Sema mangles a Module's own Procedure/Global into that module's own namespace", "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse(std::string(kModuleScaffold) + "Ferrari::CreateFerrari()", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    CHECK(sema.procedureInfo("ferrari::createferrari") != nullptr);
+    CHECK(sema.procedureInfo("ferrari::private") != nullptr);
+    CHECK(sema.procedureInfo("createferrari") == nullptr); // never leaks into the plain/top-level namespace
+}
+
+TEST_CASE("Sema accepts Module::Member qualified access to a public member from outside", "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse(std::string(kModuleScaffold) + "Ferrari::CreateFerrari()\nDebug Ferrari::Initialized",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects Module::Member qualified access to a private member from outside",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse(std::string(kModuleScaffold) + "Ferrari::Private()", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema's UseModule makes a module's own public members resolve unqualified", "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse(std::string(kModuleScaffold) + "UseModule Ferrari\nCreateFerrari()", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema's UnuseModule removes a previously-imported module's unqualified access",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module =
+        parse(std::string(kModuleScaffold) + "UseModule Ferrari\nCreateFerrari()\nUnuseModule Ferrari\n"
+                                              "CreateFerrari()",
+              diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects referencing an unqualified name from outside a module without UseModule",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse(std::string(kModuleScaffold) + "CreateFerrari()", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects nesting a Module inside another Module", "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Outer\nEndDeclareModule\nModule Outer\n"
+                         "DeclareModule Inner\nEndDeclareModule\nModule Inner\nEndModule\n"
+                         "EndModule",
+                         diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a Module declared inside a Procedure", "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("Procedure Foo()\n  DeclareModule X\n  EndDeclareModule\n  Module X\n  EndModule\n"
+                         "EndProcedure",
+                         diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema's own code inside a Module doesn't see main-code names (the 'sealed box' model)",
+          "[sema][modules]") {
+    // Oracle-verified: main-code names, even Globals, are never visible
+    // inside a module - a bare reference to one from inside a module
+    // implicitly declares a *new*, module-scoped name instead, rather than
+    // reaching the outer one.
+    DiagnosticEngine diags;
+    auto module = parse("Global Outer = 99\n"
+                         "DeclareModule M\n  Declare GetOuter()\nEndDeclareModule\n"
+                         "Module M\n  Procedure GetOuter()\n    ProcedureReturn Outer\n  EndProcedure\nEndModule\n"
+                         "Debug M::GetOuter()",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    // "Outer" inside M::Read is a fresh module-scoped name, not the outer Global.
+    CHECK(sema.typeOf("m::outer") == TypeSuffix::Integer);
+}
+
+TEST_CASE("Sema's Procedure fulfilling a module's own Declare validates the signature matches",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule M\n  Declare.d Compute(x.d)\nEndDeclareModule\n"
+                         "Module M\n  Procedure Compute(x.i)\n    ProcedureReturn x\n  EndProcedure\nEndModule",
+                         diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

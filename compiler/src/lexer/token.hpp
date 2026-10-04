@@ -74,6 +74,12 @@ enum class TokenKind {
     KwEndMacro,
     KwInterface,        ///< `Interface Name ... EndInterface` (M7c).
     KwEndInterface,
+    KwDeclareModule,    ///< `DeclareModule Name ... EndDeclareModule` (M7d).
+    KwEndDeclareModule,
+    KwModule,           ///< `Module Name ... EndModule` (M7d).
+    KwEndModule,
+    KwUseModule,        ///< `UseModule Name` (M7d).
+    KwUnuseModule,      ///< `UnuseModule Name` (M7d).
     KwAnd,
     KwOr,
     KwNot,
@@ -100,6 +106,7 @@ enum class TokenKind {
     Backslash,   ///< `\` - structure field access (`var\field`), never division.
     At,          ///< `@` - address-of (M3d, pointers).
     Question,    ///< `?` - address of a DataSection label, `?Label` (M7c prerequisite).
+    ColonColon,  ///< `::` - qualified module member access, `Module::Member` (M7d).
     LParen,
     RParen,
     Comma,

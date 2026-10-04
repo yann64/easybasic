@@ -1,5 +1,7 @@
 #include "sema.hpp"
 
+#include <algorithm>
+
 namespace easybasic {
 
 ValueKind familyOf(TypeSuffix suffix) {
@@ -967,6 +969,16 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         case ast::StmtKind::Define: {
             auto& def = static_cast<ast::DefineStmt&>(stmt);
             for (auto& decl : def.declarators) {
+                // M7d: a Global declared inside a Module's own body belongs
+                // to that module's own namespace (mangled here, once, before
+                // `declare`/`globalNames_` ever see it) - see
+                // ModuleStmt's own doc comment. A plain/Protected Define
+                // (isGlobal false) is unaffected even inside a module's own
+                // Procedure body (ordinary procedure-local scoping already
+                // handles that correctly, untouched by this).
+                if (def.isGlobal && !currentModule_.empty()) {
+                    decl.name = currentModule_ + "::" + decl.name;
+                }
                 if (decl.isPointer) {
                     // A pointer variable's own storage is always a plain
                     // Integer address (see ast::DefineStmt::Declarator's own
@@ -1147,6 +1159,10 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::Assign: {
             auto& assign = static_cast<ast::AssignStmt&>(stmt);
+            resolveModuleQualifiedName(
+                assign.name, [this](const std::string& n) { return symbols_.contains(n); },
+                [](const std::string&) { return false; }); // no such thing as a builtin global variable
+            checkModuleAccess(assign.name, assign.loc);
             TypeSuffix suffix = assign.suffix == TypeSuffix::None ? typeOf(assign.name) : assign.suffix;
             declareImplicit(assign.name, assign.spelling, suffix, assign.loc);
             visitExpr(*assign.value);
@@ -1384,6 +1400,14 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::Declare: {
             auto& decl = static_cast<ast::DeclareStmt&>(stmt);
+            // M7d: a Declare inside a DeclareModule's own body promises a
+            // procedure within that module's own namespace - mangled once,
+            // here, before any of the matching logic below runs (the real
+            // Procedure fulfilling it, inside the matching Module's body,
+            // gets the identical mangled key via the exact same rule below).
+            if (!currentModule_.empty()) {
+                decl.name = currentModule_ + "::" + decl.name;
+            }
             if (procedures_.contains(decl.name)) {
                 // Either a genuine duplicate `Declare`, or one appearing
                 // after the real `Procedure` already fully defined it -
@@ -1424,6 +1448,13 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 diagnostics_.error(proc.loc,
                                     "A procedure can't be declared inside an If, Repeat, While or For.");
                 break;
+            }
+            // M7d: a Procedure declared inside a Module's own body belongs
+            // to that module's own namespace - mangled once, here, so
+            // everything below (duplicate-detection, Declare-fulfillment
+            // matching, registration) operates on the final key already.
+            if (!currentModule_.empty()) {
+                proc.name = currentModule_ + "::" + proc.name;
             }
             TypeSuffix returnSuffix = proc.returnSuffix == TypeSuffix::None ? TypeSuffix::Integer : proc.returnSuffix;
 
@@ -1551,6 +1582,120 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             order_ = std::move(savedOrder);
             break;
         }
+        case ast::StmtKind::DeclareModule: {
+            auto& decl = static_cast<ast::DeclareModuleStmt&>(stmt);
+            if (insideProcedure_ || controlFlowDepth_ > 0 || !currentModule_.empty()) {
+                diagnostics_.error(decl.loc, "A Module can't be declared inside a Procedure, a control-flow "
+                                              "block, or another Module.");
+                break;
+            }
+            currentModule_ = decl.name;
+            // Only `Declare` (a public procedure signature) and `Global`
+            // (a public variable, optionally initialized) are supported
+            // inside a DeclareModule section in this first Module slice -
+            // real PB also accepts Structures/Macros/Enumerations/
+            // constants/arrays/Lists/Maps/labels here, deliberately
+            // deferred (see DeclareModuleStmt's own doc comment). Each
+            // allowed statement is visited directly (not via visitBlock)
+            // so this restriction is enforced here, once, rather than
+            // threaded through the general statement dispatcher.
+            auto& publicSet = modulePublicMembers_[decl.name];
+            for (auto& bodyStmt : decl.body) {
+                if (bodyStmt->kind == ast::StmtKind::Declare) {
+                    // Captured *before* visiting - visitStmt's own Declare
+                    // case mangles `.name` in place (see above), but the
+                    // public set itself is keyed by the plain member name.
+                    publicSet.insert(static_cast<ast::DeclareStmt&>(*bodyStmt).name);
+                    visitStmt(*bodyStmt);
+                } else if (bodyStmt->kind == ast::StmtKind::Define &&
+                           static_cast<ast::DefineStmt&>(*bodyStmt).isGlobal) {
+                    for (auto& decl2 : static_cast<ast::DefineStmt&>(*bodyStmt).declarators) {
+                        publicSet.insert(decl2.name);
+                    }
+                    visitStmt(*bodyStmt);
+                } else {
+                    diagnostics_.error(bodyStmt->loc, "Only 'Declare' and 'Global' are currently supported "
+                                                       "inside a DeclareModule section.");
+                }
+            }
+            currentModule_.clear();
+            break;
+        }
+        case ast::StmtKind::Module: {
+            auto& mod = static_cast<ast::ModuleStmt&>(stmt);
+            if (insideProcedure_ || controlFlowDepth_ > 0 || !currentModule_.empty()) {
+                diagnostics_.error(mod.loc, "A Module can't be declared inside a Procedure, a control-flow "
+                                             "block, or another Module.");
+                break;
+            }
+            currentModule_ = mod.name;
+            // `UseModule`/`UnuseModule` used inside this Module's own body
+            // (oracle-verified legal - a "common" module's Globals shared
+            // by several other modules each UseModule it internally) are
+            // scoped to it, not leaked past this body's own EndModule.
+            auto savedImports = activeImports_;
+            // Oracle-verified: a Module's own top-level body isn't just
+            // declarations - ordinary executable code (a plain assignment,
+            // in the "common module" example) runs right there, at its own
+            // textual position, exactly like top-level code outside any
+            // module (see ModuleStmt's own doc comment). So this is a
+            // *blocklist*, not an allowlist like DeclareModule's own body
+            // has: everything not explicitly deferred here (Structures/
+            // Macros/Enumerations/constants/arrays/Lists/Maps/DataSections/
+            // nested modules - none of these are module-scoped by this
+            // first Module slice, so letting them through would silently
+            // leak into the flat top-level tables instead of this module's
+            // own namespace) is visited through the ordinary dispatcher,
+            // which is already module-aware via `currentModule_` for
+            // everything this slice *does* support (Procedure/Declare/
+            // Global/plain statements referencing them).
+            for (auto& bodyStmt : mod.body) {
+                switch (bodyStmt->kind) {
+                    case ast::StmtKind::StructureDecl:
+                    case ast::StmtKind::InterfaceDecl:
+                    case ast::StmtKind::NewList:
+                    case ast::StmtKind::NewMap:
+                    case ast::StmtKind::Dim:
+                    case ast::StmtKind::DataSection:
+                    case ast::StmtKind::ConstDecl:
+                    case ast::StmtKind::Enumeration:
+                    case ast::StmtKind::DeclareModule:
+                    case ast::StmtKind::Module:
+                        diagnostics_.error(bodyStmt->loc,
+                                            "This statement kind is not yet supported inside a Module section.");
+                        break;
+                    case ast::StmtKind::Define:
+                        if (static_cast<ast::DefineStmt&>(*bodyStmt).isGlobal) {
+                            visitStmt(*bodyStmt);
+                        } else {
+                            diagnostics_.error(bodyStmt->loc, "Only 'Global' (not a plain 'Define'/'Protected') "
+                                                               "is currently supported directly inside a Module "
+                                                               "section's own top level (a Procedure's own local "
+                                                               "Define is unaffected).");
+                        }
+                        break;
+                    default:
+                        visitStmt(*bodyStmt);
+                        break;
+                }
+            }
+            activeImports_ = std::move(savedImports);
+            currentModule_.clear();
+            break;
+        }
+        case ast::StmtKind::UseModule: {
+            auto& use = static_cast<ast::UseModuleStmt&>(stmt);
+            if (std::find(activeImports_.begin(), activeImports_.end(), use.name) == activeImports_.end()) {
+                activeImports_.push_back(use.name);
+            }
+            break;
+        }
+        case ast::StmtKind::UnuseModule: {
+            auto& unuse = static_cast<ast::UnuseModuleStmt&>(stmt);
+            activeImports_.erase(std::remove(activeImports_.begin(), activeImports_.end(), unuse.name),
+                                  activeImports_.end());
+            break;
+        }
         case ast::StmtKind::ProcedureReturn: {
             auto& ret = static_cast<ast::ProcedureReturnStmt&>(stmt);
             if (ret.value) {
@@ -1571,6 +1716,10 @@ void Sema::visitExpr(ast::Expr& expr) {
     switch (expr.kind) {
         case ast::ExprKind::VarRef: {
             auto& ref = static_cast<ast::VarRefExpr&>(expr);
+            resolveModuleQualifiedName(
+                ref.name, [this](const std::string& n) { return symbols_.contains(n); },
+                [](const std::string&) { return false; }); // no such thing as a builtin global variable
+            checkModuleAccess(ref.name, ref.loc);
             if (!symbols_.contains(ref.name)) {
                 // Implicit read of a never-assigned name: real PB gives it
                 // type Integer and value 0 (or errors under EnableExplicit).
@@ -1738,6 +1887,19 @@ void Sema::bringIntoScope(const std::unordered_map<std::string, TypeSuffix>& out
 }
 
 void Sema::visitCall(ast::CallExpr& call) {
+    resolveModuleQualifiedName(
+        call.name, [this](const std::string& n) { return procedures_.contains(n); },
+        [this](const std::string& n) {
+            // Every real PB command this project recognizes by name - the
+            // union of every library's own isXxxBuiltinName, deliberately
+            // *not* a blind `procedures_.contains(n)` (which would also
+            // match an invisible same-named top-level user procedure -
+            // see resolveModuleQualifiedName's own doc comment).
+            return isStringLibBuiltinName(n) || isMathLibBuiltinName(n) || isMemoryLibBuiltinName(n) ||
+                   isFileLibBuiltinName(n) || isDateLibBuiltinName(n) || isThreadLibBuiltinName(n) ||
+                   isGuiLibBuiltinName(n) || isPointerBuiltinName(n) || isListBuiltinName(n) || isMapBuiltinName(n);
+        });
+    checkModuleAccess(call.name, call.loc);
     if (isGuiLibBuiltinName(call.name)) {
         usesGui_ = true;
     }
@@ -2190,6 +2352,67 @@ const Sema::InterfaceMethodInfo* Sema::resolveInterfaceMethod(const ast::MethodC
         return nullptr;
     }
     return &info->methods[*idx];
+}
+
+/// M7d: a Module is a genuinely separate, "sealed box" namespace - oracle-
+/// verified: main-code names (even `Global`s) are never visible inside a
+/// module, and vice versa, so a bare reference resolves purely from the
+/// current module's own namespace, an active `UseModule` import, or a real
+/// PB builtin (always available - checked last here since a builtin is
+/// registered under its own plain, unmangled key in the very same table
+/// `exists` queries, e.g. `procedures_["len"]`). An already-`Module::Member`-
+/// qualified `name` (containing "::", built that way directly by the Parser)
+/// is left untouched - it's already the final key; `checkModuleAccess`
+/// handles its own public/private validation separately.
+void Sema::resolveModuleQualifiedName(std::string& name, const std::function<bool(const std::string&)>& exists,
+                                       const std::function<bool(const std::string&)>& isBuiltin) const {
+    if (name.find("::") != std::string::npos) {
+        return;
+    }
+    if (!currentModule_.empty()) {
+        std::string qualified = currentModule_ + "::" + name;
+        if (exists(qualified)) {
+            name = qualified;
+            return;
+        }
+    }
+    for (const auto& imported : activeImports_) {
+        std::string qualified = imported + "::" + name;
+        if (exists(qualified)) {
+            name = qualified;
+            return;
+        }
+    }
+    if (currentModule_.empty()) {
+        return; // Top level: whatever `name` already resolves to - unchanged, existing behavior.
+    }
+    // Oracle-verified "sealed box" model: main-code names, even `Global`s,
+    // are never visible inside a module - only a real PB command is
+    // (checked via `isBuiltin`, deliberately *not* `exists(name)`, which
+    // would also match an invisible same-named top-level user declaration
+    // sharing the very same flat `symbols_`/`procedures_` table).
+    if (isBuiltin(name)) {
+        return;
+    }
+    // Genuinely new/unknown while inside a module's own body - implicitly
+    // declared within *that* module's own namespace, not the top level's.
+    name = currentModule_ + "::" + name;
+}
+
+void Sema::checkModuleAccess(const std::string& qualifiedName, SourceLoc loc) const {
+    auto sep = qualifiedName.find("::");
+    if (sep == std::string::npos) {
+        return;
+    }
+    std::string modName = qualifiedName.substr(0, sep);
+    std::string memberName = qualifiedName.substr(sep + 2);
+    if (modName == currentModule_) {
+        return; // A module's own code can always see its own members, public or private.
+    }
+    auto it = modulePublicMembers_.find(modName);
+    if (it == modulePublicMembers_.end() || !it->second.contains(memberName)) {
+        diagnostics_.error(loc, "Module item '" + memberName + "' is not declared as public.");
+    }
 }
 
 Sema::ResolvedType Sema::resolveField(const ResolvedType& baseType, const std::string& fieldLowerName,

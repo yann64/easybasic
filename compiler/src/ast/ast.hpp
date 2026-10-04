@@ -177,6 +177,7 @@ enum class StmtKind {
     CompilerIf, CompilerSelect,
     DataSection, DataLabel, Data, Read, Restore,
     InterfaceDecl,
+    DeclareModule, Module, UseModule, UnuseModule,
 };
 
 /// Base of every statement node.
@@ -630,6 +631,65 @@ struct ProcedureDeclStmt : Stmt {
     };
     std::vector<Param> params;
     Block body;
+};
+
+/// `DeclareModule Name \n ... \n EndDeclareModule` (M7d) - a Module's own
+/// public interface: `Declare`'d procedure signatures and `Global`
+/// variables (with optional initializers) that become visible from outside
+/// the module, either qualified (`Name::Member`, works everywhere
+/// unconditionally) or unqualified after `UseModule Name`. Oracle-verified
+/// real PB also accepts Structures/Macros/Enumerations/constants/arrays/
+/// Lists/Maps/labels here - this project deliberately scopes its own first
+/// Module slice to just procedures and Global variables (the only two
+/// kinds either oracle worked example actually exercises), rejecting
+/// anything else inside this body with a real diagnostic rather than
+/// silently mishandling it; `Sema` enforces this, not the Parser, which
+/// reuses the ordinary statement grammar for this body unchanged.
+struct DeclareModuleStmt : Stmt {
+    DeclareModuleStmt() : Stmt(StmtKind::DeclareModule) {}
+    std::string name;
+    std::string spelling;
+    Block body;
+};
+
+/// `Module Name \n ... \n EndModule` (M7d) - a Module's own private
+/// implementation: every `Procedure`/`Global` declared here is private
+/// (inaccessible from outside the module at all, oracle-verified: "Module
+/// item 'X' is not declared as public.") *unless* the same name was also
+/// declared in the matching `DeclareModuleStmt` (a `Procedure` fulfilling a
+/// `Declare`, or a `Global` with the same name) - see `Sema`'s own module
+/// name-resolution notes for exactly how a module's contents are kept in a
+/// separate, mangled namespace from the main program's and every other
+/// module's.
+struct ModuleStmt : Stmt {
+    ModuleStmt() : Stmt(StmtKind::Module) {}
+    std::string name;
+    std::string spelling;
+    Block body;
+};
+
+/// `UseModule Name` (M7d) - imports `Name`'s own public members into the
+/// current scope's unqualified name lookup (oracle-verified: *not* required
+/// to use a module at all - `Name::Member` always works regardless - purely
+/// a convenience for dropping the `Name::` prefix). Scoped to wherever it's
+/// encountered: a top-level `UseModule` affects the rest of top-level code;
+/// one inside another `Module`'s own body (oracle-verified legal, e.g. a
+/// "common" module's Globals shared by several other modules) is saved/
+/// restored around that body, not leaked past its own `EndModule`.
+struct UseModuleStmt : Stmt {
+    UseModuleStmt() : Stmt(StmtKind::UseModule) {}
+    std::string name;
+    std::string spelling;
+};
+
+/// `UnuseModule Name` (M7d) - the inverse of `UseModuleStmt`: removes
+/// `Name` from the active-imports list (a no-op if it wasn't imported at
+/// all - not independently oracle-verified but a reasonable, low-risk
+/// assumption).
+struct UnuseModuleStmt : Stmt {
+    UnuseModuleStmt() : Stmt(StmtKind::UnuseModule) {}
+    std::string name;
+    std::string spelling;
 };
 
 /// `Declare[.suffix] Name(params)` - a forward declaration enabling mutual

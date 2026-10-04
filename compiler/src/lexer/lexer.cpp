@@ -98,6 +98,12 @@ const std::unordered_map<std::string, TokenKind>& keywordTable() {
         {"endmacro", TokenKind::KwEndMacro},
         {"interface", TokenKind::KwInterface},
         {"endinterface", TokenKind::KwEndInterface},
+        {"declaremodule", TokenKind::KwDeclareModule},
+        {"enddeclaremodule", TokenKind::KwEndDeclareModule},
+        {"module", TokenKind::KwModule},
+        {"endmodule", TokenKind::KwEndModule},
+        {"usemodule", TokenKind::KwUseModule},
+        {"unusemodule", TokenKind::KwUnuseModule},
         {"and", TokenKind::KwAnd},
         {"or", TokenKind::KwOr},
         {"not", TokenKind::KwNot},
@@ -171,6 +177,12 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwEndMacro: return "'EndMacro'";
         case TokenKind::KwInterface: return "'Interface'";
         case TokenKind::KwEndInterface: return "'EndInterface'";
+        case TokenKind::KwDeclareModule: return "'DeclareModule'";
+        case TokenKind::KwEndDeclareModule: return "'EndDeclareModule'";
+        case TokenKind::KwModule: return "'Module'";
+        case TokenKind::KwEndModule: return "'EndModule'";
+        case TokenKind::KwUseModule: return "'UseModule'";
+        case TokenKind::KwUnuseModule: return "'UnuseModule'";
         case TokenKind::KwAnd: return "'And'";
         case TokenKind::KwOr: return "'Or'";
         case TokenKind::KwNot: return "'Not'";
@@ -196,6 +208,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::Backslash: return "'\\'";
         case TokenKind::At: return "'@'";
         case TokenKind::Question: return "'?'";
+        case TokenKind::ColonColon: return "'::'";
         case TokenKind::LParen: return "'('";
         case TokenKind::RParen: return "')'";
         case TokenKind::Comma: return "','";
@@ -281,8 +294,18 @@ Token Lexer::next() {
     if (c == ':') {
         advance();
         Token tok;
-        tok.kind = TokenKind::Colon;
         tok.loc = loc;
+        if (peek() == ':') {
+            // `::` (M7d) - qualified module member access. Never ambiguous
+            // with two adjacent plain `:` statement separators: PB has no
+            // empty-statement syntax that would make `::` alone mean
+            // anything else, and a real `Module::Member` is always written
+            // with no space between the two colons.
+            advance();
+            tok.kind = TokenKind::ColonColon;
+        } else {
+            tok.kind = TokenKind::Colon;
+        }
         return tok;
     }
     if (c == '"') {

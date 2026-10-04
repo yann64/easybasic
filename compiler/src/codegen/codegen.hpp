@@ -138,6 +138,14 @@ private:
     /// variable (a real, distinct PB namespace pair - oracle-verified) never
     /// collide in the generated C++.
     static std::string cppVarName(const std::string& name);
+    /// As `cppVarName`, for a procedure name - `f_<name>` with any `::`
+    /// (M7d: a Module-qualified name, e.g. "ferrari::createferrari") turned
+    /// into a plain-identifier-safe separator first. The *only* place a
+    /// `::`-bearing name ever reaches C++ emission - every Sema-internal
+    /// table can freely use "::" as a key separator (never required to be a
+    /// valid identifier), so this (and `cppVarName`'s own identical
+    /// handling) is the one chokepoint that has to care.
+    static std::string cppProcName(const std::string& name);
 
     const ast::Module& module_;
     const Sema& sema_;
