@@ -31,6 +31,12 @@ private:
     std::unique_ptr<ast::Stmt> parseShared();
     std::unique_ptr<ast::Stmt> parseDim();
     std::unique_ptr<ast::Stmt> parseStructureDecl();
+    /// `Interface Name \n Method[.suffix](params) \n ... \n EndInterface`
+    /// (M7c) - its own dedicated body-parsing loop, structurally like
+    /// `parseStructureDecl`'s, since a method signature line is syntactically
+    /// restricted (no statements, no bodies - see ast::InterfaceDeclStmt's
+    /// own doc comment).
+    std::unique_ptr<ast::Stmt> parseInterfaceDecl();
     std::unique_ptr<ast::Stmt> parseNewList();
     std::unique_ptr<ast::Stmt> parseNewMap();
     /// `ForEach name() ... Next` - `name` is always a bare, already-declared

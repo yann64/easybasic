@@ -186,6 +186,9 @@ std::unique_ptr<ast::Stmt> Parser::parseStatement() {
     if (check(TokenKind::KwStructure)) {
         return parseStructureDecl();
     }
+    if (check(TokenKind::KwInterface)) {
+        return parseInterfaceDecl();
+    }
     if (check(TokenKind::KwNewList)) {
         return parseNewList();
     }
@@ -343,6 +346,47 @@ std::unique_ptr<ast::Stmt> Parser::parseStructureDecl() {
     return stmt;
 }
 
+std::unique_ptr<ast::Stmt> Parser::parseInterfaceDecl() {
+    auto stmt = std::make_unique<ast::InterfaceDeclStmt>();
+    stmt->loc = peek().loc;
+    advance(); // 'Interface'
+    const Token& nameTok = expect(TokenKind::Identifier, "after 'Interface'");
+    stmt->spelling = nameTok.text;
+    stmt->name = toLower(nameTok.text);
+    skipStatementSeparators();
+
+    while (check(TokenKind::Identifier)) {
+        const Token& methodTok = advance();
+        ast::InterfaceDeclStmt::Method method;
+        method.spelling = methodTok.text;
+        method.name = toLower(methodTok.text);
+        // No-suffix defaults to Integer, the same rule a Procedure's own
+        // return type follows (M2) - normalized by Sema, not here, matching
+        // ProcedureDeclStmt's own identical convention of storing the raw
+        // (possibly `None`) suffix and letting Sema do the defaulting.
+        method.returnSuffix = methodTok.suffix;
+
+        expect(TokenKind::LParen, "after interface method name");
+        if (!check(TokenKind::RParen)) {
+            do {
+                const Token& paramTok = expect(TokenKind::Identifier, "in interface method parameter list");
+                ast::InterfaceDeclStmt::Param param;
+                param.spelling = paramTok.text;
+                param.name = toLower(paramTok.text);
+                param.suffix = paramTok.suffix;
+                method.params.push_back(std::move(param));
+            } while (match(TokenKind::Comma));
+        }
+        expect(TokenKind::RParen, "to close interface method parameter list");
+
+        stmt->methods.push_back(std::move(method));
+        skipStatementSeparators();
+    }
+
+    expect(TokenKind::KwEndInterface, "to close 'Interface'");
+    return stmt;
+}
+
 std::unique_ptr<ast::Stmt> Parser::parseConstDecl() {
     SourceLoc loc = advance().loc; // '#'
     const Token& nameTok = expect(TokenKind::Identifier, "after '#'");
@@ -370,6 +414,19 @@ std::unique_ptr<ast::Stmt> Parser::parseIdentifierStatement() {
         ref->name = "*" + toLower(ptrNameTok.text);
         bool hadPtrField = check(TokenKind::Backslash);
         std::unique_ptr<ast::Expr> target = parsePostfixFieldAccess(std::move(ref));
+
+        if (target->kind == ast::ExprKind::MethodCall) {
+            // `*ptr\Method(args)` used as a whole statement (M7c) - a
+            // vtable call through an Interface-typed pointer, its return
+            // value (if any) discarded, the same as a plain `Name(args)`
+            // call-statement below. Never followed by '=' - a method call's
+            // result isn't an assignable location.
+            auto stmt = std::make_unique<ast::ExprStmt>();
+            stmt->loc = loc;
+            stmt->expr = std::move(target);
+            return stmt;
+        }
+
         expect(TokenKind::Equal, "in pointer assignment");
         if (hadPtrField) {
             auto stmt = std::make_unique<ast::FieldAssignStmt>();
@@ -417,6 +474,18 @@ std::unique_ptr<ast::Stmt> Parser::parseIdentifierStatement() {
 
     bool hadField = check(TokenKind::Backslash);
     base = parsePostfixFieldAccess(std::move(base));
+
+    if (base->kind == ast::ExprKind::MethodCall) {
+        // `Name\Method(args)` used as a whole statement (M7c) - its return
+        // value, if any, is discarded, the same as a plain `Name(args)`
+        // call-statement below. Never followed by '=' - a method call's
+        // result isn't an assignable location (see the `*ptr`-prefixed
+        // branch above for the common, pointer-based case this mirrors).
+        auto stmt = std::make_unique<ast::ExprStmt>();
+        stmt->loc = loc;
+        stmt->expr = std::move(base);
+        return stmt;
+    }
 
     if (match(TokenKind::Equal)) {
         if (hadField) {
@@ -961,6 +1030,27 @@ std::unique_ptr<ast::Expr> Parser::parsePostfixFieldAccess(std::unique_ptr<ast::
     while (check(TokenKind::Backslash)) {
         SourceLoc loc = advance().loc;
         const Token& fieldTok = expect(TokenKind::Identifier, "after '\\'");
+        if (check(TokenKind::LParen)) {
+            // `\Method(args)` (M7c) - a vtable call through an Interface-
+            // typed pointer, not a field access: a trailing `(` can never
+            // start a legal field name, so this is unambiguous the moment
+            // it's seen, exactly like `Name(args)` vs. a plain `VarRef`
+            // already is in parseIdentifierStatement.
+            advance(); // '('
+            auto call = std::make_unique<ast::MethodCallExpr>();
+            call->loc = loc;
+            call->base = std::move(base);
+            call->method = toLower(fieldTok.text);
+            call->methodSpelling = fieldTok.text;
+            if (!check(TokenKind::RParen)) {
+                do {
+                    call->args.push_back(parseExpr());
+                } while (match(TokenKind::Comma));
+            }
+            expect(TokenKind::RParen, "to close interface method call arguments");
+            base = std::move(call);
+            continue;
+        }
         auto access = std::make_unique<ast::FieldAccessExpr>();
         access->loc = loc;
         access->base = std::move(base);
@@ -994,6 +1084,18 @@ std::unique_ptr<ast::Expr> Parser::parsePrimaryAtom() {
         auto addr = std::make_unique<ast::AddressOfExpr>();
         addr->loc = tok.loc;
         addr->operand = parsePrimary(); // e.g. `@var`, `@var\field`, `@arr(i)`
+        return addr;
+    }
+    if (tok.kind == TokenKind::Question) {
+        // `?Label` (M7c prerequisite) - unlike `@operand`, a DataSection
+        // label is never itself a location-expression, so this just takes
+        // one bare identifier, no further operand recursion needed.
+        advance();
+        const Token& labelTok = expect(TokenKind::Identifier, "after '?'");
+        auto addr = std::make_unique<ast::DataLabelAddressExpr>();
+        addr->loc = tok.loc;
+        addr->labelSpelling = labelTok.text;
+        addr->labelName = toLower(labelTok.text);
         return addr;
     }
     switch (tok.kind) {

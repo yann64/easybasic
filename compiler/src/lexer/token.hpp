@@ -72,6 +72,8 @@ enum class TokenKind {
     KwRestore,          ///< `Restore label` (M5b).
     KwMacro,            ///< `Macro name[(params)] ... EndMacro` (M5c).
     KwEndMacro,
+    KwInterface,        ///< `Interface Name ... EndInterface` (M7c).
+    KwEndInterface,
     KwAnd,
     KwOr,
     KwNot,
@@ -97,6 +99,7 @@ enum class TokenKind {
     Hash,        ///< `#` - constant-name sigil (`#MyConst`)
     Backslash,   ///< `\` - structure field access (`var\field`), never division.
     At,          ///< `@` - address-of (M3d, pointers).
+    Question,    ///< `?` - address of a DataSection label, `?Label` (M7c prerequisite).
     LParen,
     RParen,
     Comma,
@@ -126,6 +129,14 @@ enum class TypeSuffix {
                ///< Token::structSuffix and every AST node with a matching
                ///< `structTypeName` field) since it's an open-ended
                ///< user-defined name, not one of the 11 fixed letters above.
+    Interface, ///< Never produced by the lexer (a `.Name` suffix is always
+               ///< tokenized as `Struct` - lexically a Structure name and an
+               ///< Interface name look identical). `Sema::resolvePointeeType`
+               ///< re-tags a pointer's own `ResolvedType` with this instead,
+               ///< once it resolves `structTypeName` against `interfaces_`
+               ///< rather than `structures_` (M7c) - everything downstream
+               ///< (Codegen's vtable-call lowering) switches on *this* tag,
+               ///< never a raw token-level suffix.
 };
 
 struct Token {

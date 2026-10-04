@@ -199,6 +199,16 @@ std::string Codegen::cppVarName(const std::string& name) {
     return "v_" + name;
 }
 
+Sema::ResolvedType Codegen::pointeeTypeOf(const std::string& pointerKey) const {
+    if (currentProcInfo_ != nullptr) {
+        auto it = currentProcInfo_->pointerPointeeTypes.find(pointerKey);
+        if (it != currentProcInfo_->pointerPointeeTypes.end()) {
+            return it->second;
+        }
+    }
+    return sema_.pointeeTypeOf(pointerKey);
+}
+
 std::string Codegen::convert(const std::string& exprCode, ValueKind fromFamily, TypeSuffix toSuffix) {
     ValueKind toFamily = familyOf(toSuffix);
     const char* cppType = cppTypeFor(toSuffix);
@@ -283,7 +293,7 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                     // pointer-dereference branch), and the pipeline stops
                     // before Codegen runs whenever Sema reports an error -
                     // so `pointee.suffix == Struct` always holds here.
-                    Sema::ResolvedType pointee = sema_.pointeeTypeOf(baseRef.name);
+                    Sema::ResolvedType pointee = pointeeTypeOf(baseRef.name);
                     std::string addrCode = cppVarName(baseRef.name);
                     return "(reinterpret_cast<" + cppTypeFor(pointee.suffix, pointee.structName) + "*>(" +
                            addrCode + ")->f_" + access.field + ")";
@@ -305,6 +315,60 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
             }
             return "reinterpret_cast<std::int64_t>(&(" + genExpr(*addr.operand, false) + "))";
         }
+        case ast::ExprKind::DataLabelAddress: {
+            const auto& addr = static_cast<const ast::DataLabelAddressExpr&>(expr);
+            // Sema already rejected any label that isn't dataLabelAddressable
+            // (so genDataLabelArrays() always emitted this array) - the
+            // pipeline stops before Codegen runs whenever Sema reports an
+            // error.
+            return "reinterpret_cast<std::int64_t>(pb_label_" + addr.labelName + ".data())";
+        }
+        case ast::ExprKind::MethodCall: {
+            const auto& call = static_cast<const ast::MethodCallExpr&>(expr);
+            // Sema already rejected anything but a `*ptr`-named VarRef base
+            // pointing at a real Interface method (see resolveInterfaceMethod).
+            const auto& baseRef = static_cast<const ast::VarRefExpr&>(*call.base);
+            Sema::ResolvedType pointee = pointeeTypeOf(baseRef.name);
+            const Sema::InterfaceInfo* info = sema_.interfaceInfo(pointee.structName);
+            std::size_t slot = *Sema::interfaceMethodIndex(*info, call.method);
+            const Sema::InterfaceMethodInfo& methodInfo = info->methods[slot];
+
+            // Real PB's own C backend builds a genuine manual vtable this
+            // same way (confirmed by reading pbcompilerc's own `-c` output -
+            // see the M7c roadmap notes): the pointer variable's own value
+            // IS the implementing Structure's address; its first 8 bytes
+            // (read via one dereference) are the vtable base `?Label`
+            // produced; indexing that by the method's declared position and
+            // reinterpreting the stored address as a function pointer of
+            // the *Interface's own declared signature* gives a call that's
+            // exactly as well-defined as this project's own pointer
+            // parameters already are: every implementing procedure's own
+            // "this" parameter is already a plain `std::int64_t` (Sema
+            // forces every pointer parameter's C++ storage type to Integer,
+            // never a real typed struct pointer - see
+            // Sema::visitStmt's ProcedureDecl case), so this reinterpret_cast
+            // targets the *exact* real underlying function pointer type,
+            // not merely a same-size-and-hope-for-the-best stand-in the way
+            // real PB's own `integer`-typed vtable slots are.
+            std::string objectAddr = cppVarName(baseRef.name);
+            std::string fnPtrType = std::string(cppTypeFor(methodInfo.returnSuffix)) + "(*)(std::int64_t";
+            for (TypeSuffix paramSuffix : methodInfo.paramSuffixes) {
+                fnPtrType += ", " + std::string(cppTypeFor(paramSuffix));
+            }
+            fnPtrType += ")";
+
+            std::string code = "reinterpret_cast<" + fnPtrType + ">(*reinterpret_cast<std::int64_t*>(" +
+                                "*reinterpret_cast<std::int64_t*>(" + objectAddr + ") + " +
+                                std::to_string(slot * 8) + "))(" + objectAddr;
+            for (std::size_t i = 0; i < call.args.size(); ++i) {
+                TypeSuffix paramSuffix = methodInfo.paramSuffixes[i];
+                bool paramFloatCtx = familyOf(paramSuffix) == ValueKind::FloatFamily;
+                code += ", " + convert(genExpr(*call.args[i], paramFloatCtx),
+                                        sema_.classify(*call.args[i], paramFloatCtx), paramSuffix);
+            }
+            code += ")";
+            return code;
+        }
         case ast::ExprKind::Call: {
             const auto& call = static_cast<const ast::CallExpr&>(expr);
             if (Sema::isPointerBuiltinName(call.name)) {
@@ -325,7 +389,7 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 const ast::Expr& ptrArg = *call.args.front();
                 Sema::ResolvedType pointee{};
                 if (ptrArg.kind == ast::ExprKind::VarRef) {
-                    pointee = sema_.pointeeTypeOf(static_cast<const ast::VarRefExpr&>(ptrArg).name);
+                    pointee = pointeeTypeOf(static_cast<const ast::VarRefExpr&>(ptrArg).name);
                 }
                 std::string typeName = pointee.suffix == TypeSuffix::Struct
                                             ? cppTypeFor(pointee.suffix, pointee.structName)
@@ -741,6 +805,93 @@ void Codegen::genDataPool(const ast::Block& block) {
     }
 }
 
+void Codegen::collectDataLabelArrays(const ast::Block& block,
+                                      std::vector<std::pair<std::string, std::vector<std::string>>>& out) {
+    for (const auto& stmt : block) {
+        switch (stmt->kind) {
+            case ast::StmtKind::DataSection: {
+                const auto& dataSection = static_cast<const ast::DataSectionStmt&>(*stmt);
+                // Mirrors Sema::collectDataSections's own identically-named
+                // local - reset per DataSection, tracking whichever label
+                // this run of Data items follows.
+                std::string currentLabel;
+                std::vector<std::string>* currentItems = nullptr;
+                for (const auto& child : dataSection.body) {
+                    if (child->kind == ast::StmtKind::DataLabel) {
+                        const auto& label = static_cast<const ast::DataLabelStmt&>(*child);
+                        currentLabel = label.name;
+                        currentItems = nullptr;
+                        if (sema_.dataLabelAddressable(currentLabel)) {
+                            out.emplace_back(currentLabel, std::vector<std::string>{});
+                            currentItems = &out.back().second;
+                        }
+                        continue;
+                    }
+                    if (currentItems == nullptr) {
+                        continue; // Not under an addressable label - genDataPool() still emits its pbDataAdd* calls.
+                    }
+                    const auto& data = static_cast<const ast::DataStmt&>(*child);
+                    // dataLabelAddressable() already guarantees every item
+                    // in this run is '.i' - genExpr'd the same way an
+                    // ordinary Integer-context value would be.
+                    for (const auto& value : data.values) {
+                        currentItems->push_back(
+                            convert(genExpr(*value, false), sema_.classify(*value, false), TypeSuffix::Integer));
+                    }
+                }
+                break;
+            }
+            case ast::StmtKind::If: {
+                const auto& ifStmt = static_cast<const ast::IfStmt&>(*stmt);
+                for (const auto& branch : ifStmt.branches) {
+                    collectDataLabelArrays(branch.body, out);
+                }
+                break;
+            }
+            case ast::StmtKind::Select: {
+                const auto& sel = static_cast<const ast::SelectStmt&>(*stmt);
+                for (const auto& branch : sel.cases) {
+                    collectDataLabelArrays(branch.body, out);
+                }
+                break;
+            }
+            case ast::StmtKind::For:
+                collectDataLabelArrays(static_cast<const ast::ForStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::While:
+                collectDataLabelArrays(static_cast<const ast::WhileStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::Repeat:
+                collectDataLabelArrays(static_cast<const ast::RepeatStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::ForEach:
+                collectDataLabelArrays(static_cast<const ast::ForEachStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::ProcedureDecl:
+                collectDataLabelArrays(static_cast<const ast::ProcedureDeclStmt&>(*stmt).body, out);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+void Codegen::genDataLabelArrays() {
+    std::vector<std::pair<std::string, std::vector<std::string>>> labels;
+    collectDataLabelArrays(module_.statements, labels);
+    for (const auto& [name, items] : labels) {
+        out_ += "static const std::array<std::int64_t, " + std::to_string(items.size()) + "> pb_label_" + name +
+                " = {";
+        for (std::size_t i = 0; i < items.size(); ++i) {
+            if (i != 0) {
+                out_ += ", ";
+            }
+            out_ += items[i];
+        }
+        out_ += "};\n";
+    }
+}
+
 void Codegen::genDeclarePrototypes() {
     for (const auto& stmt : module_.statements) {
         if (stmt->kind != ast::StmtKind::Declare) {
@@ -806,7 +957,10 @@ void Codegen::genProcedureDecl(const ast::ProcedureDeclStmt& proc) {
 
     TypeSuffix savedReturnSuffix = currentProcReturnSuffix_;
     currentProcReturnSuffix_ = returnSuffix;
+    const Sema::ProcedureInfo* savedProcInfo = currentProcInfo_;
+    currentProcInfo_ = info;
     genBlock(proc.body);
+    currentProcInfo_ = savedProcInfo;
     currentProcReturnSuffix_ = savedReturnSuffix;
 
     // Fallthrough safety net (mirrors eBasic's own identical pattern):
@@ -1154,6 +1308,8 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
         }
         case ast::StmtKind::StructureDecl: // NOLINT(bugprone-branch-clone) - already emitted by genStructures().
             break;
+        case ast::StmtKind::InterfaceDecl: // NOLINT(bugprone-branch-clone) - pure metadata, consumed by Sema only.
+            break;
         case ast::StmtKind::NewList: // NOLINT(bugprone-branch-clone) - already emitted by generate() itself.
             break;
         case ast::StmtKind::NewMap: // NOLINT(bugprone-branch-clone) - already emitted by generate() itself.
@@ -1184,6 +1340,7 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
 std::string Codegen::generate() {
     out_.clear();
     out_ += "// Generated by pbcxx - do not edit.\n";
+    out_ += "#include <array>\n"; // std::array - DataSection labels addressable via ?Label (M7c).
     out_ += "#include <cstdint>\n";
     out_ += "#include <cstdlib>\n";
     out_ += "#include <cmath>\n";
@@ -1239,6 +1396,11 @@ std::string Codegen::generate() {
     // visible first, unlike PB itself which has no such ordering concern.
     genDeclarePrototypes();
     genProcedures();
+    // Must come after genProcedures(): a label's own array element can be
+    // `@Procedure()` (M7c's own Interface vtable use case), which needs the
+    // real function already declared - see genDataLabelArrays's own doc
+    // comment.
+    genDataLabelArrays();
     out_ += "\nint main() {\n";
     genDataPool(module_.statements);
     for (const auto& stmt : module_.statements) {

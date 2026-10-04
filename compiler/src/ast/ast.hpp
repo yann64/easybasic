@@ -36,7 +36,8 @@ enum class UnaryOp { Negate, BitNot, LogicalNot };
 /// default, but there's no reason to depend on it for a simple closed set
 /// of node types known entirely at compile time).
 enum class ExprKind {
-    IntLiteral, FloatLiteral, StringLiteral, VarRef, ConstRef, Binary, Unary, Call, FieldAccess, AddressOf
+    IntLiteral, FloatLiteral, StringLiteral, VarRef, ConstRef, Binary, Unary, Call, FieldAccess, AddressOf,
+    DataLabelAddress, MethodCall
 };
 
 /// Base of every expression node. Untyped: Sema annotates/validates types in
@@ -132,6 +133,40 @@ struct AddressOfExpr : Expr {
     std::unique_ptr<Expr> operand;
 };
 
+/// `?Label` - the compile-time address of a `DataSection` label (M7c's own
+/// prerequisite, needed for `Interface`'s manually-built vtables). Unlike
+/// `Data`/`Read`/`Restore`'s sequential cursor, this hands back a raw,
+/// directly-indexable pointer into the data pool - oracle-verified
+/// (`PeekI(?Label)`/`PeekI(?Label + 8)` read successive `.i` items 8 bytes
+/// apart, confirming real PB's own DataSection is laid out as genuine
+/// contiguous process memory). `pbcxx` deliberately scopes this to a label
+/// whose own run of `Data` items (up to the next label or `EndDataSection`)
+/// are all `.i`-suffix - the only oracle-verified real use case (an
+/// Interface's vtable) - see `Sema::dataLabelAddressable`'s own doc comment
+/// for the validation this implies.
+struct DataLabelAddressExpr : Expr {
+    DataLabelAddressExpr() : Expr(ExprKind::DataLabelAddress) {}
+    std::string labelName; ///< Lowercased.
+    std::string labelSpelling;
+};
+
+/// `base\Method(args)` - a call through an Interface-typed pointer's own
+/// manually-built vtable (M7c). Syntactically this is `FieldAccessExpr`'s
+/// own `\identifier` immediately followed by `(args)` - the Parser
+/// disambiguates the two shapes the same moment it would otherwise build a
+/// plain `FieldAccessExpr` (see `Parser::parsePostfixFieldAccess`), since a
+/// trailing `(` can never start a legal field name. `base` is always an
+/// Interface-typed pointer's own `VarRef` in every case this project
+/// supports - no pointer-to-pointer-to-Interface chaining, matching real
+/// PB's own documented usage.
+struct MethodCallExpr : Expr {
+    MethodCallExpr() : Expr(ExprKind::MethodCall) {}
+    std::unique_ptr<Expr> base;
+    std::string method; ///< Lowercased.
+    std::string methodSpelling;
+    std::vector<std::unique_ptr<Expr>> args;
+};
+
 enum class StmtKind {
     Define, Assign, Debug,
     If, Select, For, While, Repeat,
@@ -141,6 +176,7 @@ enum class StmtKind {
     NewList, ForEach, NewMap, Declare,
     CompilerIf, CompilerSelect,
     DataSection, DataLabel, Data, Read, Restore,
+    InterfaceDecl,
 };
 
 /// Base of every statement node.
@@ -279,6 +315,39 @@ struct StructureDeclStmt : Stmt {
     std::string name;
     std::string spelling;
     std::vector<Field> fields;
+};
+
+/// `Interface Name \n Method[.suffix](params) \n ... \n EndInterface`
+/// (M7c) - a pure method-name-and-signature list, nothing more. Oracle-
+/// verified: real PB's own `Interface` is a thin syntactic layer over a
+/// manually-built, programmer-visible vtable, not an automatic OOP feature -
+/// there is no structural conformance checking at all between a Structure
+/// and the Interfaces it's later used through (a worked example compiled
+/// and ran correctly with the implementing procedures' own parameter types
+/// never even mentioned here), so this node only needs to record each
+/// method's declared signature - its vtable slot index is purely its
+/// position in `methods`. A method's own return-suffix-defaulting rule is
+/// identical to a Procedure's (no suffix means Integer, M2); a method
+/// parameter is deliberately primitive-suffix-only (no pointer/Structure
+/// params), the same documented scope limit `Declare`'s own parameter list
+/// already has (M2-closure) and for the identical reason - not yet oracle-
+/// verified and judged rare enough not to hold up this slice.
+struct InterfaceDeclStmt : Stmt {
+    InterfaceDeclStmt() : Stmt(StmtKind::InterfaceDecl) {}
+    struct Param {
+        std::string name;
+        std::string spelling;
+        TypeSuffix suffix = TypeSuffix::Integer;
+    };
+    struct Method {
+        std::string name;
+        std::string spelling;
+        TypeSuffix returnSuffix = TypeSuffix::Integer;
+        std::vector<Param> params;
+    };
+    std::string name;
+    std::string spelling;
+    std::vector<Method> methods;
 };
 
 /// `target\field = expr` where `target` is itself a field-access chain

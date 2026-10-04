@@ -86,6 +86,19 @@ public:
         return constOrder_;
     }
 
+    /// A resolved type: either one of PB's 11 primitive suffixes, or -
+    /// when `suffix == TypeSuffix::Struct`/`Interface` - a named Structure/
+    /// Interface (looked up via `structureInfo`/`interfaceInfo`). Every
+    /// variable, array element, and Structure field ultimately resolves to
+    /// one of these. Defined up here (ahead of its first real use further
+    /// down in this class) because `ProcedureInfo`, just below, needs it
+    /// complete - `std::unordered_map` can't hold an incomplete value type
+    /// portably.
+    struct ResolvedType {
+        TypeSuffix suffix = TypeSuffix::Integer;
+        std::string structName; ///< Lowercased; meaningful only if suffix == Struct or Interface.
+    };
+
     /// A declared procedure's resolved signature, for Codegen to emit a
     /// matching C++ function and to convert call-site arguments/return
     /// values with the same banker's-rounding rules as everything else.
@@ -99,6 +112,23 @@ public:
         /// *non-parameter* locals, since those are already real C++
         /// parameters.
         std::vector<std::pair<std::string, TypeSuffix>> locals;
+        /// Every pointer local's (among `locals`, by name) own pointee
+        /// type, captured the same moment `locals` is. `pointerPointeeType_`
+        /// itself is a single flat, never-scoped map (unlike `symbols_`/
+        /// `order_`, it's never saved/restored per-procedure) - so two
+        /// procedures that both name a pointer parameter `*this` (the
+        /// natural, idiomatic style M7c's own Interface feature actively
+        /// encourages: every implementing procedure using the same
+        /// canonical parameter name) would otherwise silently clobber each
+        /// other from Codegen's own point of view, since it reads
+        /// `pointerPointeeType_` directly in a later, separate pass, well
+        /// after `Sema::analyze()` has already visited every procedure -
+        /// confirmed as a real, triggerable bug (not just the "not yet
+        /// observed in practice" theoretical gap M3d's own notes first
+        /// flagged), not a hypothetical. `Codegen::pointeeTypeOf` consults
+        /// this (via the currently-generating procedure's own `locals`)
+        /// before ever falling back to `Sema::pointeeTypeOf`'s global view.
+        std::unordered_map<std::string, ResolvedType> pointerPointeeTypes;
     };
 
     /// Returns nullptr if `lowerName` was never declared as a procedure.
@@ -280,15 +310,6 @@ public:
     /// constant) was never actually emitted anywhere.
     static std::optional<std::int64_t> builtinConstantValue(const std::string& lowerName);
 
-    /// A resolved type: either one of PB's 11 primitive suffixes, or -
-    /// when `suffix == TypeSuffix::Struct` - a named Structure (looked up
-    /// via `structureInfo(structName)`). Every variable, array element,
-    /// and Structure field ultimately resolves to one of these.
-    struct ResolvedType {
-        TypeSuffix suffix = TypeSuffix::Integer;
-        std::string structName; ///< Lowercased; meaningful only if suffix == Struct.
-    };
-
     /// One declared Structure's field list, in declaration order.
     struct FieldInfo {
         std::string name;
@@ -309,6 +330,33 @@ public:
     const std::vector<std::pair<std::string, StructureInfo>>& structureDeclarationOrder() const {
         return structureOrder_;
     }
+
+    /// One declared Interface method's signature (M7c) - name, declared
+    /// return type (`TypeSuffix::None` normalized to `Integer`, the same
+    /// rule a Procedure's own return type follows), and declared parameter
+    /// types (likewise normalized; deliberately primitive-suffix-only, see
+    /// ast::InterfaceDeclStmt's own doc comment). A method's vtable slot
+    /// index is purely its position in `InterfaceInfo::methods`.
+    struct InterfaceMethodInfo {
+        std::string name;
+        std::string spelling;
+        TypeSuffix returnSuffix = TypeSuffix::Integer;
+        std::vector<TypeSuffix> paramSuffixes;
+    };
+    struct InterfaceInfo {
+        std::vector<InterfaceMethodInfo> methods;
+    };
+    /// Returns nullptr if `lowerName` was never declared as an Interface.
+    const InterfaceInfo* interfaceInfo(const std::string& lowerName) const;
+    /// The index of `methodLowerName` within `info.methods`, or nullopt if
+    /// it isn't one of this Interface's own declared methods - the vtable
+    /// slot a `MethodCallExpr` resolves to.
+    static std::optional<std::size_t> interfaceMethodIndex(const InterfaceInfo& info,
+                                                             const std::string& methodLowerName);
+    /// True if `?labelLowerName` is legal - see its own doc comment in
+    /// sema.cpp. Exposed so Codegen's own label-array emission pass can
+    /// reuse the identical check, rather than re-deriving it.
+    bool dataLabelAddressable(const std::string& labelLowerName) const;
 
     /// Resolves the type of any expression that denotes a storage location
     /// - a plain variable, an array element (`arr(i)`), or a field-access
@@ -491,6 +539,16 @@ private:
     /// a Structure at all or has no such field.
     ResolvedType resolveField(const ResolvedType& baseType, const std::string& fieldLowerName,
                                const std::string& fieldSpelling, SourceLoc loc) const;
+    /// Resolves `call`'s own method against whatever Interface its base
+    /// pointer points at (M7c) - reports a diagnostic and returns nullptr
+    /// for every way this can be invalid (the base isn't a `*ptr`-named
+    /// VarRef, its pointee isn't Interface-typed, or the name isn't one of
+    /// that Interface's own declared methods). Called from both visitExpr
+    /// (arity/type-checks the call) and classify (the method's own return
+    /// type) - safe to call twice for the same node despite emitting
+    /// diagnostics, since Codegen (classify's other caller) never runs
+    /// unless Sema::analyze() already finished with zero errors.
+    const InterfaceMethodInfo* resolveInterfaceMethod(const ast::MethodCallExpr& call) const;
     /// Handles one of the four names `isPointerBuiltinName` recognizes,
     /// returning true if `call.name` was one of them (and hence fully
     /// handled here - the caller must not also treat it as an array read or
@@ -560,6 +618,12 @@ private:
     /// when emitting a `Restore label`'s own constant-index argument.
     std::unordered_map<std::string, std::size_t> dataLabels_;
     std::size_t dataCount_ = 0;
+    /// Every label's own run of `Data` item suffixes (up to the next label
+    /// or `EndDataSection`), in order - also populated by
+    /// collectDataSections(), used only to validate a `?Label` use (see
+    /// dataLabelAddressable's own doc comment). Not needed at all for plain
+    /// Read/Restore access, which goes through dataLabels_/dataCount_ alone.
+    std::unordered_map<std::string, std::vector<TypeSuffix>> dataLabelItemSuffixes_;
     bool explicitEnabled_ = false;
     bool usesGui_ = false; ///< Set by visitCall - see usesGuiLibrary()'s own doc comment.
     std::unordered_map<std::string, ProcedureInfo> procedures_;
@@ -584,6 +648,7 @@ private:
     std::unordered_map<std::string, std::string> varStructType_;
     std::unordered_map<std::string, StructureInfo> structures_;
     std::vector<std::pair<std::string, StructureInfo>> structureOrder_;
+    std::unordered_map<std::string, InterfaceInfo> interfaces_;
     /// The return suffix of the procedure whose body is currently being
     /// visited, used by a nested `ProcedureReturn`'s own type checking; only
     /// meaningful while `insideProcedure_` is true (PB procedures don't

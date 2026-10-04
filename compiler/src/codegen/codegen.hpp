@@ -75,6 +75,21 @@ private:
     /// Sema::collectDataSections already walked to assign each label's
     /// index, which is what keeps the two consistent.
     void genDataPool(const ast::Block& block);
+    /// Emits one `static const std::array<std::int64_t, N> pb_label_<name>`
+    /// per DataSection label `Sema::dataLabelAddressable` accepts (M7c) -
+    /// what `?Label` (`genExpr`'s own `DataLabelAddress` case) lowers to the
+    /// address of. Must run *after* `genProcedures()` (an array element can
+    /// be `@Procedure()`, needing the real function already declared - see
+    /// the .cpp file's own notes) and *before* `main()`'s own body, so
+    /// plain global static initialization (not a runtime `pbDataAdd*`
+    /// call, unlike genDataPool's own pool) is enough.
+    void genDataLabelArrays();
+    /// The recursive worker behind `genDataLabelArrays` - collects, per
+    /// addressable label, its own ordered list of already-genExpr'd `.i`
+    /// item value expressions into `out` (first-seen order, for
+    /// deterministic output), mirroring `genDataPool`'s own recursive shape.
+    void collectDataLabelArrays(const ast::Block& block,
+                                 std::vector<std::pair<std::string, std::vector<std::string>>>& out);
     void genStmt(const ast::Stmt& stmt);
     void genBlock(const ast::Block& block);
     /// `floatContext` mirrors Sema::classify's own parameter: true exactly
@@ -135,6 +150,19 @@ private:
     /// body. Only meaningful while emitting inside a procedure (PB
     /// procedures don't nest, so a single field - not a stack - is enough).
     TypeSuffix currentProcReturnSuffix_ = TypeSuffix::Integer;
+    /// The Sema-resolved signature of the procedure whose body is currently
+    /// being emitted, or nullptr at top level - `pointeeTypeOf` (below)
+    /// consults its own `pointerPointeeTypes` first, scoped exactly like
+    /// `currentProcReturnSuffix_` is (see ProcedureInfo::pointerPointeeTypes'
+    /// own doc comment for why this scoping is load-bearing, not cosmetic).
+    const Sema::ProcedureInfo* currentProcInfo_ = nullptr;
+    /// The pointee type `pointerKey` was declared to point at, preferring
+    /// the currently-generating procedure's own locals (see
+    /// `currentProcInfo_`) over `Sema::pointeeTypeOf`'s single flat,
+    /// cross-procedure-unscoped view - every FieldAccess-on-pointer/
+    /// MethodCall dereference goes through this instead of calling
+    /// `sema_.pointeeTypeOf` directly.
+    Sema::ResolvedType pointeeTypeOf(const std::string& pointerKey) const;
 };
 
 /// The C++ type easybasic uses to represent each PB type-suffix. Exposed for

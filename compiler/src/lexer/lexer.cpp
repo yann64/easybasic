@@ -96,6 +96,8 @@ const std::unordered_map<std::string, TokenKind>& keywordTable() {
         {"restore", TokenKind::KwRestore},
         {"macro", TokenKind::KwMacro},
         {"endmacro", TokenKind::KwEndMacro},
+        {"interface", TokenKind::KwInterface},
+        {"endinterface", TokenKind::KwEndInterface},
         {"and", TokenKind::KwAnd},
         {"or", TokenKind::KwOr},
         {"not", TokenKind::KwNot},
@@ -167,6 +169,8 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::KwRestore: return "'Restore'";
         case TokenKind::KwMacro: return "'Macro'";
         case TokenKind::KwEndMacro: return "'EndMacro'";
+        case TokenKind::KwInterface: return "'Interface'";
+        case TokenKind::KwEndInterface: return "'EndInterface'";
         case TokenKind::KwAnd: return "'And'";
         case TokenKind::KwOr: return "'Or'";
         case TokenKind::KwNot: return "'Not'";
@@ -191,6 +195,7 @@ const char* tokenKindName(TokenKind kind) {
         case TokenKind::Hash: return "'#'";
         case TokenKind::Backslash: return "'\\'";
         case TokenKind::At: return "'@'";
+        case TokenKind::Question: return "'?'";
         case TokenKind::LParen: return "'('";
         case TokenKind::RParen: return "')'";
         case TokenKind::Comma: return "','";
@@ -358,6 +363,7 @@ Token Lexer::next() {
         case '#': tok.kind = TokenKind::Hash; break;
         case '\\': tok.kind = TokenKind::Backslash; break;
         case '@': tok.kind = TokenKind::At; break;
+        case '?': tok.kind = TokenKind::Question; break;
         case '(': tok.kind = TokenKind::LParen; break;
         case ')': tok.kind = TokenKind::RParen; break;
         case ',': tok.kind = TokenKind::Comma; break;

@@ -1318,3 +1318,129 @@ TEST_CASE("Sema's CreateSemaphore accepts both zero and one argument", "[sema][t
     REQUIRE(sema.analyze(*module));
     CHECK_FALSE(diags.hasErrors());
 }
+
+namespace {
+/// M7c: a minimal, valid Interface + implementing Structure + vtable
+/// DataSection + Interface-typed pointer - the shared scaffolding several
+/// Interface/?Label test cases below build on, varying only the final
+/// line(s). Uses a plain `.i` field (not `*VTable`) for the vtable slot -
+/// oracle-verified behaviorally identical (see tests/e2e_diff/interfaces's
+/// own notes); pointer-typed Structure fields aren't implemented.
+const char* kInterfaceScaffold = R"(
+Interface Shape
+  Area.d()
+EndInterface
+Structure CircleData
+  VTable.i
+  radius.d
+EndStructure
+Procedure.d Circle_Area(*this.CircleData)
+  ProcedureReturn 3.14159 * *this\radius * *this\radius
+EndProcedure
+DataSection
+  CircleVTable:
+  Data.i @Circle_Area()
+EndDataSection
+Define c.CircleData
+c\VTable = ?CircleVTable
+Define *shape.Shape = @c
+)";
+} // namespace
+
+TEST_CASE("Sema registers an Interface's own method list, with no-suffix defaulting to Integer like a Procedure's "
+          "own return type",
+          "[sema][interfaces]") {
+    DiagnosticEngine diags;
+    auto module = parse("Interface Shape\n  Area.d()\n  Scale(factor.d)\nEndInterface", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    const Sema::InterfaceInfo* info = sema.interfaceInfo("shape");
+    REQUIRE(info != nullptr);
+    REQUIRE(info->methods.size() == 2);
+    CHECK(info->methods[0].name == "area");
+    CHECK(info->methods[0].returnSuffix == TypeSuffix::Double);
+    CHECK(info->methods[1].name == "scale");
+    CHECK(info->methods[1].returnSuffix == TypeSuffix::Integer); // no suffix -> Integer, same as a Procedure.
+    REQUIRE(info->methods[1].paramSuffixes.size() == 1);
+    CHECK(info->methods[1].paramSuffixes[0] == TypeSuffix::Double);
+}
+
+TEST_CASE("Sema accepts a valid Interface method call through an Interface-typed pointer", "[sema][interfaces]") {
+    DiagnosticEngine diags;
+    auto module = parse(std::string(kInterfaceScaffold) + "Debug *shape\\Area()", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a method call on a pointer that isn't Interface-typed", "[sema][interfaces]") {
+    DiagnosticEngine diags;
+    auto module = parse("Structure Point\n  x.i\nEndStructure\nDefine *p.Point = AllocateStructure(Point)\n"
+                         "*p\\Foo(1)",
+                         diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects an unknown method name on an Interface-typed pointer", "[sema][interfaces]") {
+    DiagnosticEngine diags;
+    auto module = parse(std::string(kInterfaceScaffold) + "*shape\\NoSuchMethod()", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects an Interface method call with the wrong number of arguments", "[sema][interfaces]") {
+    DiagnosticEngine diags;
+    auto module = parse(std::string(kInterfaceScaffold) + "Debug *shape\\Area(1)", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects an Interface declaration colliding with an already-declared Structure, and vice versa",
+          "[sema][interfaces]") {
+    DiagnosticEngine diags1;
+    auto module1 = parse("Structure Foo\n  x.i\nEndStructure\nInterface Foo\n  Bar()\nEndInterface", diags1);
+    Sema sema1(diags1);
+    CHECK_FALSE(sema1.analyze(*module1));
+
+    DiagnosticEngine diags2;
+    auto module2 = parse("Interface Foo\n  Bar()\nEndInterface\nStructure Foo\n  x.i\nEndStructure", diags2);
+    Sema sema2(diags2);
+    CHECK_FALSE(sema2.analyze(*module2));
+}
+
+TEST_CASE("Sema rejects '?Label' for an unknown DataSection label", "[sema][interfaces]") {
+    DiagnosticEngine diags;
+    auto module = parse("Debug ?NoSuchLabel", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects '?Label' for a label whose own Data items aren't all '.i'-typed", "[sema][interfaces]") {
+    DiagnosticEngine diags;
+    auto module = parse("DataSection\n  L:\n  Data.s \"hi\"\nEndDataSection\nDebug ?L", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema accepts '?Label' for a label whose own Data items are all '.i'-typed", "[sema][interfaces]") {
+    DiagnosticEngine diags;
+    auto module = parse("DataSection\n  L:\n  Data.i 1, 2, 3\nEndDataSection\nDebug ?L", diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema's dataLabelAddressable is false for an empty label (no Data items of its own)",
+          "[sema][interfaces]") {
+    DiagnosticEngine diags;
+    auto module = parse("DataSection\n  Empty:\n  L2:\n  Data.i 1\nEndDataSection\nDebug ?Empty", diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

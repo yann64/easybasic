@@ -771,12 +771,25 @@ void Sema::collectDataSections(const ast::Block& block) {
                 // flat order Codegen's own, identically-shaped recursive
                 // scan will later see (see genDataPool's own notes).
                 const auto& dataSection = static_cast<const ast::DataSectionStmt&>(*stmt);
+                // `currentLabel` tracks whichever label this run of Data
+                // items follows (M7c's own dataLabelItemSuffixes_, used only
+                // to validate a later `?Label` use - see its own doc
+                // comment); empty before the DataSection's first label, in
+                // which case a leading Data item (oracle-verified legal)
+                // contributes to dataCount_ as usual but isn't attributed to
+                // any label.
+                std::string currentLabel;
                 for (const auto& child : dataSection.body) {
                     if (child->kind == ast::StmtKind::DataLabel) {
                         const auto& label = static_cast<const ast::DataLabelStmt&>(*child);
                         dataLabels_[label.name] = dataCount_;
+                        currentLabel = label.name;
                     } else {
-                        dataCount_ += static_cast<const ast::DataStmt&>(*child).values.size();
+                        const auto& data = static_cast<const ast::DataStmt&>(*child);
+                        dataCount_ += data.values.size();
+                        if (!currentLabel.empty()) {
+                            dataLabelItemSuffixes_[currentLabel].push_back(data.suffix);
+                        }
                     }
                 }
                 break;
@@ -1288,9 +1301,9 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::StructureDecl: {
             auto& structDecl = static_cast<ast::StructureDeclStmt&>(stmt);
-            if (structures_.contains(structDecl.name)) {
+            if (structures_.contains(structDecl.name) || interfaces_.contains(structDecl.name)) {
                 diagnostics_.error(structDecl.loc,
-                                    "'" + structDecl.spelling + "' is already declared as a Structure");
+                                    "'" + structDecl.spelling + "' is already declared as a Structure or Interface");
                 break;
             }
             StructureInfo info;
@@ -1315,6 +1328,39 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             }
             structures_.emplace(structDecl.name, info);
             structureOrder_.emplace_back(structDecl.name, info);
+            break;
+        }
+        case ast::StmtKind::InterfaceDecl: {
+            auto& ifaceDecl = static_cast<ast::InterfaceDeclStmt&>(stmt);
+            if (interfaces_.contains(ifaceDecl.name) || structures_.contains(ifaceDecl.name)) {
+                diagnostics_.error(ifaceDecl.loc,
+                                    "'" + ifaceDecl.spelling + "' is already declared as a Structure or Interface");
+                break;
+            }
+            InterfaceInfo info;
+            for (auto& method : ifaceDecl.methods) {
+                InterfaceMethodInfo methodInfo;
+                methodInfo.name = method.name;
+                methodInfo.spelling = method.spelling;
+                // No-suffix defaults to Integer, the same rule a Procedure's
+                // own return type (and, below, a Declare's own parameter
+                // list) already follows.
+                methodInfo.returnSuffix = method.returnSuffix == TypeSuffix::None ? TypeSuffix::Integer
+                                                                                   : method.returnSuffix;
+                for (auto& param : method.params) {
+                    // Deliberately primitive-suffix-only (no pointer/
+                    // Structure params) - see InterfaceDeclStmt's own doc
+                    // comment.
+                    if (param.suffix == TypeSuffix::Struct) {
+                        diagnostics_.error(ifaceDecl.loc, "'" + param.spelling + "' - Interface method parameters "
+                                                           "can't be Structure-typed");
+                    }
+                    methodInfo.paramSuffixes.push_back(param.suffix == TypeSuffix::None ? TypeSuffix::Integer
+                                                                                         : param.suffix);
+                }
+                info.methods.push_back(std::move(methodInfo));
+            }
+            interfaces_.emplace(ifaceDecl.name, std::move(info));
             break;
         }
         case ast::StmtKind::FieldAssign: {
@@ -1486,6 +1532,20 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             outerScopeForShared_ = savedOuterForShared;
 
             procedures_[proc.name].locals = order_; // params first, then any body-internal locals
+            // Captures this procedure's own pointer locals' pointee types
+            // before the cross-procedure leak described in ProcedureInfo::
+            // pointerPointeeTypes's own doc comment can happen - a later
+            // sibling procedure reusing the same pointer parameter name
+            // (e.g. every Interface-implementing procedure idiomatically
+            // naming its own "this" parameter the same way) would otherwise
+            // silently overwrite pointerPointeeType_'s shared entry before
+            // Codegen ever reads it back.
+            for (const auto& local : order_) {
+                auto ptrIt = pointerPointeeType_.find(local.first);
+                if (ptrIt != pointerPointeeType_.end()) {
+                    procedures_[proc.name].pointerPointeeTypes[local.first] = ptrIt->second;
+                }
+            }
 
             symbols_ = std::move(savedSymbols);
             order_ = std::move(savedOrder);
@@ -1618,6 +1678,42 @@ void Sema::visitExpr(ast::Expr& expr) {
                 }
             }
             visitExpr(*addr.operand);
+            break;
+        }
+        case ast::ExprKind::DataLabelAddress: {
+            auto& addr = static_cast<ast::DataLabelAddressExpr&>(expr);
+            if (!dataLabels_.contains(addr.labelName)) {
+                diagnostics_.error(addr.loc, "'" + addr.labelSpelling + "' is not a declared DataSection label");
+            } else if (!dataLabelAddressable(addr.labelName)) {
+                diagnostics_.error(addr.loc, "'?" + addr.labelSpelling + "' is only supported for a DataSection "
+                                              "label whose own Data items are all '.i'-typed");
+            }
+            break;
+        }
+        case ast::ExprKind::MethodCall: {
+            auto& call = static_cast<ast::MethodCallExpr&>(expr);
+            visitExpr(*call.base);
+            for (auto& arg : call.args) {
+                visitExpr(*arg);
+            }
+            const InterfaceMethodInfo* methodInfo = resolveInterfaceMethod(call);
+            if (methodInfo != nullptr && call.args.size() != methodInfo->paramSuffixes.size()) {
+                diagnostics_.error(call.loc,
+                                    "'" + call.methodSpelling + "' called with the wrong number of arguments");
+            }
+            if (methodInfo != nullptr) {
+                for (std::size_t i = 0; i < call.args.size() && i < methodInfo->paramSuffixes.size(); ++i) {
+                    // Same String<->numeric mismatch check an ordinary
+                    // call's own arguments already get (see visitCall).
+                    bool paramIsString = familyOf(methodInfo->paramSuffixes[i]) == ValueKind::StringFamily;
+                    bool argIsString = classify(*call.args[i], false) == ValueKind::StringFamily;
+                    if (paramIsString != argIsString) {
+                        diagnostics_.error(call.args[i]->loc,
+                                            paramIsString ? "Bad parameter type: a string is expected."
+                                                           : "Bad parameter type, number expected instead of string.");
+                    }
+                }
+            }
             break;
         }
         case ast::ExprKind::IntLiteral:
@@ -1826,6 +1922,20 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
             // `@operand` always yields a plain Integer address, regardless
             // of any enclosing Float destination.
             return ValueKind::IntegerFamily;
+        case ast::ExprKind::DataLabelAddress:
+            // `?Label` likewise always yields a plain Integer address.
+            return ValueKind::IntegerFamily;
+        case ast::ExprKind::MethodCall: {
+            const auto& call = static_cast<const ast::MethodCallExpr&>(expr);
+            ValueKind natural = ValueKind::IntegerFamily;
+            if (const InterfaceMethodInfo* methodInfo = resolveInterfaceMethod(call)) {
+                natural = familyOf(methodInfo->returnSuffix);
+            }
+            if (natural == ValueKind::StringFamily) {
+                return ValueKind::StringFamily;
+            }
+            return floatContext ? ValueKind::FloatFamily : natural;
+        }
         case ast::ExprKind::Binary: {
             const auto& bin = static_cast<const ast::BinaryExpr&>(expr);
             switch (bin.op) {
@@ -2019,6 +2129,69 @@ const Sema::StructureInfo* Sema::structureInfo(const std::string& lowerName) con
     return it == structures_.end() ? nullptr : &it->second;
 }
 
+const Sema::InterfaceInfo* Sema::interfaceInfo(const std::string& lowerName) const {
+    auto it = interfaces_.find(lowerName);
+    return it == interfaces_.end() ? nullptr : &it->second;
+}
+
+std::optional<std::size_t> Sema::interfaceMethodIndex(const InterfaceInfo& info, const std::string& methodLowerName) {
+    for (std::size_t i = 0; i < info.methods.size(); ++i) {
+        if (info.methods[i].name == methodLowerName) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+/// `?Label` (M7c) is only supported for a DataSection label whose own run
+/// of Data items (up to the next label or EndDataSection) is non-empty and
+/// entirely `.i`-suffix - see DataLabelAddressExpr's own doc comment for
+/// why (the oracle-verified real use case, an Interface's vtable, is always
+/// shaped exactly this way; a label with no items, or any non-`.i` item, is
+/// rejected with a real diagnostic rather than silently miscompiled).
+bool Sema::dataLabelAddressable(const std::string& labelLowerName) const {
+    auto it = dataLabelItemSuffixes_.find(labelLowerName);
+    if (it == dataLabelItemSuffixes_.end() || it->second.empty()) {
+        return false;
+    }
+    for (TypeSuffix suffix : it->second) {
+        if (suffix != TypeSuffix::Integer) {
+            return false;
+        }
+    }
+    return true;
+}
+
+const Sema::InterfaceMethodInfo* Sema::resolveInterfaceMethod(const ast::MethodCallExpr& call) const {
+    const char* notAnInterfacePtr = "' used on a value that isn't an Interface-typed pointer";
+    if (call.base->kind != ast::ExprKind::VarRef) {
+        diagnostics_.error(call.loc, "'\\" + call.methodSpelling + "(...)" + notAnInterfacePtr);
+        return nullptr;
+    }
+    const auto& baseRef = static_cast<const ast::VarRefExpr&>(*call.base);
+    if (baseRef.name.empty() || baseRef.name.front() != '*') {
+        diagnostics_.error(call.loc, "'\\" + call.methodSpelling + "(...)" + notAnInterfacePtr);
+        return nullptr;
+    }
+    ResolvedType pointee = pointeeTypeOf(baseRef.name);
+    if (pointee.suffix != TypeSuffix::Interface) {
+        diagnostics_.error(call.loc, "'\\" + call.methodSpelling + "' used on '" + baseRef.spelling +
+                                          "', which is not an Interface-typed pointer");
+        return nullptr;
+    }
+    const InterfaceInfo* info = interfaceInfo(pointee.structName);
+    if (info == nullptr) {
+        diagnostics_.error(call.loc, "'" + baseRef.spelling + "' points at an unknown Interface type");
+        return nullptr;
+    }
+    auto idx = interfaceMethodIndex(*info, call.method);
+    if (!idx) {
+        diagnostics_.error(call.loc, "'" + call.methodSpelling + "' is not a method of this Interface");
+        return nullptr;
+    }
+    return &info->methods[*idx];
+}
+
 Sema::ResolvedType Sema::resolveField(const ResolvedType& baseType, const std::string& fieldLowerName,
                                       const std::string& fieldSpelling, SourceLoc loc) const {
     if (baseType.suffix != TypeSuffix::Struct) {
@@ -2167,11 +2340,22 @@ Sema::ResolvedType Sema::resolvePointeeType(TypeSuffix suffix, const std::string
                                              const std::string& structTypeSpelling, SourceLoc loc) {
     ResolvedType pointee;
     if (suffix == TypeSuffix::Struct) {
-        if (!structures_.contains(structTypeName)) {
-            diagnostics_.error(loc, "'" + structTypeSpelling + "' is not a declared Structure");
+        // A `.Name` suffix is lexically identical for a Structure or an
+        // Interface (see TypeSuffix::Interface's own doc comment) - checked
+        // against `structures_` first (the more common case), falling back
+        // to `interfaces_` only when that fails, rather than erroring
+        // immediately.
+        if (structures_.contains(structTypeName)) {
+            pointee.suffix = TypeSuffix::Struct;
+            pointee.structName = structTypeName;
+        } else if (interfaces_.contains(structTypeName)) {
+            pointee.suffix = TypeSuffix::Interface;
+            pointee.structName = structTypeName;
+        } else {
+            diagnostics_.error(loc, "'" + structTypeSpelling + "' is not a declared Structure or Interface");
+            pointee.suffix = TypeSuffix::Struct;
+            pointee.structName = structTypeName;
         }
-        pointee.suffix = TypeSuffix::Struct;
-        pointee.structName = structTypeName;
     } else if (suffix != TypeSuffix::None) {
         // Oracle-verified (`pbcompilerc`, `Define *pa.i`): a pointer can
         // only be untyped or Structure-typed, never a primitive.

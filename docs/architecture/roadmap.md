@@ -33,7 +33,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done - see M7a notes (`KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately deferred) |
 | **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar` - see M7b notes); `ToolBar` (blocked on an Image library - see the fourth slice's own notes) and everything past that still open |
-| **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Not started - scoped, see M7 scoping notes |
+| **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Not started - scoped, see M7 scoping notes |
 
 ## M0 Implementation Notes
@@ -2112,4 +2112,135 @@ return-value simplifications above would fail a literal stdout diff even on full
 simulated-click coverage stays in the Catch2 unit tests only, consistent with every GUI slice so far.
 All 278 tests (across both `linux-gcc` and `linux-clang`) pass, including the 261 that predate this
 slice - confirming the `pbOpenWindow` vbox restructuring is additive.
+
+## M7c Implementation Notes (`Interface`/`EndInterface`)
+
+**Scope landed**: `?Label` (the address of a `DataSection` label - the roadmap's own stated
+prerequisite) and `Interface`/`EndInterface` itself: declarations, Interface-typed pointer
+variables, and `base\Method(args)` calls dispatched through a real, manually-built vtable. Both
+pieces are oracle-verified end to end against a real, working PureBasic program (not just a syntax
+check) - see `tests/e2e_diff/interfaces`, which diffs byte-for-byte against the real `pbcompilerc`
+oracle.
+
+**`?Label`'s own design was shaped by a direct oracle finding, not assumption**: `PeekI(?Label)` and
+`PeekI(?Label + 8)` on a `DataSection` of three `.i` values read `10`/`20` (the first two values,
+exactly 8 bytes apart) - confirming real PB's `DataSection` is laid out as genuine, contiguous,
+byte-addressable process memory, not some abstract sequential-access-only pool. Reading
+`pbcompilerc`'s own `-c` output for a worked `Interface` example (see below) confirmed the full
+mechanics: the whole program's `DataSection` is one flat `unsigned char pb_data[]`, `?Label` is a
+compile-time `#define` offset into it (`&pb_data[N]`), and non-constant-foldable values like
+`@Procedure()` are written in at runtime (`*(integer*)(&pb_data[0]) = (integer)f_circle_area;`)
+before `main()`'s own body runs.
+
+**`pbcxx` deliberately does *not* replicate that flat-byte-pool architecture, scoping `?Label`
+narrower instead** - M5b's own `Data`/`Read`/`Restore` pool (`runtime/include/.../datalib.hpp`) is a
+`std::vector<PBDataValue>` of a tagged union, fundamentally incompatible with raw pointer arithmetic
+across mixed-type items, and already proven/tested; rearchitecting it into a true byte blob purely to
+support `?Label` generically (including arbitrary `Peek*`/`Poke*` access, which don't even fully
+exist in `pbcxx` yet - no `PeekI`/`PokeI` at all, only the fixed-width `PeekB`/`PeekW`/`PeekL`/`PeekQ`/
+etc. family) was judged disproportionate to this slice's only oracle-verified real use case: an
+`Interface`'s own vtable, always a short, homogeneous run of `.i` values. `?Label` is scoped to
+exactly that: legal only for a label whose own run of `Data` items (up to the next label or
+`EndDataSection`) is non-empty and entirely `.i`-suffix, oracle-verified a real, representative shape
+(every genuine `Interface` vtable is exactly this) - anything else is a real Sema diagnostic, not a
+silent miscompile. `Sema::collectDataSections` (M5b's own pre-pass) was extended to additionally
+track each label's own item-suffix run (`dataLabelItemSuffixes_`) purely to support this validation
+(`Sema::dataLabelAddressable`), with zero change to the pre-existing `dataLabels_`/`dataCount_`
+indexing `Read`/`Restore` already relied on.
+
+**Codegen gives every addressable label its own small, real, contiguous C++ array - not a byte
+offset into one shared pool** - `genDataLabelArrays()` (a new pass, structurally mirroring
+`genDataPool`'s own recursive module walk) emits one `static const std::array<std::int64_t, N>
+pb_label_<name> = { <value0>, <value1>, ... };` per addressable label, as ordinary global static
+initialization (not a runtime `pbDataAdd*` call the way `genDataPool`'s own pool is populated) -
+valid here specifically because every legal `?Label` item is `.i`-suffix, so no tagged-union
+indirection or type dispatch is needed at all. This must run *after* `genProcedures()` (an array
+element can be `@Procedure()`, which needs the real C++ function already declared/defined - taking a
+function's address is valid as soon as it's declared, unlike *calling* it) - the one genuine ordering
+constraint this slice had to get right, confirmed by testing a program whose `DataSection` textually
+precedes its procedures compiles and runs identically to one where it follows them.
+
+**The worked `Interface` example from the roadmap's own M7c scoping notes was directly oracle-
+verified, including reading `pbcompilerc -c`'s own generated C**, which settled the exact dispatch
+ABI to replicate:
+
+```c
+typedef struct i_shape {
+double (*m_area)(integer);
+integer (*m_scale)(integer,double);
+void* (*m_name)(integer);
+} i_shape;
+static i_shape** p_shape1=0;
+p_shape1=(void*)((integer)(&v_c));          // *shape1.Shape = @c
+integer r0=(*p_shape1)->m_scale(p_shape1,2.0); // *shape1\Scale(2)
+```
+
+A manually-built, programmer-visible vtable, exactly as the roadmap's own notes predicted: the
+Structure's own first field holds the vtable's address (written there explicitly by the program, via
+`?Label` - `v_c.f_vtable=la_l_circlevtable;` in the oracle's own output), the Interface-typed
+variable is a pointer *to* that first field (so one dereference reads the vtable base), and a method
+call indexes the vtable by the method's declared position and calls through the resulting function
+pointer with the object's own address as an implicit first argument - no structural conformance
+checking between the Structure and the Interface exists anywhere (confirmed: the implementing
+procedures' own parameter types are never even mentioned in the `Interface` declaration itself).
+`pbcxx`'s own `Codegen::genExpr`'s `MethodCall` case lowers to the direct C++ equivalent:
+```cpp
+reinterpret_cast<double(*)(std::int64_t, double)>(
+    *reinterpret_cast<std::int64_t*>(*reinterpret_cast<std::int64_t*>(vp_shape1) + 8)
+)(vp_shape1, 2.0)
+```
+
+**A pbcxx-specific simplification actually makes this *safer* than real PB's own ABI trick, not just
+equivalent to it**: real PB's vtable function-pointer types use `integer` for the implicit "this"
+parameter - a deliberate, informal stand-in for "whatever typed pointer the real implementation
+expects," relying on same-size calling-convention compatibility that works in practice but isn't
+strictly guaranteed by the C standard. `pbcxx` doesn't need that leap of faith at all: every pointer
+*parameter* in this project (M3d) already has its own C++ storage type forced to plain `std::int64_t`
+regardless of its declared pointee type (`Sema::visitStmt`'s `ProcedureDecl` case, `declare(param.name,
+param.spelling, TypeSuffix::Integer, ...)`), so an implementing procedure like `Circle_Area(*this.
+CircleData)` is *already* generated as `double f_circle_area(std::int64_t)` - the exact real
+underlying function pointer type a vtable slot's own `reinterpret_cast` targets, not merely a
+same-size stand-in. The cast is therefore exact, not merely conventionally safe.
+
+**A real, pre-existing correctness bug surfaced immediately by testing the most natural, idiomatic
+`Interface`-implementing style** - every implementing procedure in a typical `Interface` naming its
+own first parameter `*this` (as PB's own convention and this slice's worked examples both do) - and
+fixed as part of this slice, not deferred, since it would otherwise make `Interface` nearly unusable
+in practice. `Sema::pointerPointeeType_` (M3d) is a single, flat, *never per-procedure-scoped* map
+(unlike `symbols_`/`order_`, which *are* saved/restored around each `ProcedureDecl`'s own body visit) -
+M3d's own notes already flagged this as a known, accepted gap ("a pointer parameter or local sharing
+a base name with an unrelated global pointer of a different pointee type can leak the wrong pointee
+type across procedures... not yet observed in practice"). This slice *did* observe it in practice,
+immediately: `Circle_Area(*this.CircleData)` and a later `Square_Area(*this.SquareData)` - two
+different procedures, same parameter name, different pointee Structure - silently left
+`pointerPointeeType_["*this"]` pointing at whichever one `Sema` visited *last*, so `Codegen`'s own
+later, separate `genProcedures()` pass (reading that map directly) generated **every** procedure
+using that parameter name against the *same, wrong* Structure type - caught immediately as a hard C++
+compile error (`'struct s_squaredata' has no member named 'f_radius'`) rather than silently producing
+wrong results, but a real, user-facing blocker for the single most natural way to write
+`Interface`-implementing code. Fixed properly, not worked around: `Sema::ProcedureInfo` gained its
+own `pointerPointeeTypes` field, captured (from the live, still-correct `pointerPointeeType_` map) at
+the exact same moment `locals` already is - right before that procedure's own scope swap-back -
+giving each procedure a durable, correct snapshot of its own pointer locals' pointee types, immune to
+being overwritten by any later procedure. `Codegen` gained a matching `currentProcInfo_`-scoped
+`pointeeTypeOf()` wrapper (mirroring the pre-existing `currentProcReturnSuffix_` pattern exactly),
+consulted by every pointer-dereference codegen path (`FieldAccess`-on-pointer, the new `MethodCall`,
+and `FreeStructure`) in place of calling `Sema::pointeeTypeOf` directly. Verified via the same
+two-Structure/two-procedure scenario both before (hard compile error) and after (byte-for-byte
+correct, matching the oracle) the fix, and the full 289-test suite (`linux-gcc`/`linux-clang`,
+ASan/UBSan) still passes unchanged, confirming the fix is additive - not just a workaround scoped to
+`Interface`'s own new code paths.
+
+**Deliberately deferred past this slice, each a genuine, separate feature rather than a shortcut
+taken under time pressure**: pointer-typed Structure fields (`*VTable`, real PB's own idiomatic form)
+- oracle-verified a plain `.i` field is behaviorally identical for every purpose this slice needed (
+`PeekI`-style raw dereferencing through an untyped pointer field is the only thing `*VTable` would add,
+and that's its own separate, unimplemented gap already flagged back in M3d); `Interface` inheritance/
+`Extends`; a `#PB_Any`-style auto-generated `#Interface`/label numbering (not applicable - `Interface`/
+`DataSection` labels are compile-time names, not runtime-allocated IDs like a `#Window`/`#Gadget`);
+general `?Label`-based `Peek*`/`Poke*` access into an arbitrary byte offset (would need the full
+byte-pool rearchitecture discussed above); an array of Interface-typed pointers (`Dim shapes.Shape(1)`)
+- oracle-tested directly and found to be a real PB syntax error in the first place ("`*shapes()` is
+not a function, array, list, map or macro"), so this isn't even a gap, just confirmed out of scope by
+the oracle itself.
 
