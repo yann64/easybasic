@@ -20,8 +20,13 @@ jobs:
         # on this runner) Wayland compositor over the Xvfb X11 display
         # xvfb-run just started - see the M7b roadmap notes; this dev
         # machine's own Xvfb+Wayland-coexistence testing hit the same
-        # thing.
-        run: xvfb-run -a env GDK_BACKEND=x11 ctest --preset linux-gcc
+        # thing. NO_AT_BRIDGE=1 skips GTK's own accessibility (AT-SPI)
+        # D-Bus bridge, which has nothing to connect to here anyway -
+        # confirmed its one-time setup allocations otherwise look like a
+        # LeakSanitizer false positive on this runner image specifically
+        # (see tests/lsan-suppressions.txt's own matching entry, kept as a
+        # defensive backup).
+        run: xvfb-run -a env GDK_BACKEND=x11 NO_AT_BRIDGE=1 ctest --preset linux-gcc
 
   linux-clang:
     runs-on: ubuntu-latest
@@ -34,9 +39,9 @@ jobs:
       - name: Build
         run: cmake --build --preset linux-clang
       - name: Test
-        run: xvfb-run -a env GDK_BACKEND=x11 ctest --preset linux-clang
+        run: xvfb-run -a env GDK_BACKEND=x11 NO_AT_BRIDGE=1 ctest --preset linux-clang
       - name: Test (clang++ as the generated-code backend too)
-        run: xvfb-run -a env GDK_BACKEND=x11 CXX=clang++ ctest --preset linux-clang
+        run: xvfb-run -a env GDK_BACKEND=x11 NO_AT_BRIDGE=1 CXX=clang++ ctest --preset linux-clang
 
   sanitizers:
     runs-on: ubuntu-latest
@@ -55,7 +60,7 @@ jobs:
           # leak to LSan but isn't a bug in pbcxx - see
           # tests/lsan-suppressions.txt's own header comment.
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/lsan-suppressions.txt
-        run: xvfb-run -a env GDK_BACKEND=x11 ctest --preset linux-clang-sanitize
+        run: xvfb-run -a env GDK_BACKEND=x11 NO_AT_BRIDGE=1 ctest --preset linux-clang-sanitize
 
   static-analysis:
     runs-on: ubuntu-latest

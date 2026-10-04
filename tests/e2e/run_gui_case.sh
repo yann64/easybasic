@@ -37,7 +37,11 @@ fi
 # an Xvfb X11 display also present in the environment (this project's own
 # dev machine, and Xvfb-based CI runners, both hit this - see the M7b
 # roadmap notes). Forcing it is harmless on a plain-X11-only environment.
-if ! ( cd "$WORKDIR" && GDK_BACKEND=x11 ./case_bin ) > "$WORKDIR/actual.stdout" 2>"$WORKDIR/actual.stderr"; then
+# NO_AT_BRIDGE=1 skips GTK's own accessibility (AT-SPI) D-Bus bridge, which
+# has nothing to connect to here anyway - see tests/lsan-suppressions.txt's
+# matching entry for the LeakSanitizer false positive this otherwise causes
+# under an ASan/UBSan build.
+if ! ( cd "$WORKDIR" && GDK_BACKEND=x11 NO_AT_BRIDGE=1 ./case_bin ) > "$WORKDIR/actual.stdout" 2>"$WORKDIR/actual.stderr"; then
     if grep -qi "cannot open display\|no protocol specified\|cannot connect to" "$WORKDIR/actual.stderr"; then
         echo "SKIP: $CASE_DIR - no usable display available"
         exit $SKIP_CODE

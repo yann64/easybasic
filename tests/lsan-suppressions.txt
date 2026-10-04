@@ -10,3 +10,10 @@
 # program's entire lifetime and freed by the OS at process exit.
 leak:libfontconfig.so
 leak:libpangoft2
+
+# at-spi2/ATK's own accessibility-bridge adaptor does similar process-
+# lifetime, one-time setup allocations on gtk_init - also a false positive,
+# confirmed on GitHub Actions' ubuntu-latest runners specifically (not
+# reproduced on this project's own dev machine, which installs a leaner
+# GTK3 dependency set without the AT-SPI D-Bus bridge pulled in).
+leak:atk_bridge_adaptor_init
