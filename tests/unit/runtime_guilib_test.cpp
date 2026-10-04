@@ -2,8 +2,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <easybasic/runtime/guilib.hpp>
 #include <easybasic/runtime/threadlib.hpp> // pbElapsedMilliseconds
@@ -50,6 +54,46 @@ void drainEvents() {
             quietStreak = 0;
         }
     }
+}
+
+/// A minimal, valid 24-bit BMP (4x2 pixels - width chosen so each row is
+/// already 4-byte-aligned, no padding bytes to get right) written byte by
+/// byte, so `pbLoadImage` tests below have a real file to load without
+/// this project's own unit tests depending on an external asset (nothing
+/// else in this test file does either).
+std::filesystem::path writeTinyBmp() {
+    std::filesystem::path path = std::filesystem::temp_directory_path() / "easybasic_guilib_test.bmp";
+    constexpr int width = 4;
+    constexpr int height = 2;
+    constexpr int rowBytes = width * 3; // Already a multiple of 4 - no padding needed.
+    constexpr int pixelDataSize = rowBytes * height;
+    constexpr int fileSize = 14 + 40 + pixelDataSize;
+    std::vector<unsigned char> bytes(fileSize, 0);
+    auto put16 = [&](std::size_t offset, std::uint16_t v) {
+        bytes[offset] = static_cast<unsigned char>(v & 0xff);
+        bytes[offset + 1] = static_cast<unsigned char>((v >> 8) & 0xff);
+    };
+    auto put32 = [&](std::size_t offset, std::uint32_t v) {
+        for (int i = 0; i < 4; ++i) {
+            bytes[offset + i] = static_cast<unsigned char>((v >> (8 * i)) & 0xff);
+        }
+    };
+    bytes[0] = 'B';
+    bytes[1] = 'M';
+    put32(2, static_cast<std::uint32_t>(fileSize));
+    put32(10, 54); // Pixel data offset.
+    put32(14, 40); // DIB header size (BITMAPINFOHEADER).
+    put32(18, width);
+    put32(22, height);
+    put16(26, 1);  // Planes.
+    put16(28, 24); // Bits per pixel.
+    put32(34, static_cast<std::uint32_t>(pixelDataSize));
+    for (int i = 0; i < pixelDataSize; ++i) {
+        bytes[54 + i] = 0x80; // Flat gray - the exact color doesn't matter, only that it loads.
+    }
+    std::ofstream out(path, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return path;
 }
 } // namespace
 
@@ -547,4 +591,97 @@ TEST_CASE("CreateStatusBar/AddStatusBarField/StatusBarText round-trip", "[runtim
     CHECK(pbIsStatusBar(1) == 0);
 
     pbCloseWindow(306);
+}
+
+// M7b's fifth GUI slice: the Image library. GdkPixbuf needs no GTK/display
+// initialization at all (unlike every window/gadget/menu test above), so
+// none of these are gated on hasDisplay().
+
+TEST_CASE("CreateImage/IsImage/ImageWidth/ImageHeight/ImageID round-trip", "[runtime][guilib]") {
+    CHECK(pbIsImage(400) == 0);
+    CHECK(pbCreateImage(400, 64, 32) == 1);
+    CHECK(pbIsImage(400) == 1);
+    CHECK(pbImageWidth(400) == 64);
+    CHECK(pbImageHeight(400) == 32);
+    CHECK(pbImageID(400) != 0);
+    CHECK(pbImageID(400) == reinterpret_cast<std::int64_t>(detail::imageTable().at(400)));
+    pbFreeImage(400);
+}
+
+TEST_CASE("CreateImage rejects a non-positive width/height", "[runtime][guilib]") {
+    CHECK(pbCreateImage(401, 0, 10) == 0);
+    CHECK(pbCreateImage(401, 10, 0) == 0);
+    CHECK(pbCreateImage(401, -5, 10) == 0);
+    CHECK(pbIsImage(401) == 0);
+}
+
+TEST_CASE("LoadImage loads a real file; a bad path is a harmless failure", "[runtime][guilib]") {
+    std::filesystem::path bmp = writeTinyBmp();
+    CHECK(pbLoadImage(410, PBString(bmp.string())) == 1);
+    CHECK(pbIsImage(410) == 1);
+    CHECK(pbImageWidth(410) == 4);
+    CHECK(pbImageHeight(410) == 2);
+
+    CHECK(pbLoadImage(411, PBString("/nonexistent/path/does_not_exist.bmp")) == 0);
+    CHECK(pbIsImage(411) == 0);
+
+    pbFreeImage(410);
+    std::remove(bmp.string().c_str());
+}
+
+TEST_CASE("IsImage/ImageWidth/ImageHeight/ImageID on an unknown id return a harmless default",
+          "[runtime][guilib]") {
+    CHECK(pbIsImage(999999) == 0);
+    CHECK(pbImageWidth(999999) == 0);
+    CHECK(pbImageHeight(999999) == 0);
+    CHECK(pbImageID(999999) == 0);
+}
+
+TEST_CASE("FreeImage removes one image; re-creating the same id afterward works", "[runtime][guilib]") {
+    pbCreateImage(420, 5, 5);
+    CHECK(pbFreeImage(420) == 0); // Oracle-verified: no return value, always 0 - see pbFreeImage's own doc comment.
+    CHECK(pbIsImage(420) == 0);
+    CHECK(pbCreateImage(420, 9, 9) == 1);
+    CHECK(pbImageWidth(420) == 9);
+    pbFreeImage(420);
+}
+
+TEST_CASE("FreeImage(#PB_All) frees every remaining image at once", "[runtime][guilib]") {
+    pbCreateImage(430, 1, 1);
+    pbCreateImage(431, 1, 1);
+    pbCreateImage(432, 1, 1);
+    pbFreeImage(-1); // #PB_All
+    CHECK(pbIsImage(430) == 0);
+    CHECK(pbIsImage(431) == 0);
+    CHECK(pbIsImage(432) == 0);
+}
+
+TEST_CASE("CreateImageMenu behaves like CreateMenu; MenuItem/OpenSubMenu accept an ImageID",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(307, 10, 10, 200, 100, PBString("Test"));
+    CHECK(pbCreateImageMenu(1, pbWindowID(307)) == 1);
+    CHECK(pbIsMenu(1) == 1);
+    pbMenuTitle(PBString("File"));
+
+    pbCreateImage(440, 16, 16);
+    pbMenuItem(10, PBString("Open"), pbImageID(440));
+    pbMenuItem(11, PBString("Close")); // No image - must keep working unchanged.
+    pbOpenSubMenu(PBString("Recent"), pbImageID(440));
+    pbMenuItem(12, PBString("A"));
+    pbCloseSubMenu();
+
+    // The real point of this test: GetMenuItemText/SetMenuItemText must
+    // still find the right label even though attachMenuItemImage replaced
+    // the item's direct child with an image+label box - see
+    // detail::menuItemLabel's own doc comment.
+    CHECK(pbGetMenuItemText(1, 10).bytes() == "Open");
+    pbSetMenuItemText(1, 10, PBString("Renamed"));
+    CHECK(pbGetMenuItemText(1, 10).bytes() == "Renamed");
+    CHECK(pbGetMenuItemText(1, 11).bytes() == "Close"); // Unaffected, no-image item.
+
+    pbFreeImage(440);
+    pbCloseWindow(307);
 }

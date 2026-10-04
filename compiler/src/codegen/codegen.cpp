@@ -194,6 +194,10 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"statusbartext", "pbStatusBarText"},       {"isstatusbar", "pbIsStatusBar"},
         {"freestatusbar", "pbFreeStatusBar"},       {"statusbarheight", "pbStatusBarHeight"},
         {"statusbarid", "pbStatusBarID"},
+        {"createimage", "pbCreateImage"},   {"loadimage", "pbLoadImage"},
+        {"isimage", "pbIsImage"},           {"freeimage", "pbFreeImage"},
+        {"imageid", "pbImageID"},           {"imagewidth", "pbImageWidth"},
+        {"imageheight", "pbImageHeight"},   {"createimagemenu", "pbCreateImageMenu"},
     };
     return "easybasic::runtime::" + names.at(lowerName);
 }

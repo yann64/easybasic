@@ -432,6 +432,25 @@ void Sema::registerGuiLibBuiltins() {
         {"freestatusbar", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"statusbarheight", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"statusbarid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // M7b's fifth GUI slice: the Image library, scoped to just enough
+        // to unblock CreateImageMenu/MenuItem/OpenSubMenu's own ImageID
+        // argument and (later) ToolBar - see guilib.hpp's pbCreateImage
+        // doc comment. Depth/BackgroundColor (CreateImage's own optional
+        // 4th/5th args) and LoadImage's Options arg are deliberately not
+        // supported yet - RGB()/RGBA() don't exist in this project at all,
+        // so there's no way to construct a meaningful color argument for
+        // them yet either.
+        {"createimage", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"loadimage", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"isimage", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"freeimage", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"imageid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"imagewidth", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"imageheight", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // CreateImageMenu's own Options arg (`#PB_Menu_NativeImageSize`) is
+        // Windows-only - accepted but not acted on, same simplification
+        // already used elsewhere for an OS-specific niceity.
+        {"createimagemenu", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 2},
     };
     for (const auto& sig : signatures) {
         ProcedureInfo info;
@@ -453,7 +472,8 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
         "createstatusbar", "addstatusbarfield", "statusbartext", "isstatusbar", "freestatusbar", "statusbarheight",
-        "statusbarid",
+        "statusbarid", "createimage", "loadimage", "isimage", "freeimage", "imageid", "imagewidth", "imageheight",
+        "createimagemenu",
     };
     return names.contains(lowerName);
 }

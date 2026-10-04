@@ -135,6 +135,17 @@ inline std::int64_t& activeStatusBarId() {
     return id;
 }
 
+/// M7b's fifth GUI slice: the Image library. `#Image` -> its own
+/// `GdkPixbuf*` - a bitmap that exists independently of any window,
+/// exactly like real PB's own Image objects. `ImageID()` (see its own doc
+/// comment) returns this same pointer directly, the same "the handle
+/// already *is* the real pointer" convention `pbWindowID`/`pbMenuID`
+/// established.
+inline std::unordered_map<std::int64_t, GdkPixbuf*>& imageTable() {
+    static std::unordered_map<std::int64_t, GdkPixbuf*> table;
+    return table;
+}
+
 /// Oracle-verified: gadget-creation functions (`ButtonGadget`, etc.) take
 /// *no* window parameter at all - PB places a new gadget into whichever
 /// window was *most recently opened* (confirmed directly: with two windows
@@ -379,6 +390,72 @@ inline bool placeGadget(std::int64_t windowId, std::int64_t gadgetId, std::int64
     gtk_widget_show(widget);
     gadgetTable()[gadgetId] = widget;
     return true;
+}
+
+/// Finds the real `GtkLabel` for a menu item's own text, whether it's
+/// still the item's direct child (no image attached) or nested inside the
+/// `GtkBox` `attachMenuItemImage` built (see its own doc comment) - shared
+/// by `pbGetMenuItemText`/`pbSetMenuItemText` so neither needs to know
+/// which case applies.
+inline GtkWidget* menuItemLabel(GtkWidget* item) {
+    GtkWidget* child = gtk_bin_get_child(GTK_BIN(item));
+    if (child == nullptr) {
+        return nullptr;
+    }
+    if (GTK_IS_LABEL(child)) {
+        return child;
+    }
+    if (GTK_IS_CONTAINER(child)) {
+        GList* children = gtk_container_get_children(GTK_CONTAINER(child));
+        GtkWidget* label = nullptr;
+        for (GList* l = children; l != nullptr; l = l->next) {
+            if (GTK_IS_LABEL(l->data)) {
+                label = GTK_WIDGET(l->data);
+                break;
+            }
+        }
+        g_list_free(children);
+        return label;
+    }
+    return nullptr;
+}
+
+/// Shared by `pbMenuItem`/`pbOpenSubMenu` (both take an optional `ImageID`
+/// - oracle-verified real PB's own docs for each). A plain `GtkMenuItem`/
+/// `GtkCheckMenuItem` is a `GtkBin` with a single `GtkLabel` child; this
+/// swaps that child for a small `GtkBox` holding the image (scaled to
+/// 16x16 - oracle-verified real PB's own `MenuItem` docs: "Les dimensions
+/// des images sont de 16x16 pixels") next to a fresh label with the same
+/// text (found via `menuItemLabel`, since `GetMenuItemText`/
+/// `SetMenuItemText` need to keep finding it correctly afterward too - see
+/// their own doc comments). Deliberately *not* gated on whether the menu
+/// was built with `CreateMenu` vs `CreateImageMenu` (real PB's own docs
+/// require the latter) - GTK itself has no such distinction to enforce,
+/// so requiring it here would be an arbitrary, unenforceable-for-a-reason
+/// restriction rather than a real one.
+inline void attachMenuItemImage(GtkWidget* item, std::int64_t imageId) {
+    if (imageId == 0) {
+        return;
+    }
+    auto* pixbuf = reinterpret_cast<GdkPixbuf*>(imageId);
+    GdkPixbuf* scaled = gdk_pixbuf_scale_simple(pixbuf, 16, 16, GDK_INTERP_BILINEAR);
+    if (scaled == nullptr) {
+        return;
+    }
+    GtkWidget* image = gtk_image_new_from_pixbuf(scaled);
+    g_object_unref(scaled);
+    GtkWidget* oldChild = gtk_bin_get_child(GTK_BIN(item));
+    std::string text = oldChild != nullptr ? gtk_label_get_text(GTK_LABEL(oldChild)) : "";
+    if (oldChild != nullptr) {
+        gtk_container_remove(GTK_CONTAINER(item), oldChild);
+    }
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_pack_start(GTK_BOX(box), image, FALSE, FALSE, 0);
+    GtkWidget* label = gtk_label_new(text.c_str());
+    gtk_widget_set_halign(label, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(box), label, TRUE, TRUE, 0);
+    gtk_container_add(GTK_CONTAINER(item), box);
+    gtk_widget_show_all(box);
 }
 
 } // namespace detail
@@ -826,15 +903,14 @@ inline std::int64_t pbMessageRequester(const PBString& title, const PBString& te
 /// `pbOpenWindow`'s own return value, real `CreateMenu` returns a native-
 /// handle-ish nonzero Integer, simplified here to a clean `1`/`0`.
 ///
-/// `ToolBar` is **deliberately out of scope for this slice** - oracle-
+/// `ToolBar` was **deliberately out of scope for this slice** - oracle-
 /// verified (via `ToolBarImageButton`'s own docs) that real PB has no way to
 /// create a toolbar button without an `ImageID` at all (`ToolBarButtonText`
 /// only *relabels* an already-`ToolBarImageButton`-created button) - and
-/// this project's Image library (`LoadImage`/`CreateImage`/`ImageID`) does
-/// not exist yet. Revisit once that lands; implementing `ToolBar` without it
-/// would mean either diverging from real PB's own button-creation contract
-/// or rushing a minimal Image library as an unplanned side effect of this
-/// slice, neither acceptable under this project's oracle-first standard.
+/// this project's Image library (`LoadImage`/`CreateImage`/`ImageID`) didn't
+/// exist yet. The Image library landed in M7b's fifth slice (see
+/// `pbCreateImage`'s own doc comment); `ToolBar` itself is still a
+/// follow-up, not part of that slice either.
 inline std::int64_t pbCreateMenu(std::int64_t menuId, std::int64_t windowHandle) {
     detail::ensureGtkInit();
     auto* window = reinterpret_cast<GtkWidget*>(windowHandle);
@@ -864,6 +940,17 @@ inline std::int64_t pbCreateMenu(std::int64_t menuId, std::int64_t windowHandle)
     return 1;
 }
 
+/// Oracle-verified functionally identical to `CreateMenu` on this backend -
+/// real PB's own distinction is that only a menu created this way accepts
+/// an `ImageID` on its own `MenuItem`/`OpenSubMenu` calls, a restriction
+/// GTK itself has no equivalent for (see `detail::attachMenuItemImage`'s
+/// own doc comment on why that restriction isn't enforced here either).
+/// `Options` (`#PB_Menu_NativeImageSize`) is Windows-only - accepted but
+/// not acted on.
+inline std::int64_t pbCreateImageMenu(std::int64_t menuId, std::int64_t windowHandle, std::int64_t /*options*/ = 0) {
+    return pbCreateMenu(menuId, windowHandle);
+}
+
 /// Oracle-verified: `MenuTitle`/`MenuItem`/`MenuBar`/`OpenSubMenu`/
 /// `CloseSubMenu` all operate on whichever `#Menu` was most recently
 /// `CreateMenu`'d - no explicit `#Menu` argument exists for any of them,
@@ -888,17 +975,18 @@ inline std::int64_t pbMenuTitle(const PBString& text) {
     return 1;
 }
 
-/// `ImageID` is accepted but not yet acted on - see this block's own leading
-/// doc comment on why Image-library-dependent features are out of scope for
-/// this slice. Every leaf item is a `GtkCheckMenuItem` - see
-/// `detail::onMenuItemToggled`'s own doc comment for why.
-inline std::int64_t pbMenuItem(std::int64_t elementId, const PBString& text, std::int64_t /*imageId*/ = 0) {
+/// `ImageID` (M7b's fifth GUI slice) - see `detail::attachMenuItemImage`'s
+/// own doc comment for how it's attached. Every leaf item is a
+/// `GtkCheckMenuItem` - see `detail::onMenuItemToggled`'s own doc comment
+/// for why.
+inline std::int64_t pbMenuItem(std::int64_t elementId, const PBString& text, std::int64_t imageId = 0) {
     auto menuId = detail::activeMenuId();
     auto stackIt = detail::menuBuildStack().find(menuId);
     if (stackIt == detail::menuBuildStack().end() || stackIt->second.empty()) {
         return 0;
     }
     GtkWidget* item = gtk_check_menu_item_new_with_label(text.bytes().c_str());
+    detail::attachMenuItemImage(item, imageId);
     auto windowId = reinterpret_cast<std::int64_t>(
         g_object_get_data(G_OBJECT(detail::menuTable()[menuId]), detail::menuWindowIdKey()));
     g_object_set_data(G_OBJECT(item), detail::menuElementIdKey(), reinterpret_cast<gpointer>(elementId));
@@ -924,13 +1012,14 @@ inline std::int64_t pbMenuBar() {
     return 1;
 }
 
-inline std::int64_t pbOpenSubMenu(const PBString& text, std::int64_t /*imageId*/ = 0) {
+inline std::int64_t pbOpenSubMenu(const PBString& text, std::int64_t imageId = 0) {
     auto menuId = detail::activeMenuId();
     auto stackIt = detail::menuBuildStack().find(menuId);
     if (stackIt == detail::menuBuildStack().end() || stackIt->second.empty()) {
         return 0;
     }
     GtkWidget* subItem = gtk_menu_item_new_with_label(text.bytes().c_str());
+    detail::attachMenuItemImage(subItem, imageId);
     GtkWidget* submenu = gtk_menu_new();
     gtk_menu_item_set_submenu(GTK_MENU_ITEM(subItem), submenu);
     gtk_menu_shell_append(GTK_MENU_SHELL(stackIt->second.back()), subItem);
@@ -1036,6 +1125,9 @@ inline std::int64_t pbSetMenuItemState(std::int64_t menuId, std::int64_t element
     return 1;
 }
 
+/// Uses `detail::menuItemLabel` rather than `gtk_menu_item_get_label`
+/// directly - see `pbSetMenuItemText`'s own doc comment for why (the same
+/// reason applies here).
 inline PBString pbGetMenuItemText(std::int64_t menuId, std::int64_t element) {
     auto menuIt = detail::menuItemWidgets().find(menuId);
     if (menuIt == detail::menuItemWidgets().end()) {
@@ -1045,10 +1137,15 @@ inline PBString pbGetMenuItemText(std::int64_t menuId, std::int64_t element) {
     if (itemIt == menuIt->second.end()) {
         return PBString();
     }
-    const char* text = gtk_menu_item_get_label(GTK_MENU_ITEM(itemIt->second));
+    GtkWidget* label = detail::menuItemLabel(itemIt->second);
+    const char* text = label != nullptr ? gtk_label_get_text(GTK_LABEL(label)) : nullptr;
     return PBString(text != nullptr ? text : "");
 }
 
+/// Uses `detail::menuItemLabel` rather than `gtk_menu_item_set_label`
+/// directly - the latter assumes the item's own direct child is the label,
+/// which stops being true once `attachMenuItemImage` has nested it inside
+/// a `GtkBox` instead (see that function's own doc comment).
 inline std::int64_t pbSetMenuItemText(std::int64_t menuId, std::int64_t element, const PBString& text) {
     auto menuIt = detail::menuItemWidgets().find(menuId);
     if (menuIt == detail::menuItemWidgets().end()) {
@@ -1058,7 +1155,10 @@ inline std::int64_t pbSetMenuItemText(std::int64_t menuId, std::int64_t element,
     if (itemIt == menuIt->second.end()) {
         return 0;
     }
-    gtk_menu_item_set_label(GTK_MENU_ITEM(itemIt->second), text.bytes().c_str());
+    GtkWidget* label = detail::menuItemLabel(itemIt->second);
+    if (label != nullptr) {
+        gtk_label_set_text(GTK_LABEL(label), text.bytes().c_str());
+    }
     return 1;
 }
 
@@ -1253,6 +1353,127 @@ inline std::int64_t pbStatusBarHeight(std::int64_t barId) {
 inline std::int64_t pbStatusBarID(std::int64_t barId) {
     auto it = detail::statusBarTable().find(barId);
     return it != detail::statusBarTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
+}
+
+/// M7b's fifth GUI slice: the Image library, scoped to just enough to
+/// unblock `CreateImageMenu`/`MenuItem`/`OpenSubMenu`'s own `ImageID`
+/// argument (landed alongside this) and (a follow-up) `ToolBar`, which has
+/// no way to create a button without one either - see this project's own
+/// M7b fourth-slice notes on that blocker. `GdkPixbuf` is the natural GTK3
+/// fit for a real PB Image: a bitmap independent of any window, exactly
+/// what `CreateImage`/`LoadImage` need.
+///
+/// Depth/BackgroundColor (this function's own optional 4th/5th real-PB
+/// arguments) aren't supported yet - deliberately: `RGB()`/`RGBA()` don't
+/// exist anywhere in this project yet either, so there's no way to
+/// construct a meaningful color argument for them in the first place.
+/// Every image created here is 24-bit-equivalent with a black background,
+/// matching real PB's own documented default for when they're omitted.
+///
+/// Oracle-verified: real PB's own "non-zero on success" return value for
+/// this function is actually the real image handle itself (confirmed
+/// directly: identical to what `ImageID()` then returns) - simplified
+/// here to a clean `1`/`0` anyway, the same established convention as
+/// `pbOpenWindow`'s own return (real programs needing the actual handle
+/// call `ImageID()` explicitly, exactly like this function's own official
+/// example does).
+inline std::int64_t pbCreateImage(std::int64_t imageId, std::int64_t width, std::int64_t height) {
+    if (width <= 0 || height <= 0) {
+        return 0;
+    }
+    GdkPixbuf* pixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, static_cast<int>(width), static_cast<int>(height));
+    if (pixbuf == nullptr) {
+        return 0;
+    }
+    gdk_pixbuf_fill(pixbuf, 0x000000ff); // Black - real PB's own documented default background.
+    auto old = detail::imageTable().find(imageId);
+    if (old != detail::imageTable().end()) {
+        g_object_unref(old->second);
+    }
+    detail::imageTable()[imageId] = pixbuf;
+    return 1;
+}
+
+/// Oracle-verified: a bad/nonexistent file path is a harmless failure
+/// (`0`), not a fatal debugger error - confirmed directly, unlike most
+/// other invalid-handle cases this library's own functions hit (see
+/// `pbImageWidth`'s own doc comment). `GdkPixbuf` auto-detects BMP/PNG/
+/// JPEG/GIF/TIFF/ICO from file content - a deliberate, documented
+/// divergence from real PB, which requires an explicit `UsePNGImageDecoder`/
+/// etc. call first for anything beyond BMP (none of which exist in this
+/// project yet); not replicated as a *restriction* since there's no
+/// reason to turn a working load into a failure for projects that
+/// otherwise pass a PNG/JPEG straight through.
+inline std::int64_t pbLoadImage(std::int64_t imageId, const PBString& filename) {
+    GError* error = nullptr;
+    GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file(filename.bytes().c_str(), &error);
+    if (pixbuf == nullptr) {
+        if (error != nullptr) {
+            g_error_free(error);
+        }
+        return 0;
+    }
+    auto old = detail::imageTable().find(imageId);
+    if (old != detail::imageTable().end()) {
+        g_object_unref(old->second);
+    }
+    detail::imageTable()[imageId] = pixbuf;
+    return 1;
+}
+
+/// Oracle-verified: deliberately crash-proof for any argument, including
+/// one that was never created at all - real PB's own docs say so
+/// explicitly ("fonction... créée pour pouvoir passer n'importe quelle
+/// valeur en paramètre sans qu'il ne puisse y avoir de plantage"), unlike
+/// `ImageWidth`/`ImageHeight`/`ImageID` themselves (see their own doc
+/// comments). Oracle-verified real PB's own "non-zero" here is also a
+/// native-handle-ish value, not a clean `1` - simplified the same way
+/// `pbIsWindow`'s own is.
+inline std::int64_t pbIsImage(std::int64_t imageId) { return detail::imageTable().contains(imageId) ? 1 : 0; }
+
+/// `#PB_All` (`-1`) frees every remaining image at once - the same
+/// established convention as `pbFreeMenu`/`pbFreeStatusBar`. Oracle-
+/// verified no return value ("Aucune") - always returns `0`, the same
+/// established convention as `pbKillThread`'s own (see its doc comment).
+inline std::int64_t pbFreeImage(std::int64_t imageId) {
+    if (imageId == -1) {
+        for (auto& [id, pixbuf] : detail::imageTable()) {
+            g_object_unref(pixbuf);
+        }
+        detail::imageTable().clear();
+        return 0;
+    }
+    auto it = detail::imageTable().find(imageId);
+    if (it != detail::imageTable().end()) {
+        g_object_unref(it->second);
+        detail::imageTable().erase(it);
+    }
+    return 0;
+}
+
+/// Oracle-verified: an unknown/never-created `#Image` is a **fatal
+/// debugger error** in real PB ("The specified #Image is not
+/// initialised."), unlike `IsImage`'s own deliberately crash-proof
+/// contract (see its doc comment) - pbcxx deliberately diverges there,
+/// the same established precedent as `pbKillThread`'s own doc comment
+/// describes, by just returning a harmless `0` instead.
+inline std::int64_t pbImageID(std::int64_t imageId) {
+    auto it = detail::imageTable().find(imageId);
+    return it != detail::imageTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
+}
+
+/// See `pbImageID`'s own doc comment on the fatal-debugger-error divergence
+/// - applies here too.
+inline std::int64_t pbImageWidth(std::int64_t imageId) {
+    auto it = detail::imageTable().find(imageId);
+    return it != detail::imageTable().end() ? gdk_pixbuf_get_width(it->second) : 0;
+}
+
+/// See `pbImageID`'s own doc comment on the fatal-debugger-error divergence
+/// - applies here too.
+inline std::int64_t pbImageHeight(std::int64_t imageId) {
+    auto it = detail::imageTable().find(imageId);
+    return it != detail::imageTable().end() ? gdk_pixbuf_get_height(it->second) : 0;
 }
 
 } // namespace easybasic::runtime

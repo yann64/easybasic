@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar` - see M7b notes); `ToolBar` (blocked on an Image library - see the fourth slice's own notes) and everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First five slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu` - see M7b notes); `ToolBar` and everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Two slices done (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection - see M7d notes); `Macro`/`Interface` inside a Module deliberately deferred |
 
@@ -2182,6 +2182,88 @@ return-value simplifications above would fail a literal stdout diff even on full
 simulated-click coverage stays in the Catch2 unit tests only, consistent with every GUI slice so far.
 All 278 tests (across both `linux-gcc` and `linux-clang`) pass, including the 261 that predate this
 slice - confirming the `pbOpenWindow` vbox restructuring is additive.
+
+## M7b Implementation Notes (GUI core, fifth slice: the Image library + `CreateImageMenu`)
+
+**Scope landed**: `CreateImage`/`LoadImage`/`IsImage`/`FreeImage`/`ImageID`/`ImageWidth`/`ImageHeight`
+(the Image library, scoped to just enough to unblock the rest of this slice and, later, `ToolBar` - see
+the fourth slice's own notes on that blocker), plus `CreateImageMenu` and wiring up `MenuItem`/
+`OpenSubMenu`'s own optional `ImageID` argument, both already stubbed with an accepted-but-unused
+parameter when the fourth slice landed. `CreateImage`'s own optional `Depth`/`BackgroundColor`
+arguments and `LoadImage`'s `Options` argument are **not** supported yet - deliberately: `RGB()`/
+`RGBA()` don't exist anywhere in this project yet, so there's no way to construct a meaningful color
+argument for them in the first place. `ToolBar` itself is still a follow-up, not part of this slice.
+
+**`GdkPixbuf` is the natural GTK3 fit for a real PB Image** - a bitmap independent of any window,
+exactly what `CreateImage`/`LoadImage` need. `ImageID()` returns this same pointer directly
+(`reinterpret_cast` to `Integer`), the same "the handle already *is* the real pointer" convention
+`pbWindowID`/`pbMenuID`/`pbStatusBarID` already established - no separate id-to-handle lookup table
+needed.
+
+**Oracle-verified: `CreateImage`'s own "non-zero on success" return value is actually the real image
+handle itself** - confirmed directly, identical to what `ImageID()` then returns for the same `#Image`.
+Simplified here to a clean `1`/`0` anyway, the same established convention as `pbOpenWindow`'s own
+return (real programs needing the actual handle call `ImageID()` explicitly, exactly like this
+function's own official example does: `CreateImage(0, 256, 256, 32, ...)` then separately
+`SetGadgetState(0, ImageID(0))`). `IsImage`'s own "non-zero" is similarly a raw, varying internal
+pointer in real PB, not a canonicalized `1` - simplified the same way `pbIsWindow`'s own already is.
+
+**A real, oracle-discovered asymmetry that shaped where this library diverges from real PB's own
+debugger-fatal-error behavior**: `IsImage` is **deliberately crash-proof for any argument**, including
+one that was never created at all - real PB's own docs say so explicitly ("cette fonction a été créée
+pour pouvoir passer n'importe quelle valeur en paramètre sans qu'il ne puisse y avoir de plantage").
+`ImageWidth`/`ImageHeight`/`ImageID` on an unknown handle are **not** crash-proof - confirmed directly,
+a genuinely fatal debugger error ("The specified #Image is not initialised.") that halts the whole
+program. Followed the same precedent `pbKillThread`'s own doc comment already established (and this
+project's own M7a second-slice notes describe) rather than relitigating it: a harmless `0` instead of
+replicating a debugger-only abort path. `LoadImage` with a bad/nonexistent file path is its own, third
+case - oracle-verified a harmless failure (`0`), not a fatal error at all.
+
+**A deliberate, documented divergence in `LoadImage`'s own supported formats**: `GdkPixbuf` auto-
+detects BMP/PNG/JPEG/GIF/TIFF/ICO straight from file content, while real PB requires an explicit
+`UsePNGImageDecoder()`/etc. call first for anything beyond BMP (none of which exist in this project at
+all). Not replicated as a *restriction* - there's no reason to turn a working load into a failure for a
+program that passes a PNG/JPEG straight through without having called a decoder-enabling function this
+project doesn't even implement.
+
+**`CreateImageMenu` is oracle-verified functionally identical to `CreateMenu` on this backend** - real
+PB's own distinction (only a menu created this way accepts an `ImageID` on its own `MenuItem`/
+`OpenSubMenu` calls) has no GTK equivalent to enforce, so it isn't enforced here either, a deliberate
+simplification rather than an oversight. Its own `Options` argument (`#PB_Menu_NativeImageSize`) is
+Windows-only - accepted but not acted on, the same treatment already given to other OS-specific
+niceties elsewhere in this project.
+
+**Attaching an image to a menu item without a deprecated GTK API**: `GtkImageMenuItem` has been
+deprecated since GTK 3.10 (removed entirely in GTK4), so `MenuItem`/`OpenSubMenu`'s own `ImageID`
+argument is instead implemented by swapping a plain `GtkMenuItem`/`GtkCheckMenuItem`'s single `GtkBin`
+child for a small `GtkBox` holding a `GtkImage` (scaled to 16x16 - oracle-verified real PB's own
+`MenuItem` docs: "les dimensions des images sont de 16x16 pixels") next to a fresh `GtkLabel` with the
+same text (`detail::attachMenuItemImage`, shared by both functions).
+
+**A real bug this same restructuring introduced, caught by testing the *existing* `GetMenuItemText`/
+`SetMenuItemText` against an image-bearing item, not by a new test for the new feature itself**:
+both functions used `gtk_menu_item_get_label`/`set_label` directly, which only work when the item's own
+*direct* child is a `GtkLabel` - true before this slice, no longer true once `attachMenuItemImage`
+nests the label inside a `GtkBox` instead. An item with an attached image silently started reporting an
+empty string for `GetMenuItemText`, confirmed directly against a probe exercising exactly that combination
+before this was caught, not assumed safe by inspection alone. Fixed with a shared `detail::menuItemLabel`
+helper that finds the real label either way (the item's own direct child if it's already a `GtkLabel`,
+or the one `GtkLabel` child inside its `GtkBox` otherwise) - `pbGetMenuItemText`/`pbSetMenuItemText` now
+go through it instead of assuming which case applies.
+
+**Testing**: extended `runtime_guilib_test.cpp` with the Image library's own full round-trip
+(`CreateImage`/`IsImage`/`ImageWidth`/`ImageHeight`/`ImageID`), a non-positive width/height rejection,
+`LoadImage` against a real file (a tiny 24-bit BMP constructed byte-by-byte in the test itself, so this
+project's own unit tests don't depend on an external asset) and a bad path, every unknown-handle case,
+`FreeImage` (including `#PB_All`), and `CreateImageMenu` + the `MenuItem`/`OpenSubMenu` image argument -
+specifically re-checking `GetMenuItemText`/`SetMenuItemText` against an image-bearing item, the exact
+case that caught the bug above. A fourth golden e2e case (`tests/e2e/gui_image`) covers deterministic
+round-trips the same way `gui_menu_statusbar` does, with its own tiny shipped `test.bmp` fixture (GUI
+e2e cases run from a throwaway temp directory, not this project's own source tree - `run_gui_case.sh`
+was extended to copy over any such extra fixture file alongside `input.pb`/`expected.stdout`, a small,
+reusable generalization rather than a one-off special case, since a later `ToolBar` slice will need the
+same thing for its own icon files). All 325 tests (across `linux-gcc`/`linux-clang`/
+`linux-clang-sanitize`) pass, including the 317 that predate this slice.
 
 ## M7c Implementation Notes (`Interface`/`EndInterface`)
 

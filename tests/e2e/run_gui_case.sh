@@ -21,6 +21,17 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 BIN="$WORKDIR/case_bin"
 
+# Copy over any extra fixture files a case ships alongside input.pb/
+# expected.stdout (e.g. gui_image's own test.bmp for LoadImage) - run from
+# $WORKDIR, not $CASE_DIR, the same reason run_case.sh's own comment gives,
+# so a case can reference one by a plain relative filename.
+for extra in "$CASE_DIR"/*; do
+    base=$(basename "$extra")
+    if [ "$base" != "input.pb" ] && [ "$base" != "expected.stdout" ]; then
+        cp "$extra" "$WORKDIR/"
+    fi
+done
+
 # Always compiled in debug mode (-d): a plain build strips every Debug
 # statement to nothing, matching run_case.sh's own convention.
 if ! "$PBCXX" "$INPUT" -o "$BIN" -d > "$WORKDIR/compile.log" 2>&1; then
