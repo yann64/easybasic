@@ -6,6 +6,25 @@
 
 namespace easybasic {
 
+namespace {
+/// M7d: every Sema-internal module-qualified key uses a literal "::"
+/// separator (e.g. "ferrari::createferrari") - never a legal C++ identifier
+/// substring, so the few places that actually emit a name as C++ source
+/// text (`cppTypeFor`'s own two-arg overload just below, and `Codegen`'s own
+/// `cppVarName`/`cppProcName`) replace it with something that is. Defined
+/// here, ahead of its own first use, since `cppTypeFor` is a free function
+/// (not a `Codegen` member) needing it too.
+std::string sanitizeModuleQualifier(const std::string& name) {
+    std::string result = name;
+    std::size_t pos = 0;
+    while ((pos = result.find("::", pos)) != std::string::npos) {
+        result.replace(pos, 2, "_M_");
+        pos += 3;
+    }
+    return result;
+}
+} // namespace
+
 const char* cppTypeFor(TypeSuffix suffix) {
     switch (suffix) {
         case TypeSuffix::Byte: return "std::int8_t";
@@ -30,7 +49,7 @@ const char* cppTypeFor(TypeSuffix suffix) {
 
 std::string cppTypeFor(TypeSuffix suffix, const std::string& structName) {
     if (suffix == TypeSuffix::Struct) {
-        return "s_" + structName;
+        return "s_" + sanitizeModuleQualifier(structName);
     }
     return cppTypeFor(suffix);
 }
@@ -192,22 +211,6 @@ std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName
 Codegen::Codegen(const ast::Module& module, const Sema& sema, bool debugMode)
     : module_(module), sema_(sema), debugMode_(debugMode) {}
 
-namespace {
-/// M7d: every Sema-internal module-qualified key uses a literal "::"
-/// separator (e.g. "ferrari::createferrari") - never a legal C++ identifier
-/// substring, so the one place that actually emits a name as C++ source
-/// text replaces it with something that is.
-std::string sanitizeModuleQualifier(const std::string& name) {
-    std::string result = name;
-    std::size_t pos = 0;
-    while ((pos = result.find("::", pos)) != std::string::npos) {
-        result.replace(pos, 2, "_M_");
-        pos += 3;
-    }
-    return result;
-}
-} // namespace
-
 std::string Codegen::cppVarName(const std::string& name) {
     if (!name.empty() && name.front() == '*') {
         return "vp_" + sanitizeModuleQualifier(name.substr(1));
@@ -216,6 +219,8 @@ std::string Codegen::cppVarName(const std::string& name) {
 }
 
 std::string Codegen::cppProcName(const std::string& name) { return "f_" + sanitizeModuleQualifier(name); }
+
+std::string Codegen::cppConstName(const std::string& name) { return "k_" + sanitizeModuleQualifier(name); }
 
 Sema::ResolvedType Codegen::pointeeTypeOf(const std::string& pointerKey) const {
     if (currentProcInfo_ != nullptr) {
@@ -293,7 +298,7 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
             if (auto builtin = Sema::builtinConstantValue(ref.name)) {
                 return std::to_string(*builtin);
             }
-            return "k_" + ref.name;
+            return cppConstName(ref.name);
         }
         case ast::ExprKind::FieldAccess: {
             const auto& access = static_cast<const ast::FieldAccessExpr&>(expr);
@@ -339,7 +344,8 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
             // (so genDataLabelArrays() always emitted this array) - the
             // pipeline stops before Codegen runs whenever Sema reports an
             // error.
-            return "reinterpret_cast<std::int64_t>(pb_label_" + addr.labelName + ".data())";
+            return "reinterpret_cast<std::int64_t>(pb_label_" + sanitizeModuleQualifier(addr.labelName) +
+                   ".data())";
         }
         case ast::ExprKind::MethodCall: {
             const auto& call = static_cast<const ast::MethodCallExpr&>(expr);
@@ -499,7 +505,7 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 return mapVar + ".access(" + genExpr(*call.args.front(), false) + ")";
             }
             if (sema_.arrayInfo(call.name) != nullptr) {
-                return "v_" + call.name + ".at(" + genArrayIndexCode(call.name, call.args) + ")";
+                return cppVarName(call.name) + ".at(" + genArrayIndexCode(call.name, call.args) + ")";
             }
             const Sema::ProcedureInfo* info = sema_.procedureInfo(call.name);
             std::string calleeName;
@@ -627,7 +633,7 @@ std::string Codegen::genArrayIndexCode(const std::string& name,
     // the dimension-1 size expression a second time here.
     std::string idx0 = genExpr(*indices[0], false);
     std::string idx1 = genExpr(*indices[1], false);
-    return "((" + idx0 + ") * (v_" + name + "_dim1 + 1) + (" + idx1 + "))";
+    return "((" + idx0 + ") * (" + cppVarName(name) + "_dim1 + 1) + (" + idx1 + "))";
 }
 
 std::string Codegen::genCondition(const ast::Expr& expr) {
@@ -664,7 +670,7 @@ std::string Codegen::genCondition(const ast::Expr& expr) {
 
 void Codegen::genStructures() {
     for (const auto& [name, info] : sema_.structureDeclarationOrder()) {
-        out_ += "struct s_" + name + " {\n";
+        out_ += "struct " + cppTypeFor(TypeSuffix::Struct, name) + " {\n";
         for (const auto& field : info.fields) {
             std::string fieldType = field.suffix == TypeSuffix::Struct
                                          ? cppTypeFor(field.suffix, field.structTypeName)
@@ -694,8 +700,8 @@ void Codegen::genConstantsIn(const ast::Block& block) {
                 TypeSuffix suffix = sema_.constTypeOf(constDecl.name);
                 std::string valueCode =
                     convert(genExpr(*constDecl.value, false), sema_.classify(*constDecl.value, false), suffix);
-                out_ += std::string("static const ") + cppTypeFor(suffix) + " k_" + constDecl.name + " = " +
-                        valueCode + ";\n";
+                out_ += std::string("static const ") + cppTypeFor(suffix) + " " + cppConstName(constDecl.name) +
+                        " = " + valueCode + ";\n";
                 break;
             }
             case ast::StmtKind::Enumeration: {
@@ -713,9 +719,9 @@ void Codegen::genConstantsIn(const ast::Block& block) {
                         // ourselves - correct for any explicit value, not
                         // just literal ones, and lets the C++ compiler do
                         // the actual arithmetic.
-                        valueCode = "(k_" + previousName + " + 1)";
+                        valueCode = "(" + cppConstName(previousName) + " + 1)";
                     }
-                    out_ += "static const std::int64_t k_" + member.name + " = " + valueCode + ";\n";
+                    out_ += "static const std::int64_t " + cppConstName(member.name) + " = " + valueCode + ";\n";
                     previousName = member.name;
                 }
                 break;
@@ -752,6 +758,15 @@ void Codegen::genConstantsIn(const ast::Block& block) {
                 // that, see its own ProcedureDecl notes), so recursing here
                 // can't double-visit anything genProcedures() also walks.
                 genConstantsIn(static_cast<const ast::ProcedureDeclStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::DeclareModule:
+                // M7d's second slice: a module's own public constants/
+                // Enumerations live in its DeclareModule section.
+                genConstantsIn(static_cast<const ast::DeclareModuleStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::Module:
+                // ...and its private ones in the matching Module section.
+                genConstantsIn(static_cast<const ast::ModuleStmt&>(*stmt).body);
                 break;
             default:
                 break; // Nothing to collect from any other statement kind.
@@ -816,6 +831,12 @@ void Codegen::genDataPool(const ast::Block& block) {
                 break;
             case ast::StmtKind::ProcedureDecl:
                 genDataPool(static_cast<const ast::ProcedureDeclStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::DeclareModule:
+                genDataPool(static_cast<const ast::DeclareModuleStmt&>(*stmt).body);
+                break;
+            case ast::StmtKind::Module:
+                genDataPool(static_cast<const ast::ModuleStmt&>(*stmt).body);
                 break;
             default:
                 break;
@@ -888,6 +909,12 @@ void Codegen::collectDataLabelArrays(const ast::Block& block,
             case ast::StmtKind::ProcedureDecl:
                 collectDataLabelArrays(static_cast<const ast::ProcedureDeclStmt&>(*stmt).body, out);
                 break;
+            case ast::StmtKind::DeclareModule:
+                collectDataLabelArrays(static_cast<const ast::DeclareModuleStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::Module:
+                collectDataLabelArrays(static_cast<const ast::ModuleStmt&>(*stmt).body, out);
+                break;
             default:
                 break;
         }
@@ -898,8 +925,8 @@ void Codegen::genDataLabelArrays() {
     std::vector<std::pair<std::string, std::vector<std::string>>> labels;
     collectDataLabelArrays(module_.statements, labels);
     for (const auto& [name, items] : labels) {
-        out_ += "static const std::array<std::int64_t, " + std::to_string(items.size()) + "> pb_label_" + name +
-                " = {";
+        out_ += "static const std::array<std::int64_t, " + std::to_string(items.size()) + "> pb_label_" +
+                sanitizeModuleQualifier(name) + " = {";
         for (std::size_t i = 0; i < items.size(); ++i) {
             if (i != 0) {
                 out_ += ", ";
@@ -1293,13 +1320,13 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
                 // expression may depend on runtime values computed earlier
                 // (oracle-verified: PB allows an arbitrary expression here,
                 // not just a compile-time constant).
-                out_ += "    v_" + dim.name + ".assign(static_cast<std::size_t>(" + sizeExpr0 + ") + 1, " +
+                out_ += "    " + cppVarName(dim.name) + ".assign(static_cast<std::size_t>(" + sizeExpr0 + ") + 1, " +
                         defaultValueLiteral(elemSuffix, elemStructName) + ");\n";
             } else {
                 std::string sizeExpr1 = genExpr(*dim.dimensionSizes[1], false);
-                out_ += "    v_" + dim.name + "_dim1 = " + sizeExpr1 + ";\n";
-                out_ += "    v_" + dim.name + ".assign(static_cast<std::size_t>(" + sizeExpr0 +
-                        " + 1) * static_cast<std::size_t>(v_" + dim.name + "_dim1 + 1), " +
+                out_ += "    " + cppVarName(dim.name) + "_dim1 = " + sizeExpr1 + ";\n";
+                out_ += "    " + cppVarName(dim.name) + ".assign(static_cast<std::size_t>(" + sizeExpr0 +
+                        " + 1) * static_cast<std::size_t>(" + cppVarName(dim.name) + "_dim1 + 1), " +
                         defaultValueLiteral(elemSuffix, elemStructName) + ");\n";
             }
             break;
@@ -1344,7 +1371,7 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
             bool floatCtx = familyOf(elemSuffix) == ValueKind::FloatFamily;
             std::string valueCode = convert(genExpr(*indexAssign.value, floatCtx),
                                              sema_.classify(*indexAssign.value, floatCtx), elemSuffix);
-            out_ += "    v_" + indexAssign.name + ".at(" +
+            out_ += "    " + cppVarName(indexAssign.name) + ".at(" +
                     genArrayIndexCode(indexAssign.name, indexAssign.indices) + ") = " + valueCode + ";\n";
             break;
         }
@@ -1355,15 +1382,21 @@ void Codegen::genStmt(const ast::Stmt& stmt) {
         case ast::StmtKind::DeclareModule: {
             // Oracle-verified: a DeclareModule section's own code runs at
             // its own textual position, same as a Module section's (see
-            // ModuleStmt's own doc comment) - only its `Global`
-            // declarators can carry real runtime code (an initializer);
-            // `Declare` itself emits nothing here (genDeclarePrototypes()
-            // already emitted its real C++ prototype, before main()).
+            // ModuleStmt's own doc comment) - a `Global` declarator's own
+            // initializer and a `Dim`'s own runtime resize/assign both
+            // need real emission here; every other kind DeclareModule's own
+            // body can contain (`Declare`/`Structure`/`Enumeration`/a
+            // `#Constant`/`NewList`/`NewMap`/`DataSection`) already has its
+            // own no-op case elsewhere in this very switch (its C++ side
+            // effects, if any, already emitted by genStructures()/
+            // genConstantsIn()/genDataPool()/genDeclarePrototypes(), each
+            // already extended to recurse into a DeclareModule's own body -
+            // see their own doc comments) - so, like Module's own case just
+            // below, every statement is simply genStmt'd here with no
+            // separate kind-filtering needed.
             const auto& decl = static_cast<const ast::DeclareModuleStmt&>(stmt);
             for (const auto& bodyStmt : decl.body) {
-                if (bodyStmt->kind == ast::StmtKind::Define) {
-                    genStmt(*bodyStmt);
-                }
+                genStmt(*bodyStmt);
             }
             break;
         }
@@ -1447,9 +1480,9 @@ std::string Codegen::generate() {
         std::string elemType = info.elementSuffix == TypeSuffix::Struct
                                     ? cppTypeFor(info.elementSuffix, info.elementStructName)
                                     : cppTypeFor(info.elementSuffix);
-        out_ += "static std::vector<" + elemType + "> v_" + name + ";\n";
+        out_ += "static std::vector<" + elemType + "> " + cppVarName(name) + ";\n";
         if (info.dimensionCount == 2) {
-            out_ += "static std::int64_t v_" + name + "_dim1 = 0;\n";
+            out_ += "static std::int64_t " + cppVarName(name) + "_dim1 = 0;\n";
         }
     }
     for (const auto& [name, info] : sema_.listDeclarationOrder()) {

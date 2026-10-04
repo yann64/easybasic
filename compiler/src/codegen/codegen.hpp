@@ -146,6 +146,8 @@ private:
     /// valid identifier), so this (and `cppVarName`'s own identical
     /// handling) is the one chokepoint that has to care.
     static std::string cppProcName(const std::string& name);
+    /// As `cppProcName`, for a `#Name` constant's own `k_<name>` global.
+    static std::string cppConstName(const std::string& name);
 
     const ast::Module& module_;
     const Sema& sema_;

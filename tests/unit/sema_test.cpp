@@ -1573,3 +1573,115 @@ TEST_CASE("Sema's Procedure fulfilling a module's own Declare validates the sign
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+// --- M7d's second slice: Structures/Enumerations/constants/arrays/Lists/Maps/DataSection in Modules ---
+
+TEST_CASE("Sema mangles a Structure declared inside a DeclareModule into that module's own namespace",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Geo\n  Structure Point\n    x.i\n  EndStructure\nEndDeclareModule\n"
+                         "Module Geo\nEndModule\n"
+                         "Define q.Geo::Point\nq\\x = 5",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    CHECK(sema.structureInfo("geo::point") != nullptr);
+    CHECK(sema.structureInfo("point") == nullptr); // never leaks into the plain/top-level namespace
+}
+
+TEST_CASE("Sema rejects a qualified reference to a Structure declared only in Module (private)",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Geo\nEndDeclareModule\n"
+                         "Module Geo\n  Structure Point\n    x.i\n  EndStructure\nEndModule\n"
+                         "Define q.Geo::Point",
+                         diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves a Structure-typed Procedure-local variable inside a Module's own Procedure "
+          "against that module's own Structure",
+          "[sema][modules]") {
+    // Regression test: a first attempt at this resolution wrongly treated
+    // the *procedure-local* variable itself ("p", never module-mangled) as
+    // an unresolved bare module reference, silently declaring a brand new
+    // "geo::p" instead of reusing the real local already in scope.
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Geo\n  Declare MakePoint()\n  Structure Point\n    x.i\n  EndStructure\n"
+                         "EndDeclareModule\n"
+                         "Module Geo\n  Procedure MakePoint()\n    Define p.Point\n    p\\x = 1\n"
+                         "    ProcedureReturn p\\x\n  EndProcedure\nEndModule\n"
+                         "Debug Geo::MakePoint()",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema mangles a #Constant/Enumeration declared inside a DeclareModule, with qualified and "
+          "UseModule'd access both resolving it",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Colors\n  #MyRed = 11\n  Enumeration\n    #MyBlue\n  EndEnumeration\n"
+                         "EndDeclareModule\nModule Colors\nEndModule\n"
+                         "Debug Colors::#MyRed\nUseModule Colors\nDebug #MyBlue",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema mangles a Dim array declared inside a DeclareModule, with qualified and UseModule'd "
+          "access both resolving it",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Data1\n  Dim Items(2)\nEndDeclareModule\nModule Data1\nEndModule\n"
+                         "Data1::Items(0) = 10\nUseModule Data1\nDebug Items(0)",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    CHECK(sema.arrayInfo("data1::items") != nullptr);
+}
+
+TEST_CASE("Sema mangles a NewList/NewMap declared inside a DeclareModule, including ForEach's own "
+          "qualified target",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Data2\n  NewList Items.i()\n  NewMap Lookup.s()\nEndDeclareModule\n"
+                         "Module Data2\nEndModule\n"
+                         "AddElement(Data2::Items())\nData2::Lookup(\"k\") = \"v\"\n"
+                         "ForEach Data2::Items()\nNext",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema mangles a DataSection label declared inside a DeclareModule, with qualified Restore "
+          "resolving it",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Dat\n  DataSection\n    L:\n    Data.i 1\n  EndDataSection\n"
+                         "EndDeclareModule\nModule Dat\nEndModule\n"
+                         "Restore Dat::L\nRead.i v1",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}
+
+TEST_CASE("Sema rejects a qualified Restore to a DataSection label declared only in Module (private)",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Dat\nEndDeclareModule\n"
+                         "Module Dat\n  DataSection\n    L:\n    Data.i 1\n  EndDataSection\nEndModule\n"
+                         "Restore Dat::L",
+                         diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}

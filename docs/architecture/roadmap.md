@@ -34,7 +34,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done - see M7a notes (`KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately deferred) |
 | **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar` - see M7b notes); `ToolBar` (blocked on an Image library - see the fourth slice's own notes) and everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
-| **M7d** | `Module`/`DeclareModule`/`EndModule` | First slice done (Procedures + Global variables - see M7d notes); Structures/Macros/Enumerations/constants/arrays/Lists/Maps/DataSections inside a Module deliberately deferred |
+| **M7d** | `Module`/`DeclareModule`/`EndModule` | Two slices done (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection - see M7d notes); `Macro`/`Interface` inside a Module deliberately deferred |
 
 ## M0 Implementation Notes
 
@@ -2392,4 +2392,98 @@ over correctly into the module-scoped case. One new differential e2e test (`test
 covers both official worked examples end to end, byte-for-byte against the real oracle. 300 tests pass
 across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean), including the 289
 that predate this slice.
+
+## M7d Implementation Notes (`Module`/`DeclareModule`/`EndModule`, second slice)
+
+**Scope landed**: every other declaration kind real PB accepts inside a `DeclareModule`/`Module`
+section besides Procedures/Globals - `Structure`, `Enumeration`, a `#Constant`, `Dim` (array),
+`NewList`/`NewMap`, and `DataSection` - all namespaced the identical way the first slice's
+Procedures/Globals already were, with `Module::Member` qualified access, `UseModule`/`UnuseModule`,
+and public/private enforcement all extended uniformly. `Macro` (a genuinely different compiler layer -
+the preprocessor expands it before a `Module`/`DeclareModule` construct even has AST shape) and
+`Interface` remain deliberately out of scope, documented as a real gap rather than silently
+mishandled (both now produce a real diagnostic if written inside a `Module`/`DeclareModule` body).
+Oracle-verified end to end, each declaration kind checked in isolation first and then combined into
+one program - see `tests/e2e_diff/modules_extended`, which diffs byte-for-byte against the real
+`pbcompilerc` oracle.
+
+**The single declaration-mangling + reference-resolution pattern the first slice established
+(mangle a name to `"module::member"` in place on the AST node, resolve a bare/qualified reference the
+same way, check public/private once resolved) scaled to every one of these new kinds with no new
+architecture needed - only new call sites.** This confirmed the first slice's own design choice
+(baking resolution into the existing AST nodes rather than threading module context through Codegen)
+was the right one: extending to Structures/Enumerations/constants/arrays/Lists/Maps/DataSections took
+no Codegen-side module-awareness at all beyond the same `"::"`-sanitizing chokepoint (`cppVarName`/
+`cppProcName`/`cppConstName`/`cppTypeFor`'s own two-arg overload) the first slice already built -
+confirmed by a focused audit that found (and fixed) several *pre-existing* raw `"v_" + name`/`"s_" +
+name`/`"k_" + name` concatenations the first slice's own audit had missed (array index-assignment,
+`Dim`'s own runtime resize/assign call, `cppTypeFor`'s struct-name formatting, `genStructures`'s own
+struct declaration) - genuine latent bugs this second slice's own testing surfaced, not new code this
+slice introduced carelessly.
+
+**A real, oracle-driven correction to this slice's own initial design, caught immediately by testing
+a Structure-typed *procedure-local* variable inside a module's own Procedure** (`Define p.Point` inside
+`Module Ferrari`'s `Procedure MakePoint()`, with `Point` declared in the matching `DeclareModule`):
+`p\x` failed with "used on a value that isn't a Structure" even though `p`'s own declaration looked
+correct. Root cause: `resolveModuleQualifiedName`'s own fallback algorithm (first slice) had no notion
+of "a name already resolved in the *currently active* scope" - a procedure-local variable is
+*deliberately never* module-mangled (only `Global`s are), so a bare reference to it inside a module's
+own Procedure fell all the way through to the "genuinely new - implicitly declare within this
+module's own namespace" fallback, silently creating a brand new, unrelated `"ferrari::p"` (plain
+Integer, the implicit-declaration default) instead of reusing the real local. Fixed by checking
+`order_` first, before any module logic runs at all: `order_` is exactly the *currently active*
+scope's own declaration list (top-level, or - inside a Procedure - that procedure's own params/
+locals), and a pre-populated `Global` is deliberately never added to it (see `bringIntoScope`'s own
+doc comment) - so a hit there is unambiguously a genuine local, never a case the "sealed box" model
+needs to reject. This single check is shared by every `resolveModuleQualifiedName` caller (variables,
+procedures, constants, etc.) and is a safe no-op for the ones where `order_` could never contain a
+match (procedure/constant/array/List/Map names never populate it at all).
+
+**A second real bug, this time in the *declaration*-mangling side, caught by this slice's own unit
+tests before it reached end-to-end testing**: `resolveModuleQualifiedTypeName` (the Structure/
+Interface-type-name counterpart to `resolveModuleQualifiedName`) resolved a qualified type name but
+never actually called `checkModuleAccess` - meaning `Define q.Geo::Point` for a `Point` declared only
+inside `Module Geo` (private, never promised via `DeclareModule`) was silently *accepted* instead of
+rejected with the oracle-verified "Module item 'Point' is not declared as public." error. Fixed by
+giving the function its own `SourceLoc` parameter and calling `checkModuleAccess` itself, rather than
+expecting each of its eight call sites (`Define`'s struct/pointer declarators, `Dim`/`NewList`/
+`NewMap`'s own element type, a `Structure`'s own field, a pointer parameter, `AllocateStructure`'s
+argument) to remember to do it individually - a case where centralizing the check inside the shared
+helper, not just the resolution, closed off an entire class of "forgot to call checkModuleAccess at
+this one call site" bugs at once.
+
+**`DataSection` needed one more piece of surgery specific to it**: `Sema::collectDataSections` (the
+M5b-era whole-Module pre-pass that assigns every label its flat pool index, so a `Restore` can
+forward-reference one defined later in the file) runs *before* the main `visitStmt` walk even starts -
+and is a genuinely separate recursive function with no access to the main walk's own `currentModule_`
+state. Rather than threading a second, parallel module-context parameter through it, it simply reuses
+the *same* `currentModule_` member directly (safe: this pre-pass runs to completion and always clears
+it again on the way out, before the main walk - which owns the same field - ever begins), extended
+with its own `DeclareModule`/`Module` recursion cases, mirroring every other recursive Sema/Codegen
+pass that needed the identical extension (`genConstantsIn`, `genDataPool`, `collectDataLabelArrays`,
+`genProcedures`, `genDeclarePrototypes`). One consequence worth noting: by the time the main walk's own
+`DeclareModule` case scans its body to build `modulePublicMembers_`, a `DataLabelStmt`'s own `.name` is
+*already* mangled (this pre-pass ran first) - unlike every other kind there, whose public-set entry is
+captured from the still-plain name just before `visitStmt` mangles it in place. `DataSection`'s own
+public-set entry is therefore extracted back out of the already-qualified name instead (the substring
+after the last `"::"`), the one place this slice's otherwise-uniform "capture before visiting" pattern
+had to bend to accommodate a pre-existing pass's own, earlier timing.
+
+**Deliberately still deferred**: `Macro`/`Interface` inside a `Module` (see above); nesting a `Module`
+inside another `Module` (unchanged from the first slice); a `Global Dim`/`Global NewList`/
+`Global NewMap` declarator form (oracle-verified to exist in real PB as an alternative way to make an
+array/List/Map public directly inside `Module`'s own body, rather than `DeclareModule`'s; this project
+supports the - oracle-confirmed equally valid - plain `Dim`/`NewList`/`NewMap` directly inside
+`DeclareModule` instead, which covers the same real use case without needing new declarator-level
+grammar); pointer-typed Global variables inside a Module (unchanged, still a known gap - the leading
+`*`-in-the-name convention and the `"modname::"` prefix collide positionally); a bare, unqualified
+`@ProcedureName()` reference to a module's own procedure (unchanged from the first slice).
+
+**Testing**: 8 new Sema unit tests (namespace mangling and qualified/unqualified access for each of
+the six newly-supported kinds, the procedure-local-variable regression test, and the private-Structure/
+private-DataSection-label rejection tests that caught the two real bugs above) plus the existing suite
+extended to 18 `[modules]` tests total. One new differential e2e test
+(`tests/e2e_diff/modules_extended`), combining all six kinds into one program, diffs byte-for-byte
+against the real oracle. 309 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize`
+(ASan/UBSan/LSan clean), including the 300 that predate this slice.
 

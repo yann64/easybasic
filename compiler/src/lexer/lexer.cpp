@@ -430,6 +430,22 @@ Token Lexer::lexIdentifierOrKeyword() {
             while (!isAtEnd() && isIdentContinue(peek())) {
                 typeName += advance();
             }
+            // `Module::StructName` (M7d's second slice) - a qualified
+            // Structure type reference, e.g. `Define q.Geo::Point` from
+            // outside the declaring module - oracle-verified legal. This is
+            // the one place a `.` type annotation can be followed by `::`,
+            // since it names a *type*, not a value expression (the Parser's
+            // own `::` handling in parsePrimaryAtom/parseIdentifierStatement
+            // covers every value-expression case instead).
+            if (peek() == ':' && peek(1) == ':' && isIdentStart(peek(2))) {
+                advance(); // first ':'
+                advance(); // second ':'
+                std::string memberName;
+                while (!isAtEnd() && isIdentContinue(peek())) {
+                    memberName += advance();
+                }
+                typeName += "::" + memberName;
+            }
             suffix = TypeSuffix::Struct;
             structSuffixSpelling = typeName;
             structSuffix = toLower(typeName);

@@ -325,6 +325,14 @@ std::unique_ptr<ast::Stmt> Parser::parseForEach() {
     const Token& nameTok = expect(TokenKind::Identifier, "after 'ForEach'");
     stmt->spelling = nameTok.text;
     stmt->name = toLower(nameTok.text);
+    if (check(TokenKind::ColonColon)) {
+        // `ForEach Module::Name()` (M7d's second slice) - a qualified
+        // List/Map target, oracle-verified legal.
+        advance(); // '::'
+        const Token& memberTok = expect(TokenKind::Identifier, "after '::'");
+        stmt->spelling += "::" + memberTok.text;
+        stmt->name += "::" + toLower(memberTok.text);
+    }
     expect(TokenKind::LParen, "after list name");
     expect(TokenKind::RParen, "to close 'ForEach's list reference");
     stmt->body = parseBlockUntil({TokenKind::KwNext});
@@ -776,6 +784,14 @@ std::unique_ptr<ast::Stmt> Parser::parseRestore() {
     const Token& labelTok = expect(TokenKind::Identifier, "after 'Restore'"); // oracle-verified: required.
     stmt->labelSpelling = labelTok.text;
     stmt->labelName = toLower(labelTok.text);
+    if (check(TokenKind::ColonColon)) {
+        // `Restore Module::Label` (M7d's second slice) - a qualified
+        // DataSection label, oracle-verified legal.
+        advance(); // '::'
+        const Token& memberTok = expect(TokenKind::Identifier, "after '::'");
+        stmt->labelSpelling += "::" + memberTok.text;
+        stmt->labelName += "::" + toLower(memberTok.text);
+    }
     return stmt;
 }
 
@@ -1166,6 +1182,15 @@ std::unique_ptr<ast::Expr> Parser::parsePrimaryAtom() {
         addr->loc = tok.loc;
         addr->labelSpelling = labelTok.text;
         addr->labelName = toLower(labelTok.text);
+        if (check(TokenKind::ColonColon)) {
+            // `?Module::Label` (M7d's second slice) - not independently
+            // oracle-verified, but a reasonable, low-risk extrapolation
+            // from `Restore Module::Label`'s own identical shape just above.
+            advance(); // '::'
+            const Token& memberTok = expect(TokenKind::Identifier, "after '::'");
+            addr->labelSpelling += "::" + memberTok.text;
+            addr->labelName += "::" + toLower(memberTok.text);
+        }
         return addr;
     }
     switch (tok.kind) {
@@ -1195,6 +1220,22 @@ std::unique_ptr<ast::Expr> Parser::parsePrimaryAtom() {
             std::string spelling = tok.text;
             std::string name = toLower(tok.text);
             TypeSuffix suffix = tok.suffix;
+            if (check(TokenKind::ColonColon) && peek(1).kind == TokenKind::Hash) {
+                // `Module::#Const` (M7d's second slice) - a qualified
+                // constant reference, oracle-verified legal (e.g. `Debug
+                // Ferrari::#FerrariName$`) - distinct from the plain
+                // `Module::Member` case just below since a constant's own
+                // `#` sigil comes *after* the `::`, never as a bare
+                // identifier.
+                advance(); // '::'
+                advance(); // '#'
+                const Token& constTok = expect(TokenKind::Identifier, "after '::#'");
+                auto ref = std::make_unique<ast::ConstRefExpr>();
+                ref->loc = tok.loc;
+                ref->spelling = spelling + "::#" + constTok.text;
+                ref->name = name + "::" + toLower(constTok.text);
+                return ref;
+            }
             if (check(TokenKind::ColonColon)) {
                 // `Module::Member` (M7d) - an explicitly qualified
                 // reference, resolvable regardless of UseModule - see

@@ -762,8 +762,8 @@ void Sema::preResolveCompilerDirectives(ast::Block& block) {
     }
 }
 
-void Sema::collectDataSections(const ast::Block& block) {
-    for (const auto& stmt : block) {
+void Sema::collectDataSections(ast::Block& block) {
+    for (auto& stmt : block) {
         switch (stmt->kind) {
             case ast::StmtKind::DataSection: {
                 // By this point preResolveCompilerDirectives() has already
@@ -772,7 +772,7 @@ void Sema::collectDataSections(const ast::Block& block) {
                 // branch - is one that genuinely survives, in the same
                 // flat order Codegen's own, identically-shaped recursive
                 // scan will later see (see genDataPool's own notes).
-                const auto& dataSection = static_cast<const ast::DataSectionStmt&>(*stmt);
+                auto& dataSection = static_cast<ast::DataSectionStmt&>(*stmt);
                 // `currentLabel` tracks whichever label this run of Data
                 // items follows (M7c's own dataLabelItemSuffixes_, used only
                 // to validate a later `?Label` use - see its own doc
@@ -781,9 +781,18 @@ void Sema::collectDataSections(const ast::Block& block) {
                 // contributes to dataCount_ as usual but isn't attributed to
                 // any label.
                 std::string currentLabel;
-                for (const auto& child : dataSection.body) {
+                for (auto& child : dataSection.body) {
                     if (child->kind == ast::StmtKind::DataLabel) {
-                        const auto& label = static_cast<const ast::DataLabelStmt&>(*child);
+                        auto& label = static_cast<ast::DataLabelStmt&>(*child);
+                        // M7d's second slice: a label declared inside a
+                        // Module's own body belongs to that module's own
+                        // namespace - mangled here, once, this pre-pass's
+                        // only chance to do so before dataLabels_ itself is
+                        // populated (the main visitStmt walk's own
+                        // DataSection case never revisits a DataLabelStmt).
+                        if (!currentModule_.empty()) {
+                            label.name = currentModule_ + "::" + label.name;
+                        }
                         dataLabels_[label.name] = dataCount_;
                         currentLabel = label.name;
                     } else {
@@ -797,37 +806,56 @@ void Sema::collectDataSections(const ast::Block& block) {
                 break;
             }
             case ast::StmtKind::If: {
-                const auto& ifStmt = static_cast<const ast::IfStmt&>(*stmt);
-                for (const auto& branch : ifStmt.branches) {
+                auto& ifStmt = static_cast<ast::IfStmt&>(*stmt);
+                for (auto& branch : ifStmt.branches) {
                     collectDataSections(branch.body);
                 }
                 break;
             }
             case ast::StmtKind::Select: {
-                const auto& sel = static_cast<const ast::SelectStmt&>(*stmt);
-                for (const auto& branch : sel.cases) {
+                auto& sel = static_cast<ast::SelectStmt&>(*stmt);
+                for (auto& branch : sel.cases) {
                     collectDataSections(branch.body);
                 }
                 break;
             }
             case ast::StmtKind::For:
-                collectDataSections(static_cast<const ast::ForStmt&>(*stmt).body);
+                collectDataSections(static_cast<ast::ForStmt&>(*stmt).body);
                 break;
             case ast::StmtKind::While:
-                collectDataSections(static_cast<const ast::WhileStmt&>(*stmt).body);
+                collectDataSections(static_cast<ast::WhileStmt&>(*stmt).body);
                 break;
             case ast::StmtKind::Repeat:
-                collectDataSections(static_cast<const ast::RepeatStmt&>(*stmt).body);
+                collectDataSections(static_cast<ast::RepeatStmt&>(*stmt).body);
                 break;
             case ast::StmtKind::ForEach:
-                collectDataSections(static_cast<const ast::ForEachStmt&>(*stmt).body);
+                collectDataSections(static_cast<ast::ForEachStmt&>(*stmt).body);
                 break;
             case ast::StmtKind::ProcedureDecl:
                 // Oracle-verified legal: a DataSection inside a Procedure
                 // contributes to the same global, shared pool/cursor as a
                 // top-level one.
-                collectDataSections(static_cast<const ast::ProcedureDeclStmt&>(*stmt).body);
+                collectDataSections(static_cast<ast::ProcedureDeclStmt&>(*stmt).body);
                 break;
+            case ast::StmtKind::DeclareModule: {
+                // M7d's second slice: a module's own public DataSection
+                // labels live in its DeclareModule section - `currentModule_`
+                // is reused directly (this pre-pass runs to completion, and
+                // clears it again on the way out, before the main
+                // visitStmt walk - which owns the same field - ever starts).
+                auto& decl = static_cast<ast::DeclareModuleStmt&>(*stmt);
+                currentModule_ = decl.name;
+                collectDataSections(decl.body);
+                currentModule_.clear();
+                break;
+            }
+            case ast::StmtKind::Module: {
+                auto& mod = static_cast<ast::ModuleStmt&>(*stmt);
+                currentModule_ = mod.name;
+                collectDataSections(mod.body);
+                currentModule_.clear();
+                break;
+            }
             default:
                 break;
         }
@@ -985,6 +1013,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                     // doc comment); `decl.suffix`/`structTypeName` describe
                     // what it *points at*, recorded separately below.
                     declare(decl.name, decl.spelling, TypeSuffix::Integer, def.loc);
+                    resolveModuleQualifiedTypeName(decl.structTypeName, def.loc);
                     pointerPointeeType_[decl.name] = resolvePointeeType(decl.suffix, decl.structTypeName,
                                                                          decl.structTypeSpelling, def.loc);
                     if (decl.init) {
@@ -999,6 +1028,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 TypeSuffix suffix = decl.suffix == TypeSuffix::None ? TypeSuffix::Integer : decl.suffix;
                 declare(decl.name, decl.spelling, suffix, def.loc);
                 if (suffix == TypeSuffix::Struct) {
+                    resolveModuleQualifiedTypeName(decl.structTypeName, def.loc);
                     if (!structures_.contains(decl.structTypeName)) {
                         diagnostics_.error(def.loc, "'" + decl.structTypeSpelling + "' is not a declared Structure");
                     }
@@ -1032,6 +1062,12 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             for (auto& size : dim.dimensionSizes) {
                 visitExpr(*size);
             }
+            // M7d's second slice: an array declared inside a Module's own
+            // body belongs to that module's own namespace, same convention
+            // as every other declaration kind there.
+            if (!currentModule_.empty()) {
+                dim.name = currentModule_ + "::" + dim.name;
+            }
             if (arrays_.contains(dim.name)) {
                 diagnostics_.error(dim.loc, "'" + dim.spelling + "' is already declared as an array");
                 break;
@@ -1040,6 +1076,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             info.elementSuffix = dim.suffix == TypeSuffix::None ? TypeSuffix::Integer : dim.suffix;
             info.dimensionCount = static_cast<int>(dim.dimensionSizes.size());
             if (info.elementSuffix == TypeSuffix::Struct) {
+                resolveModuleQualifiedTypeName(dim.structTypeName, dim.loc);
                 if (!structures_.contains(dim.structTypeName)) {
                     diagnostics_.error(dim.loc, "'" + dim.structTypeSpelling + "' is not a declared Structure");
                 }
@@ -1051,6 +1088,9 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::NewList: {
             auto& newList = static_cast<ast::NewListStmt&>(stmt);
+            if (!currentModule_.empty()) {
+                newList.name = currentModule_ + "::" + newList.name;
+            }
             if (lists_.contains(newList.name)) {
                 diagnostics_.error(newList.loc, "'" + newList.spelling + "' is already declared as a List");
                 break;
@@ -1058,6 +1098,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             ListInfo info;
             info.elementSuffix = newList.suffix == TypeSuffix::None ? TypeSuffix::Integer : newList.suffix;
             if (info.elementSuffix == TypeSuffix::Struct) {
+                resolveModuleQualifiedTypeName(newList.structTypeName, newList.loc);
                 if (!structures_.contains(newList.structTypeName)) {
                     diagnostics_.error(newList.loc, "'" + newList.structTypeSpelling + "' is not a declared Structure");
                 }
@@ -1069,6 +1110,9 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::NewMap: {
             auto& newMap = static_cast<ast::NewMapStmt&>(stmt);
+            if (!currentModule_.empty()) {
+                newMap.name = currentModule_ + "::" + newMap.name;
+            }
             if (maps_.contains(newMap.name)) {
                 diagnostics_.error(newMap.loc, "'" + newMap.spelling + "' is already declared as a Map");
                 break;
@@ -1076,6 +1120,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             MapInfo info;
             info.elementSuffix = newMap.suffix == TypeSuffix::None ? TypeSuffix::Integer : newMap.suffix;
             if (info.elementSuffix == TypeSuffix::Struct) {
+                resolveModuleQualifiedTypeName(newMap.structTypeName, newMap.loc);
                 if (!structures_.contains(newMap.structTypeName)) {
                     diagnostics_.error(newMap.loc, "'" + newMap.structTypeSpelling + "' is not a declared Structure");
                 }
@@ -1087,6 +1132,10 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::ForEach: {
             auto& forEach = static_cast<ast::ForEachStmt&>(stmt);
+            resolveModuleQualifiedName(
+                forEach.name, [this](const std::string& n) { return lists_.contains(n) || maps_.contains(n); },
+                [](const std::string&) { return false; });
+            checkModuleAccess(forEach.name, forEach.loc);
             if (listInfo(forEach.name) == nullptr && mapInfo(forEach.name) == nullptr) {
                 diagnostics_.error(forEach.loc, "'" + forEach.spelling + "' is not a declared List or Map");
             }
@@ -1095,6 +1144,13 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::IndexAssign: {
             auto& indexAssign = static_cast<ast::IndexAssignStmt&>(stmt);
+            resolveModuleQualifiedName(
+                indexAssign.name,
+                [this](const std::string& n) {
+                    return lists_.contains(n) || maps_.contains(n) || arrays_.contains(n);
+                },
+                [](const std::string&) { return false; }); // no builtin array/List/Map name exists
+            checkModuleAccess(indexAssign.name, indexAssign.loc);
             for (auto& idx : indexAssign.indices) {
                 visitExpr(*idx);
             }
@@ -1240,6 +1296,10 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::Restore: {
             auto& restore = static_cast<ast::RestoreStmt&>(stmt);
+            resolveModuleQualifiedName(
+                restore.labelName, [this](const std::string& n) { return dataLabels_.contains(n); },
+                [](const std::string&) { return false; }); // no builtin DataSection label exists
+            checkModuleAccess(restore.labelName, restore.loc);
             if (!dataLabelIndex(restore.labelName)) {
                 diagnostics_.error(restore.loc, "'" + restore.labelSpelling + "' is not a declared Data label");
             }
@@ -1279,6 +1339,11 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             break;
         case ast::StmtKind::ConstDecl: {
             auto& constDecl = static_cast<ast::ConstDeclStmt&>(stmt);
+            // M7d's second slice: a #Constant declared inside a Module's
+            // own body belongs to that module's own namespace.
+            if (!currentModule_.empty()) {
+                constDecl.name = currentModule_ + "::" + constDecl.name;
+            }
             visitExpr(*constDecl.value);
             ValueKind family = familyOfExpr(*constDecl.value);
             TypeSuffix suffix = TypeSuffix::Integer;
@@ -1303,6 +1368,11 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             auto& enumStmt = static_cast<ast::EnumerationStmt&>(stmt);
             std::int64_t nextValue = 0;
             for (auto& member : enumStmt.members) {
+                // M7d's second slice: same module-namespacing as ConstDecl's
+                // own, applied per member.
+                if (!currentModule_.empty()) {
+                    member.name = currentModule_ + "::" + member.name;
+                }
                 if (member.explicitValue) {
                     visitExpr(*member.explicitValue);
                     if (auto value = evalConstExpr(*member.explicitValue)) {
@@ -1317,6 +1387,11 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::StructureDecl: {
             auto& structDecl = static_cast<ast::StructureDeclStmt&>(stmt);
+            // M7d's second slice: a Structure declared inside a Module's
+            // own body belongs to that module's own namespace.
+            if (!currentModule_.empty()) {
+                structDecl.name = currentModule_ + "::" + structDecl.name;
+            }
             if (structures_.contains(structDecl.name) || interfaces_.contains(structDecl.name)) {
                 diagnostics_.error(structDecl.loc,
                                     "'" + structDecl.spelling + "' is already declared as a Structure or Interface");
@@ -1334,6 +1409,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                     // contains Structures already fully processed by this
                     // point in source order, so this naturally enforces
                     // PB's own declare-before-use rule for free.
+                    resolveModuleQualifiedTypeName(field.structTypeName, structDecl.loc);
                     if (!structures_.contains(field.structTypeName)) {
                         diagnostics_.error(structDecl.loc,
                                             "'" + field.structTypeSpelling + "' is not a declared Structure");
@@ -1526,6 +1602,7 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             for (auto& param : proc.params) {
                 if (param.isPointer) {
                     declare(param.name, param.spelling, TypeSuffix::Integer, proc.loc);
+                    resolveModuleQualifiedTypeName(param.structTypeName, proc.loc);
                     pointerPointeeType_[param.name] = resolvePointeeType(param.suffix, param.structTypeName,
                                                                          param.structTypeSpelling, proc.loc);
                     continue;
@@ -1590,32 +1667,85 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                 break;
             }
             currentModule_ = decl.name;
-            // Only `Declare` (a public procedure signature) and `Global`
-            // (a public variable, optionally initialized) are supported
-            // inside a DeclareModule section in this first Module slice -
-            // real PB also accepts Structures/Macros/Enumerations/
-            // constants/arrays/Lists/Maps/labels here, deliberately
-            // deferred (see DeclareModuleStmt's own doc comment). Each
-            // allowed statement is visited directly (not via visitBlock)
-            // so this restriction is enforced here, once, rather than
-            // threaded through the general statement dispatcher.
+            // `Declare` (a public procedure signature), `Global` (a public
+            // variable), `Structure`, `Enumeration`, a `#Constant`, `Dim`,
+            // `NewList`, `NewMap`, and `DataSection` are all supported
+            // inside a DeclareModule section (M7d's second slice) - `Macro`
+            // (a genuinely different layer, expanded by the preprocessor
+            // before this construct even has AST shape) and `Interface`
+            // remain deliberately deferred (see DeclareModuleStmt's own
+            // doc comment). Each allowed statement is visited directly (not
+            // via visitBlock) so this restriction is enforced here, once,
+            // rather than threaded through the general statement
+            // dispatcher; the public set itself is always keyed by the
+            // *plain*, unmangled member name, captured *before* visiting
+            // (visitStmt's own case for each kind mangles `.name` in place).
             auto& publicSet = modulePublicMembers_[decl.name];
             for (auto& bodyStmt : decl.body) {
-                if (bodyStmt->kind == ast::StmtKind::Declare) {
-                    // Captured *before* visiting - visitStmt's own Declare
-                    // case mangles `.name` in place (see above), but the
-                    // public set itself is keyed by the plain member name.
-                    publicSet.insert(static_cast<ast::DeclareStmt&>(*bodyStmt).name);
-                    visitStmt(*bodyStmt);
-                } else if (bodyStmt->kind == ast::StmtKind::Define &&
-                           static_cast<ast::DefineStmt&>(*bodyStmt).isGlobal) {
-                    for (auto& decl2 : static_cast<ast::DefineStmt&>(*bodyStmt).declarators) {
-                        publicSet.insert(decl2.name);
-                    }
-                    visitStmt(*bodyStmt);
-                } else {
-                    diagnostics_.error(bodyStmt->loc, "Only 'Declare' and 'Global' are currently supported "
-                                                       "inside a DeclareModule section.");
+                switch (bodyStmt->kind) {
+                    case ast::StmtKind::Declare:
+                        publicSet.insert(static_cast<ast::DeclareStmt&>(*bodyStmt).name);
+                        visitStmt(*bodyStmt);
+                        break;
+                    case ast::StmtKind::Define:
+                        if (static_cast<ast::DefineStmt&>(*bodyStmt).isGlobal) {
+                            for (auto& decl2 : static_cast<ast::DefineStmt&>(*bodyStmt).declarators) {
+                                publicSet.insert(decl2.name);
+                            }
+                            visitStmt(*bodyStmt);
+                        } else {
+                            diagnostics_.error(bodyStmt->loc, "Only 'Global' (not a plain 'Define'/'Protected') "
+                                                               "is supported inside a DeclareModule section.");
+                        }
+                        break;
+                    case ast::StmtKind::StructureDecl:
+                        publicSet.insert(static_cast<ast::StructureDeclStmt&>(*bodyStmt).name);
+                        visitStmt(*bodyStmt);
+                        break;
+                    case ast::StmtKind::Enumeration:
+                        for (auto& member : static_cast<ast::EnumerationStmt&>(*bodyStmt).members) {
+                            publicSet.insert(member.name);
+                        }
+                        visitStmt(*bodyStmt);
+                        break;
+                    case ast::StmtKind::ConstDecl:
+                        publicSet.insert(static_cast<ast::ConstDeclStmt&>(*bodyStmt).name);
+                        visitStmt(*bodyStmt);
+                        break;
+                    case ast::StmtKind::Dim:
+                        publicSet.insert(static_cast<ast::DimStmt&>(*bodyStmt).name);
+                        visitStmt(*bodyStmt);
+                        break;
+                    case ast::StmtKind::NewList:
+                        publicSet.insert(static_cast<ast::NewListStmt&>(*bodyStmt).name);
+                        visitStmt(*bodyStmt);
+                        break;
+                    case ast::StmtKind::NewMap:
+                        publicSet.insert(static_cast<ast::NewMapStmt&>(*bodyStmt).name);
+                        visitStmt(*bodyStmt);
+                        break;
+                    case ast::StmtKind::DataSection:
+                        for (auto& child : static_cast<ast::DataSectionStmt&>(*bodyStmt).body) {
+                            if (child->kind == ast::StmtKind::DataLabel) {
+                                // Unlike every other kind here, collectDataSections()
+                                // (a whole-Module pre-pass that runs *before* this
+                                // walk - see Sema::analyze()) has already mangled
+                                // this label's own `.name` to its qualified form,
+                                // so the plain member name for the public set has
+                                // to be extracted back out of it instead of read
+                                // directly.
+                                const std::string& mangled = static_cast<ast::DataLabelStmt&>(*child).name;
+                                auto sep = mangled.rfind("::");
+                                publicSet.insert(sep == std::string::npos ? mangled : mangled.substr(sep + 2));
+                            }
+                        }
+                        visitStmt(*bodyStmt);
+                        break;
+                    default:
+                        diagnostics_.error(bodyStmt->loc,
+                                            "This statement kind is not currently supported inside a "
+                                            "DeclareModule section.");
+                        break;
                 }
             }
             currentModule_.clear();
@@ -1640,25 +1770,20 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             // textual position, exactly like top-level code outside any
             // module (see ModuleStmt's own doc comment). So this is a
             // *blocklist*, not an allowlist like DeclareModule's own body
-            // has: everything not explicitly deferred here (Structures/
-            // Macros/Enumerations/constants/arrays/Lists/Maps/DataSections/
-            // nested modules - none of these are module-scoped by this
-            // first Module slice, so letting them through would silently
-            // leak into the flat top-level tables instead of this module's
-            // own namespace) is visited through the ordinary dispatcher,
-            // which is already module-aware via `currentModule_` for
-            // everything this slice *does* support (Procedure/Declare/
-            // Global/plain statements referencing them).
+            // has: everything not explicitly deferred here (Macros - a
+            // genuinely different layer, expanded by the preprocessor
+            // before Module/DeclareModule constructs even have AST shape -
+            // and Interfaces/nested modules, neither module-scoped by this
+            // slice, so letting them through would silently leak into the
+            // flat top-level tables instead of this module's own namespace)
+            // is visited through the ordinary dispatcher, which is already
+            // module-aware via `currentModule_` for everything this slice
+            // supports (Procedure/Declare/Global/Structure/Enumeration/
+            // constant/Dim/NewList/NewMap/DataSection/plain statements
+            // referencing them).
             for (auto& bodyStmt : mod.body) {
                 switch (bodyStmt->kind) {
-                    case ast::StmtKind::StructureDecl:
                     case ast::StmtKind::InterfaceDecl:
-                    case ast::StmtKind::NewList:
-                    case ast::StmtKind::NewMap:
-                    case ast::StmtKind::Dim:
-                    case ast::StmtKind::DataSection:
-                    case ast::StmtKind::ConstDecl:
-                    case ast::StmtKind::Enumeration:
                     case ast::StmtKind::DeclareModule:
                     case ast::StmtKind::Module:
                         diagnostics_.error(bodyStmt->loc,
@@ -1729,6 +1854,10 @@ void Sema::visitExpr(ast::Expr& expr) {
         }
         case ast::ExprKind::ConstRef: {
             auto& ref = static_cast<ast::ConstRefExpr&>(expr);
+            resolveModuleQualifiedName(
+                ref.name, [this](const std::string& n) { return constants_.contains(n); },
+                [](const std::string& n) { return builtinConstantValue(n).has_value(); });
+            checkModuleAccess(ref.name, ref.loc);
             if (!constants_.contains(ref.name)) {
                 diagnostics_.error(ref.loc, "'#" + ref.spelling + "' is not declared");
                 declareConst(ref.name, ref.spelling, TypeSuffix::Integer, ref.loc); // recovery fallback
@@ -1748,6 +1877,23 @@ void Sema::visitExpr(ast::Expr& expr) {
         }
         case ast::ExprKind::Call: {
             auto& call = static_cast<ast::CallExpr&>(expr);
+            // M7d's second slice: resolved once, here, ahead of every kind
+            // of `Name(args)` this case can mean (procedure/array/List/Map/
+            // built-in) - everything below (including visitCall's own,
+            // separate call site) sees the final key already.
+            resolveModuleQualifiedName(
+                call.name,
+                [this](const std::string& n) {
+                    return procedures_.contains(n) || lists_.contains(n) || maps_.contains(n) ||
+                           arrays_.contains(n);
+                },
+                [this](const std::string& n) {
+                    return isStringLibBuiltinName(n) || isMathLibBuiltinName(n) || isMemoryLibBuiltinName(n) ||
+                           isFileLibBuiltinName(n) || isDateLibBuiltinName(n) || isThreadLibBuiltinName(n) ||
+                           isGuiLibBuiltinName(n) || isPointerBuiltinName(n) || isListBuiltinName(n) ||
+                           isMapBuiltinName(n);
+                });
+            checkModuleAccess(call.name, call.loc);
             // The handful of pointer/memory built-ins are recognized by name
             // before anything else - `AllocateStructure`'s sole argument in
             // particular must NOT fall through to the ordinary call/array
@@ -1831,6 +1977,10 @@ void Sema::visitExpr(ast::Expr& expr) {
         }
         case ast::ExprKind::DataLabelAddress: {
             auto& addr = static_cast<ast::DataLabelAddressExpr&>(expr);
+            resolveModuleQualifiedName(
+                addr.labelName, [this](const std::string& n) { return dataLabels_.contains(n); },
+                [](const std::string&) { return false; }); // no builtin DataSection label exists
+            checkModuleAccess(addr.labelName, addr.loc);
             if (!dataLabels_.contains(addr.labelName)) {
                 diagnostics_.error(addr.loc, "'" + addr.labelSpelling + "' is not a declared DataSection label");
             } else if (!dataLabelAddressable(addr.labelName)) {
@@ -1887,19 +2037,8 @@ void Sema::bringIntoScope(const std::unordered_map<std::string, TypeSuffix>& out
 }
 
 void Sema::visitCall(ast::CallExpr& call) {
-    resolveModuleQualifiedName(
-        call.name, [this](const std::string& n) { return procedures_.contains(n); },
-        [this](const std::string& n) {
-            // Every real PB command this project recognizes by name - the
-            // union of every library's own isXxxBuiltinName, deliberately
-            // *not* a blind `procedures_.contains(n)` (which would also
-            // match an invisible same-named top-level user procedure -
-            // see resolveModuleQualifiedName's own doc comment).
-            return isStringLibBuiltinName(n) || isMathLibBuiltinName(n) || isMemoryLibBuiltinName(n) ||
-                   isFileLibBuiltinName(n) || isDateLibBuiltinName(n) || isThreadLibBuiltinName(n) ||
-                   isGuiLibBuiltinName(n) || isPointerBuiltinName(n) || isListBuiltinName(n) || isMapBuiltinName(n);
-        });
-    checkModuleAccess(call.name, call.loc);
+    // Already resolved + public/private-checked by visitExpr's own Call
+    // case, the only caller - see its own doc comment.
     if (isGuiLibBuiltinName(call.name)) {
         usesGui_ = true;
     }
@@ -2204,11 +2343,18 @@ bool Sema::visitListBuiltinCall(ast::CallExpr& call) {
     // Every one of these takes a bare `name()` as its first argument -
     // naming the List itself, not reading its current element - so it's
     // validated directly rather than visited as an ordinary expression (see
-    // this method's own doc comment).
-    const ast::Expr& listArg = *call.args.front();
+    // this method's own doc comment). Never independently reaches
+    // visitExpr's own Call case (the chokepoint every *other* call name
+    // resolves through), so it needs its own resolveModuleQualifiedName
+    // call here (M7d's second slice).
+    ast::Expr& listArg = *call.args.front();
     if (listArg.kind == ast::ExprKind::Call) {
-        const auto& listCall = static_cast<const ast::CallExpr&>(listArg);
+        auto& listCall = static_cast<ast::CallExpr&>(listArg);
         if (listCall.args.empty()) {
+            resolveModuleQualifiedName(
+                listCall.name, [this](const std::string& n) { return lists_.contains(n); },
+                [](const std::string&) { return false; }); // no builtin List name exists
+            checkModuleAccess(listCall.name, call.loc);
             requireList(listCall.name, listCall.spelling, call.loc);
         } else {
             diagnostics_.error(call.loc, "'" + call.spelling + "' expects a bare 'name()' List argument");
@@ -2250,11 +2396,17 @@ bool Sema::visitMapBuiltinCall(ast::CallExpr& call) {
         return true;
     }
     // As with visitListBuiltinCall, the first argument names the Map itself
-    // (a bare `name()`) rather than being visited as an ordinary expression.
-    const ast::Expr& mapArg = *call.args.front();
+    // (a bare `name()`) rather than being visited as an ordinary expression -
+    // and likewise needs its own resolveModuleQualifiedName call (M7d's
+    // second slice), never reaching visitExpr's own Call case.
+    ast::Expr& mapArg = *call.args.front();
     if (mapArg.kind == ast::ExprKind::Call) {
-        const auto& mapCall = static_cast<const ast::CallExpr&>(mapArg);
+        auto& mapCall = static_cast<ast::CallExpr&>(mapArg);
         if (mapCall.args.empty()) {
+            resolveModuleQualifiedName(
+                mapCall.name, [this](const std::string& n) { return maps_.contains(n); },
+                [](const std::string&) { return false; }); // no builtin Map name exists
+            checkModuleAccess(mapCall.name, call.loc);
             if (mapInfo(mapCall.name) == nullptr) {
                 diagnostics_.error(call.loc, "'" + mapCall.spelling + "' is not a declared Map");
             }
@@ -2369,6 +2521,23 @@ void Sema::resolveModuleQualifiedName(std::string& name, const std::function<boo
     if (name.find("::") != std::string::npos) {
         return;
     }
+    // A name already declared in the *currently active* scope - top level,
+    // or, if inside a Procedure, that procedure's own params/locals - is
+    // unambiguously already resolved, module or no module: `order_` is
+    // exactly that scope's own declaration list, and (critically) a
+    // pre-populated Global is deliberately never added to it (see
+    // bringIntoScope's own doc comment) - only a *genuine* local is. Skips
+    // every module step below entirely; without this, a plain procedure-
+    // local inside a module's own Procedure (e.g. `Define p.Point` inside
+    // `Module Ferrari`'s `Procedure MakePoint()`) would wrongly be treated
+    // as an unresolved bare name and silently re-declared as a brand new
+    // "ferrari::p" instead of reusing the real local already in scope - a
+    // real bug this exact check was added to fix, not a hypothetical.
+    for (const auto& local : order_) {
+        if (local.first == name) {
+            return;
+        }
+    }
     if (!currentModule_.empty()) {
         std::string qualified = currentModule_ + "::" + name;
         if (exists(qualified)) {
@@ -2413,6 +2582,13 @@ void Sema::checkModuleAccess(const std::string& qualifiedName, SourceLoc loc) co
     if (it == modulePublicMembers_.end() || !it->second.contains(memberName)) {
         diagnostics_.error(loc, "Module item '" + memberName + "' is not declared as public.");
     }
+}
+
+void Sema::resolveModuleQualifiedTypeName(std::string& typeName, SourceLoc loc) const {
+    resolveModuleQualifiedName(
+        typeName, [this](const std::string& n) { return structures_.contains(n) || interfaces_.contains(n); },
+        [](const std::string&) { return false; }); // no such thing as a builtin Structure
+    checkModuleAccess(typeName, loc);
 }
 
 Sema::ResolvedType Sema::resolveField(const ResolvedType& baseType, const std::string& fieldLowerName,
@@ -2541,7 +2717,8 @@ bool Sema::visitPointerBuiltinCall(ast::CallExpr& call) {
             diagnostics_.error(call.loc, "'AllocateStructure' expects a single Structure type name");
             return true;
         }
-        const auto& typeRef = static_cast<const ast::VarRefExpr&>(*call.args.front());
+        auto& typeRef = static_cast<ast::VarRefExpr&>(*call.args.front());
+        resolveModuleQualifiedTypeName(typeRef.name, call.loc);
         if (!structures_.contains(typeRef.name)) {
             diagnostics_.error(call.loc, "'" + typeRef.spelling + "' is not a declared Structure");
         }

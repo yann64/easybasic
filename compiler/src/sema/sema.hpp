@@ -489,7 +489,7 @@ private:
     /// forward-reference a label defined later in the file (oracle-
     /// verified) - the label table needs to be complete before any
     /// Restore statement is resolved against it.
-    void collectDataSections(const ast::Block& block);
+    void collectDataSections(ast::Block& block);
     void declare(const std::string& lowerName, const std::string& spelling, TypeSuffix suffix,
                  SourceLoc loc);
     /// Like declare(), but for a name reached through PB's implicit-
@@ -568,6 +568,13 @@ private:
     /// still is.
     void resolveModuleQualifiedName(std::string& name, const std::function<bool(const std::string&)>& exists,
                                      const std::function<bool(const std::string&)>& isBuiltin) const;
+    /// M7d's second slice: as `resolveModuleQualifiedName`, specialized for
+    /// a `.TypeName` Structure/Interface type reference (checked against
+    /// `structures_`/`interfaces_`) - there's no such thing as a builtin
+    /// Structure, so the final plain/builtin fallback step is always
+    /// skipped while inside a module, exactly like a variable reference's
+    /// own always-false `isBuiltin`.
+    void resolveModuleQualifiedTypeName(std::string& typeName, SourceLoc loc) const;
     /// For an already-`Module::Member`-qualified `qualifiedName` (containing
     /// "::"), reports the oracle-verified "Module item '<member>' is not
     /// declared as public." diagnostic if `Member` isn't in `Module`'s own
