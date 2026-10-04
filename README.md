@@ -5,7 +5,7 @@ compiles the generated C++ with a real backend compiler (g++/clang++).
 
 ## Status
 
-`M0`-`M6` done, M7a (threads) and M7b's first two GUI-core slices done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
+`M0`-`M6` done, M7a (threads) and M7b's first three GUI-core slices done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
 operator/precedence table (arithmetic, bitwise, comparisons, logical), `If`/`Select`/
 `For`/`While`/`Repeat`, `EnableExplicit`, `#Name`/`Enumeration` constants,
 `Procedure`/`ProcedureReturn` with recursion and genuinely isolated per-procedure scope,
@@ -29,9 +29,10 @@ value - oracle-verified), threads (`CreateThread`/`IsThread`/`WaitThread`, re-en
 `WaitWindowEvent`, `EventWindow`/`EventGadget`/`EventType`, the `#PB_Event_*`/
 `#PB_Window_*`/`#PB_EventType_*` constants, `ButtonGadget`/`TextGadget`/`StringGadget`/
 `CheckBoxGadget`/`FrameGadget`, `IsGadget`/`FreeGadget`/`ResizeGadget`/`HideGadget`/
-`DisableGadget`/`GetGadgetText`/`SetGadgetText`/`GetGadgetState`/`SetGadgetState` - an
-optional build-time dependency, only pulled in for a program that actually calls a GUI
-command) - all cross-checked against PureBasic's own compiler, including
+`DisableGadget`/`GetGadgetText`/`SetGadgetText`/`GetGadgetState`/`SetGadgetState`, and
+`MessageRequester` with the `#PB_MessageRequester_*` constants - an optional build-time
+dependency, only pulled in for a program that actually calls a GUI command) - all
+cross-checked against PureBasic's own compiler, including
 real bugs (a target-typed `/`, a two-tier vs. one-tier bitwise precedence mix-up, a wrong
 initial assumption about primitive-typed pointers, an unaligned-memory-access UB in
 `Peek*`/`Poke*`) the differential test suite or a targeted oracle probe caught before they

@@ -580,4 +580,84 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
     return 1;
 }
 
+/// M7b's third GUI slice: `MessageRequester`, the simplest modal dialog.
+/// Unlike every other GUI builtin so far, this one is genuinely
+/// *synchronous* from PB's own point of view - it blocks the calling
+/// "thread" until a button is clicked and returns which one, with no
+/// `WaitWindowEvent`/event-queue involvement at all. `gtk_dialog_run`
+/// (GTK3's own nested-main-loop "block until response" API) is the exact
+/// right fit for this, despite being deprecated in favor of an async,
+/// signal-based pattern in newer GTK - that pattern doesn't exist for a
+/// good reason here, since PB's own `MessageRequester` call site is
+/// genuinely blocking.
+///
+/// `Flags`' bits 0-1 select the button set (`0`=Ok, `1`=YesNo,
+/// `2`=YesNoCancel - oracle-verified via `#PB_MessageRequester_Ok`/
+/// `YesNo`/`YesNoCancel`), and bits 2-4 independently select an icon
+/// (`#PB_MessageRequester_Info`=4/`Error`=8/`Warning`=16) - no icon at all
+/// if none of those three are set. GTK has no built-in "Yes/No/Cancel"
+/// button-set enum, so that one combination is built by hand
+/// (`GTK_BUTTONS_NONE` + three `gtk_dialog_add_button` calls) rather than
+/// using `GtkButtonsType` for it.
+///
+/// **Oracle-verified finding that shapes the whole return-value mapping**:
+/// clicking the *only* button on a plain Ok-type dialog returns `6`
+/// (`#PB_MessageRequester_Yes`'s own value), **not** `0`
+/// (`#PB_MessageRequester_Ok`) - confirmed directly, repeatedly, by
+/// clicking that exact button under Xvfb and reading back the Debug
+/// output. This looks like a genuine real-PB implementation quirk (its
+/// GTK3 backend likely routes a single-button dialog's response through
+/// the same code path as a "Yes" response), not a documented public
+/// contract - but unlike `OpenWindow`/`IsWindow`'s own native-handle-value
+/// simplification (an arbitrary internal pointer no reasonable program
+/// would compare against), `#PB_MessageRequester_Ok`/`Yes`/`No`/`Cancel`
+/// are meaningful constants a real program might reasonably check equality
+/// against, so this one *is* replicated exactly rather than "cleaned up"
+/// to the more intuitive `0`.
+inline std::int64_t pbMessageRequester(const PBString& title, const PBString& text, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    std::int64_t buttonSet = flags & 3;
+    GtkMessageType messageType = GTK_MESSAGE_OTHER;
+    if ((flags & 4) != 0) {
+        messageType = GTK_MESSAGE_INFO;
+    } else if ((flags & 8) != 0) {
+        messageType = GTK_MESSAGE_ERROR;
+    } else if ((flags & 16) != 0) {
+        messageType = GTK_MESSAGE_WARNING;
+    }
+
+    GtkButtonsType buttons = GTK_BUTTONS_OK;
+    if (buttonSet == 1) {
+        buttons = GTK_BUTTONS_YES_NO;
+    } else if (buttonSet == 2) {
+        buttons = GTK_BUTTONS_NONE;
+    }
+
+    GtkWidget* dialog = gtk_message_dialog_new(nullptr, GTK_DIALOG_MODAL, messageType, buttons, "%s",
+                                                text.bytes().c_str());
+    gtk_window_set_title(GTK_WINDOW(dialog), title.bytes().c_str());
+    if (buttonSet == 2) {
+        // Matches real PB's own left-to-right button order (confirmed via
+        // screenshot under Xvfb: No, Yes, Cancel).
+        gtk_dialog_add_button(GTK_DIALOG(dialog), "No", GTK_RESPONSE_NO);
+        gtk_dialog_add_button(GTK_DIALOG(dialog), "Yes", GTK_RESPONSE_YES);
+        gtk_dialog_add_button(GTK_DIALOG(dialog), "Cancel", GTK_RESPONSE_CANCEL);
+    }
+
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+
+    switch (response) {
+    case GTK_RESPONSE_NO:
+        return 7; // #PB_MessageRequester_No
+    case GTK_RESPONSE_CANCEL:
+    case GTK_RESPONSE_DELETE_EVENT:
+        return 2; // #PB_MessageRequester_Cancel
+    case GTK_RESPONSE_YES:
+    case GTK_RESPONSE_OK:
+    default:
+        return 6; // #PB_MessageRequester_Yes - see this function's own doc comment.
+    }
+}
+
 } // namespace easybasic::runtime

@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <cstdint>
 #include <thread>
 
 #include <easybasic/runtime/guilib.hpp>
@@ -322,4 +323,62 @@ TEST_CASE("Closing a window frees its own gadgets too", "[runtime][guilib]") {
 
     pbCloseWindow(209);
     CHECK(pbIsGadget(1) == 0);
+}
+
+namespace {
+/// `pbMessageRequester` blocks the calling thread inside `gtk_dialog_run`'s
+/// own nested main loop until a button is clicked - there's no window-
+/// manager-less click-simulation trick available here the way there was
+/// for a gadget click (no on-screen coordinates are known ahead of time,
+/// and the call doesn't return control until a response happens anyway).
+/// Scheduled with `g_timeout_add` *before* calling `pbMessageRequester`,
+/// this fires safely from the very same nested loop `gtk_dialog_run` pumps
+/// (both service the same default `GMainContext`) and finds the dialog by
+/// its own type rather than needing a widget reference threaded through.
+gboolean autoRespond(gpointer userData) {
+    auto response = static_cast<GtkResponseType>(reinterpret_cast<std::intptr_t>(userData));
+    GList* windows = gtk_window_list_toplevels();
+    for (GList* w = windows; w != nullptr; w = w->next) {
+        auto* widget = static_cast<GtkWidget*>(w->data);
+        if (GTK_IS_DIALOG(widget) != 0) {
+            gtk_dialog_response(GTK_DIALOG(widget), response);
+            break;
+        }
+    }
+    g_list_free(windows);
+    return G_SOURCE_REMOVE;
+}
+} // namespace
+
+TEST_CASE("MessageRequester's only button returns #PB_MessageRequester_Yes, not _Ok",
+          "[runtime][guilib]") {
+    // Oracle-verified, somewhat surprising finding: clicking the sole
+    // button on a plain Ok-type dialog returns 6 (#PB_MessageRequester_Yes)
+    // in real PB, not 0 (#PB_MessageRequester_Ok) - see
+    // pbMessageRequester's own doc comment for why this is replicated
+    // exactly rather than "cleaned up".
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_OK));
+    CHECK(pbMessageRequester(PBString("Title"), PBString("Text")) == 6);
+}
+
+TEST_CASE("MessageRequester YesNo reports Yes/No correctly", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_YES));
+    CHECK(pbMessageRequester(PBString("Title"), PBString("Text"), 1) == 6); // #PB_MessageRequester_Yes
+
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_NO));
+    CHECK(pbMessageRequester(PBString("Title"), PBString("Text"), 1) == 7); // #PB_MessageRequester_No
+}
+
+TEST_CASE("MessageRequester YesNoCancel reports Cancel correctly", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_CANCEL));
+    CHECK(pbMessageRequester(PBString("Title"), PBString("Text"), 2) == 2); // #PB_MessageRequester_Cancel
 }

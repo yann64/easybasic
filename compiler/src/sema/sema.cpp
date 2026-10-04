@@ -377,6 +377,10 @@ void Sema::registerGuiLibBuiltins() {
         {"getgadgettext", TypeSuffix::String, {TypeSuffix::Integer}, 1},
         {"setgadgetstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"getgadgetstate", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // M7b's third GUI slice: MessageRequester. Flags is optional
+        // (oracle-verified: a plain two-argument call defaults to an
+        // Ok-only, iconless dialog).
+        {"messagerequester", TypeSuffix::Integer, {TypeSuffix::String, TypeSuffix::String, TypeSuffix::Integer}, 2},
     };
     for (const auto& sig : signatures) {
         ProcedureInfo info;
@@ -393,7 +397,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "windowevent",   "waitwindowevent", "eventwindow",  "eventgadget",    "eventtype",
         "buttongadget",  "textgadget",  "stringgadget",     "checkboxgadget", "framegadget",
         "isgadget",      "freegadget",  "resizegadget",     "hidegadget",     "disablegadget",
-        "setgadgettext", "getgadgettext", "setgadgetstate", "getgadgetstate",
+        "setgadgettext", "getgadgettext", "setgadgetstate", "getgadgetstate", "messagerequester",
     };
     return names.contains(lowerName);
 }
@@ -484,6 +488,33 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_window_maximizegadget", 16},
         {"pb_window_minimizegadget", 32},
         {"pb_window_screencentered", 64},
+        // Oracle-verified via a direct `Debug #PB_EventType_Xxx` probe
+        // (M7b's second GUI slice - gadget events' own EventType()
+        // sub-codes). Note the "obvious"-looking guess for a checkbox
+        // toggle would be Change, but it's actually LeftClick (see
+        // guilib.hpp's own onGadgetClicked doc comment).
+        {"pb_eventtype_leftclick", 0},
+        {"pb_eventtype_rightclick", 1},
+        {"pb_eventtype_leftdoubleclick", 2},
+        {"pb_eventtype_focus", 256},
+        {"pb_eventtype_lostfocus", 512},
+        {"pb_eventtype_change", 768},
+        // Oracle-verified (M7b's third GUI slice, MessageRequester): the
+        // button-set flags (Ok/YesNo/YesNoCancel) are a 0/1/2 sequence, not
+        // independent bits - see guilib.hpp's pbMessageRequester for the
+        // `Flags & 3` masking this implies. The button-pressed return
+        // values (Yes/No/Cancel) are a separate group that happens to
+        // reuse some of the same numbers (Cancel=2 coincides with the
+        // YesNoCancel flag, Yes=6 does not collide with anything).
+        {"pb_messagerequester_ok", 0},
+        {"pb_messagerequester_yesno", 1},
+        {"pb_messagerequester_yesnocancel", 2},
+        {"pb_messagerequester_info", 4},
+        {"pb_messagerequester_error", 8},
+        {"pb_messagerequester_warning", 16},
+        {"pb_messagerequester_yes", 6},
+        {"pb_messagerequester_no", 7},
+        {"pb_messagerequester_cancel", 2},
     };
     return table;
 }

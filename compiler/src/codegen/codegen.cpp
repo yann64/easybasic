@@ -157,6 +157,7 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"hidegadget", "pbHideGadget"},         {"disablegadget", "pbDisableGadget"},
         {"setgadgettext", "pbSetGadgetText"},   {"getgadgettext", "pbGetGadgetText"},
         {"setgadgetstate", "pbSetGadgetState"}, {"getgadgetstate", "pbGetGadgetState"},
+        {"messagerequester", "pbMessageRequester"},
     };
     return "easybasic::runtime::" + names.at(lowerName);
 }

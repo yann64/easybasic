@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done - see M7a notes (`KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately deferred) |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First two slices done (Window + event core, basic gadgets - see M7b notes); `MessageRequester`/`Menu`/`StatusBar`/`ToolBar`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First three slices done (Window + event core, basic gadgets, `MessageRequester` - see M7b notes); `Menu`/`StatusBar`/`ToolBar`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Not started - scoped, see M7 scoping notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Not started - scoped, see M7 scoping notes |
 
@@ -1928,4 +1928,64 @@ second golden e2e case (`tests/e2e/gui_basic_gadgets`) covers creation/managemen
 trips deterministically (no simulated click/keystroke, same reasoning as the first slice's own e2e
 case for not attempting an e2e_diff test here: the oracle-verified return-value simplifications would
 fail a literal stdout diff even on fully correct behavior).
+
+**Also fixed in this slice**: `#PB_EventType_*` was oracle-verified back in the gadgets work above but
+never actually added to `builtinConstantTable()` - a real gap this project's own tests didn't catch
+(every gadget-event test used raw numeric literals, not the named constants) - closed alongside the
+new `#PB_MessageRequester_*` constants below.
+
+## M7b Implementation Notes (GUI core, third slice: `MessageRequester`)
+
+**Scope landed**: `MessageRequester(Title$, Text$ [, Flags])`, the simplest of PB's modal dialogs and
+genuinely useful standalone (real PB code uses it independent of any window). `Flags`' bits 0-1
+select the button set (`#PB_MessageRequester_Ok`=0/`YesNo`=1/`YesNoCancel`=2 - oracle-verified via
+`Debug #PB_MessageRequester_X`; a plausible-sounding fourth, `#PB_MessageRequester_OkCancel`, does
+**not** exist in real PB) and bits 2-4 independently select an icon (`Info`=4/`Error`=8/`Warning`=16;
+a plausible `Question` does **not** exist either). `#PB_MessageRequester_Yes`=6/`No`=7/`Cancel`=2 are
+the button-pressed return values, a separate group from the button-set flags that happens to reuse
+`2` for `Cancel` (coinciding with the `YesNoCancel` flag) - confirmed to be just a coincidence of PB's
+own constant numbering, not a bug.
+
+**Genuinely different from every other GUI builtin so far**: `MessageRequester` is *synchronous* -
+real PB's own call blocks until a button is clicked and returns which one, with no
+`WaitWindowEvent`/event-queue involvement at all. `gtk_dialog_run` (GTK3's own nested-main-loop
+"block until response" API, deprecated in favor of an async pattern in newer GTK but still fully
+functional) is the exactly-right fit for this, since the deprecation's underlying rationale (don't
+block the UI thread) doesn't apply to a call PB's own documented contract says *should* block.
+
+**Oracle-verified finding that reshapes the whole return-value mapping, found by direct
+click-and-read-the-Debug-output testing under Xvfb (using `xdotool` mouse clicks plus ImageMagick's
+`import -window` to screenshot the dialog and find real button positions first, since PB's own GTK3
+backend localizes stock button labels to this machine's system locale - "Valider"/"Oui"/"Non", not
+"OK"/"Yes"/"No" - and the dialogs are small enough that guessing coordinates blindly is unreliable)**:
+clicking the *only* button on a plain Ok-type dialog returns `6` (`#PB_MessageRequester_Yes`'s own
+value), **not** `0` (`#PB_MessageRequester_Ok`) - confirmed repeatedly, including with an icon flag
+added. This looks like a genuine real-PB implementation quirk (its own GTK3 backend likely routes a
+single-button dialog's response through the same code path as a "Yes" response) rather than a
+documented public contract, but unlike `OpenWindow`/`IsWindow`'s own native-handle-value
+simplification (an arbitrary internal pointer no reasonable program would compare against), the
+`#PB_MessageRequester_*` constants are meaningful values a real program might reasonably check
+equality against - so this one *is* replicated exactly (`pbMessageRequester` maps both
+`GTK_RESPONSE_OK` and `GTK_RESPONSE_YES` to `6`) rather than "cleaned up" to the more intuitive `0`.
+
+**GTK's own stock-button localization matches the oracle for free**: `GTK_BUTTONS_OK`/
+`GTK_BUTTONS_YES_NO` are GTK's own built-in button sets, translated via the system's installed GTK
+translation catalogs independent of PB - confirmed `pbcxx`'s own dialog shows the identical
+"Valider"/"Oui"/"Non" labels as the oracle's, with no PB-side or `pbcxx`-side localization code
+needed at all. GTK has no built-in three-button "Yes/No/Cancel" enum, though, so that one case is
+built by hand (`GTK_BUTTONS_NONE` + three `gtk_dialog_add_button` calls, in the oracle's own
+left-to-right order: No, Yes, Cancel) with plain English labels - acceptable since button label text
+isn't part of any testable contract (no `GetGadgetText`-equivalent exists for a message dialog).
+
+**Testing**: three new `runtime_guilib_test.cpp` cases cover the Ok-returns-Yes finding and the
+Yes/No/Cancel return-value mapping, each using a `g_timeout_add`-scheduled callback (found via
+`gtk_window_list_toplevels()` + `gtk_dialog_response()`) to safely simulate a button click from
+*inside* the same nested main loop `gtk_dialog_run` itself pumps - unlike a gadget click, there's no
+window-manager-independent on-screen-coordinate trick available here (the call doesn't return control
+until a response happens, so nothing outside that nested loop can act first). No e2e golden test was
+added for the same reason the first GUI slice's close-button behavior never got one either: a plain
+`run_gui_case.sh`-style "compile, run, diff stdout" test has no way to safely simulate the click a
+genuinely blocking dialog needs without risking an e2e test that hangs forever if something regresses
+- unit-test coverage with the safe `g_timeout_add` technique above was judged sufficient confidence
+for this slice.
 
