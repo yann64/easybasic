@@ -158,6 +158,8 @@ std::string threadLibRuntimeName(const std::string& lowerName) {
         {"waitsemaphore", "pbWaitSemaphore"}, {"trysemaphore", "pbTrySemaphore"},
         {"freesemaphore", "pbFreeSemaphore"}, {"delay", "pbDelay"},
         {"elapsedmilliseconds", "pbElapsedMilliseconds"},
+        {"killthread", "pbKillThread"},       {"pausethread", "pbPauseThread"},
+        {"resumethread", "pbResumeThread"},   {"threadid", "pbThreadID"},
     };
     return "easybasic::runtime::" + names.at(lowerName);
 }

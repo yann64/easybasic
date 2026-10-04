@@ -31,7 +31,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
-| **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done - see M7a notes (`KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately deferred) |
+| **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
 | **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar` - see M7b notes); `ToolBar` (blocked on an Image library - see the fourth slice's own notes) and everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Two slices done (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection - see M7d notes); `Macro`/`Interface` inside a Module deliberately deferred |
@@ -1628,7 +1628,7 @@ ordering).
 `FreeSemaphore`, plus `Delay`/`ElapsedMilliseconds` (not thread-specific commands in real PB, but
 needed immediately by any real thread-timing test, bundled in rather than given their own
 single-purpose library). `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately
-deferred - see below.
+deferred at the time - landed in a second slice once re-investigated more carefully, see below.
 
 **A genuinely new primitive, needed before `CreateThread` itself could work at all**:
 `@ProcedureName()` (a procedure's own address, as opposed to `@variable`/`@array(i)`, which were
@@ -1662,18 +1662,16 @@ a callback-registration API) can reuse it unchanged.
   actually given, let the callee's own default fill the rest" call-site logic (already established
   for `pbRandom`'s optional min bound) needed no changes.
 - `KillThread` on an already-finished thread is a **fatal debugger error** in real PB ("The
-  specified Thread does not exists."); calling it on a genuinely still-running thread sent this
-  whole test machine's shell a raw `SIGUSR2` that killed the entire process, not just the target
-  thread - real PB's own `KillThread` is implemented via OS-level forced thread termination (signal-
-  based on Linux), which is inherently unsafe (skips destructors, can corrupt shared state) even in
-  the real implementation. Given C++ has no safe, portable equivalent (`pthread_cancel` is POSIX-
-  only and still discouraged; Windows' `TerminateThread` is equally unsafe), `KillThread`/
-  `PauseThread`/`ResumeThread` (no portable "pause an arbitrary running thread" primitive exists
-  either) and `ThreadID` (no example or use case found needing it, and no oracle time spent on it)
-  are deliberately left unimplemented rather than built on fundamentally unsafe foundations -
-  real-world PB threading code should prefer cooperative shutdown (a shared `finished` flag the
-  thread procedure itself checks) over `KillThread`, which this project's own design doesn't
-  obstruct.
+  specified Thread does not exists."); calling it on a genuinely still-running thread, at the time,
+  sent this whole test machine's shell a raw `SIGUSR2` that killed the entire process, not just the
+  target thread. `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` were deliberately left
+  unimplemented at that point rather than built on what looked like fundamentally unsafe foundations.
+  **Corrected in a later re-investigation** (see the second-slice notes below): that crash was
+  very likely caused by testing *without* `-t`/`--thread` (`ThreadSafe` mode) - with it enabled,
+  `KillThread` on a genuinely running thread terminates it cleanly, the whole process stays alive,
+  and `diff_against_pbcompilerc.sh` already passes `-t` unconditionally (see this section's own last
+  bullet below), so the danger was specific to how the *original* probe was run, not an inherent
+  property of the function itself.
 
 **A real bug found and fixed before it could ship, by reasoning through the ownership chain (not
 by a failing test)**: the first working draft inserted a thread's handle into the global thread
@@ -1712,6 +1710,78 @@ without it real PB prints an extra `[Debugger Warning]  ThreadSafe mode should b
 using threads.` pair of lines for any program that actually uses threads, which `pbcxx` has no
 equivalent internal-debugger-state concern to warn about. Simpler and more correct than trying to
 filter or special-case that warning out of the diff itself.
+
+## M7a Implementation Notes (Threads, second slice: deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`)
+
+**Scope landed**: `KillThread`, `PauseThread`/`ResumeThread`, `ThreadID` - the four features the
+first M7a slice deliberately deferred, re-investigated here rather than left permanently
+unimplemented.
+
+**Re-investigation methodology**: given the first slice's own account of a `KillThread` test
+crashing the whole test machine's shell via a raw `SIGUSR2`, every live probe here was run with
+real process isolation first - `setsid` (a fresh session, so a process-wide signal can't reach back
+into this one) plus `timeout` (a bound in case a probe hangs instead), output redirected to a file
+and read back afterward rather than relied on live, and always built with `-t`/`--thread`
+(`ThreadSafe` mode). The already-documented danger turned out to be real but narrower than first
+concluded (see below) - this caution was still the right call given what was known going in.
+
+**The `-t` flag was the actual fix**: with `ThreadSafe` mode enabled, `KillThread` on a genuinely
+still-running thread (a `Repeat ... Delay(100) ... ForEver` worker, mirroring the official example)
+terminates it cleanly - confirmed two ways, not just "the process didn't crash": a shared counter
+the worker incremented every loop iteration stopped advancing right after `KillThread` returned, and
+`IsThread` reported `0` immediately after. The original crash was overwhelmingly likely caused by
+testing *without* `-t`, not by any inherent unsafety in the function itself. On an *already-finished*
+thread, `KillThread` is still a fatal debugger error exactly as the first slice found - confirmed
+again, safely, now that the running-thread case is understood.
+
+**All three (`KillThread`/`PauseThread`/`ResumeThread`) have no documented return value** ("Valeur
+de retour: Aucune" in PB's own French-language docs) - confirmed directly, `Debug KillThread(...)`
+(and the other two) always prints `0`, success or not. So `pbKillThread`/`pbPauseThread`/
+`pbResumeThread` all unconditionally return `0` too, rather than inventing a success/failure signal
+real PB itself doesn't expose.
+
+**`KillThread` implementation**: real PB's own forced termination still has no safe, portable C++
+equivalent - its own docs call the function "very dangerous" for exactly the reason the first slice's
+notes already gave (a killed thread never releases its own resources) - so this uses each platform's
+native forced-stop primitive directly: `pthread_cancel` on POSIX (Linux, Haiku) or `TerminateThread`
+on Windows (`threadlib.hpp`'s `pbKillThread`). Deferred cancellation (glibc's own default) only takes
+effect at a cancellation point; `pbDelay`'s `std::this_thread::sleep_for` is one on every target
+platform, and every oracle-verified example (the official docs' own included) loops on `Delay` in
+its worker, so this is reached in practice. A thread with no cancellation point at all (a pure
+compute loop) is a known, honest gap - never oracle-tested, and `pbKillThread` still returns
+immediately either way rather than joining/waiting, so a target that never reaches one can't hang
+the *caller* too (a risk real PB's own OS-level kill doesn't have).
+
+**`PauseThread`/`ResumeThread` implementation - a genuine, documented divergence, chosen for
+safety**: no portable POSIX primitive suspends an arbitrary *other* thread. `SIGSTOP` targeted at
+one thread via `pthread_kill` stops the *whole process* on Linux, not just that thread; Haiku has its
+own native `suspend_thread`/`resume_thread`, but that's Haiku-only; a custom signal-handler-based
+suspend (blocking inside the handler until a second signal arrives) is the standard POSIX workaround
+but is async-signal-safety-fragile and still not uniform across Haiku/Windows. Instead, `PauseThread`
+flips a flag that `pbDelay` itself checks (blocking on a `std::condition_variable` until cleared) -
+fully portable, pure `std::` synchronization, no signal handling anywhere. This matches real PB's own
+observable behavior for every oracle-tested case (every example loops on `Delay`), verified directly:
+a worker's own counter froze while paused and advanced again once resumed. The honest limitation is
+the same shape as `KillThread`'s: a thread with no `Delay` call in its own loop can't be paused here,
+never oracle-tested either way.
+
+**A real behavioral surprise, caught by testing rather than assumed**: real PB's own `ResumeThread`
+has a large, apparently non-deterministic latency before a paused thread actually resumes - a
+dedicated probe found the counter still frozen a full 600ms after `ResumeThread` was called, then
+already well advanced by 2600ms after. `pbPauseThread`/`pbResumeThread`'s own cooperative design
+resumes essentially immediately (a `condition_variable::notify_all`), with no equivalent delay -
+deliberately not replicated, since there's no documented contract to match and no principled way to
+pick a "right" number given it looked non-deterministic even on the oracle's own machine. The
+differential e2e test (`tests/e2e_diff/threads`) only asserts "didn't advance while paused", not
+"advances again soon after resuming", for exactly this reason - a short post-resume window isn't
+reliably comparable between the two binaries.
+
+**`ThreadID` implementation**: a direct, uncontroversial `std::thread::native_handle()` wrapper
+(`pthread_t` on POSIX, `HANDLE` on Windows) - oracle-verified to return a real, stable, nonzero
+system identifier that PB's own docs call a "Handle", not anything meaningful to do arithmetic on.
+Copied as raw bytes rather than cast (`std::memcpy` into an `std::int64_t`, since the native handle
+type isn't guaranteed to itself be an integer or a pointer uniformly across platforms) - both fit in
+8 bytes on every target platform.
 
 ## M7b Implementation Notes (GUI core, first slice: Window + event core)
 

@@ -1308,7 +1308,27 @@ TEST_CASE("Sema recognizes the thread-library builtins by name", "[sema][threads
     CHECK(Sema::isThreadLibBuiltinName("trysemaphore"));
     CHECK(Sema::isThreadLibBuiltinName("delay"));
     CHECK(Sema::isThreadLibBuiltinName("elapsedmilliseconds"));
+    CHECK(Sema::isThreadLibBuiltinName("killthread"));
+    CHECK(Sema::isThreadLibBuiltinName("pausethread"));
+    CHECK(Sema::isThreadLibBuiltinName("resumethread"));
+    CHECK(Sema::isThreadLibBuiltinName("threadid"));
     CHECK_FALSE(Sema::isThreadLibBuiltinName("somethingelse"));
+}
+
+TEST_CASE("Sema accepts KillThread/PauseThread/ResumeThread/ThreadID with a single Integer argument",
+          "[sema][threads]") {
+    DiagnosticEngine diags;
+    auto module = parse("Procedure Worker(n)\nEndProcedure\n"
+                         "t = CreateThread(@Worker(), 0)\n"
+                         "id = ThreadID(t)\n"
+                         "PauseThread(t)\n"
+                         "ResumeThread(t)\n"
+                         "KillThread(t)\n",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    CHECK(sema.typeOf("id") == TypeSuffix::Integer);
 }
 
 TEST_CASE("Sema's CreateSemaphore accepts both zero and one argument", "[sema][threads]") {

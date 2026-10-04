@@ -275,6 +275,14 @@ void Sema::registerThreadLibBuiltins() {
         {"createthread", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"isthread", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"waitthread", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // M7a's own deferred KillThread/PauseThread/ResumeThread/ThreadID -
+        // see threadlib.hpp's own doc comments on pbKillThread/
+        // pbPauseThread/pbThreadID for the oracle findings and
+        // implementation tradeoffs behind each.
+        {"killthread", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"pausethread", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"resumethread", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"threadid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"createmutex", TypeSuffix::Integer, {}, 0},
         {"lockmutex", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"unlockmutex", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
@@ -309,6 +317,7 @@ bool Sema::isThreadLibBuiltinName(const std::string& lowerName) {
         "createthread",  "isthread",        "waitthread",      "createmutex",    "lockmutex",
         "unlockmutex",   "trylockmutex",    "freemutex",       "createsemaphore", "signalsemaphore",
         "waitsemaphore", "trysemaphore",    "freesemaphore",   "delay",          "elapsedmilliseconds",
+        "killthread",    "pausethread",     "resumethread",    "threadid",
     };
     return names.contains(lowerName);
 }
