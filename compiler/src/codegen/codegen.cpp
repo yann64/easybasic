@@ -143,6 +143,17 @@ std::string threadLibRuntimeName(const std::string& lowerName) {
     return "easybasic::runtime::" + names.at(lowerName);
 }
 
+std::string guiLibRuntimeName(const std::string& lowerName) {
+    static const std::unordered_map<std::string, std::string> names = {
+        {"openwindow", "pbOpenWindow"},   {"closewindow", "pbCloseWindow"},
+        {"iswindow", "pbIsWindow"},       {"resizewindow", "pbResizeWindow"},
+        {"hidewindow", "pbHideWindow"},   {"windowevent", "pbWindowEvent"},
+        {"waitwindowevent", "pbWaitWindowEvent"}, {"eventwindow", "pbEventWindow"},
+        {"eventgadget", "pbEventGadget"}, {"eventtype", "pbEventType"},
+    };
+    return "easybasic::runtime::" + names.at(lowerName);
+}
+
 } // namespace
 
 std::string defaultValueLiteral(TypeSuffix suffix, const std::string& structName) {
@@ -399,6 +410,8 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
                 calleeName = dateLibRuntimeName(call.name, call.args.size());
             } else if (Sema::isThreadLibBuiltinName(call.name)) {
                 calleeName = threadLibRuntimeName(call.name);
+            } else if (Sema::isGuiLibBuiltinName(call.name)) {
+                calleeName = guiLibRuntimeName(call.name);
             } else {
                 calleeName = "f_" + call.name;
             }
@@ -1153,7 +1166,18 @@ std::string Codegen::generate() {
     out_ += "#include <cmath>\n";
     out_ += "#include <string>\n";
     out_ += "#include <vector>\n";
-    out_ += "#include <easybasic/runtime/runtime.hpp>\n\n";
+    out_ += "#include <easybasic/runtime/runtime.hpp>\n";
+    // guilib.hpp is deliberately *not* part of the plain runtime.hpp
+    // umbrella (unlike every other runtime library) - it transitively
+    // includes <gtk/gtk.h>, which a program that never touches the GUI
+    // library shouldn't need installed at all just to compile. Only
+    // included here when Sema has already confirmed the program actually
+    // calls a GUI builtin - see Sema::usesGuiLibrary()'s own doc comment,
+    // and main.cpp's matching conditional GTK3 compile/link flags.
+    if (sema_.usesGuiLibrary()) {
+        out_ += "#include <easybasic/runtime/guilib.hpp>\n";
+    }
+    out_ += "\n";
 
     genStructures(); // must precede any variable/array/procedure that might be an instance of one
     genGlobalConstants();

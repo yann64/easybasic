@@ -21,6 +21,7 @@ Sema::Sema(DiagnosticEngine& diagnostics) : diagnostics_(diagnostics) {
     registerFileLibBuiltins();
     registerDateLibBuiltins();
     registerThreadLibBuiltins();
+    registerGuiLibBuiltins();
     registerBuiltinConstants();
 }
 
@@ -310,6 +311,52 @@ bool Sema::isThreadLibBuiltinName(const std::string& lowerName) {
     return names.contains(lowerName);
 }
 
+void Sema::registerGuiLibBuiltins() {
+    struct Signature {
+        const char* name;
+        TypeSuffix returnSuffix;
+        std::vector<TypeSuffix> paramSuffixes;
+        std::size_t requiredParamCount;
+    };
+    static const std::vector<Signature> signatures = {
+        // OpenWindow's Title is the one String-typed parameter here; Flags
+        // is optional (oracle-verified: `OpenWindow(id,x,y,w,h,title$)`
+        // with no flags at all is legal).
+        {"openwindow", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer},
+         6},
+        {"closewindow", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"iswindow", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"resizewindow", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         5},
+        {"hidewindow", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"windowevent", TypeSuffix::Integer, {}, 0},
+        // WaitWindowEvent's Timeout argument is optional (oracle-verified:
+        // `WaitWindowEvent()` with no argument blocks indefinitely).
+        {"waitwindowevent", TypeSuffix::Integer, {TypeSuffix::Integer}, 0},
+        {"eventwindow", TypeSuffix::Integer, {}, 0},
+        {"eventgadget", TypeSuffix::Integer, {}, 0},
+        {"eventtype", TypeSuffix::Integer, {}, 0},
+    };
+    for (const auto& sig : signatures) {
+        ProcedureInfo info;
+        info.returnSuffix = sig.returnSuffix;
+        info.paramSuffixes = sig.paramSuffixes;
+        info.requiredParamCount = sig.requiredParamCount;
+        procedures_[sig.name] = info;
+    }
+}
+
+bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "openwindow",  "closewindow", "iswindow",       "resizewindow", "hidewindow",
+        "windowevent", "waitwindowevent", "eventwindow", "eventgadget", "eventtype",
+    };
+    return names.contains(lowerName);
+}
+
 namespace {
 
 // `#PB_Compiler_OS`/`#PB_Compiler_Processor` reflect whatever platform
@@ -356,7 +403,9 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
     // oracle-verified on this Linux/x64 machine (`#PB_Compiler_OS` read `2`,
     // `#PB_Compiler_Processor` read `4`); `#PB_OS_Haiku` and the ARM
     // processor constants are pbcxx-specific extensions/unverified guesses
-    // (see `kCompilerOs`/`kCompilerProcessor`'s own comments).
+    // (see `kCompilerOs`/`kCompilerProcessor`'s own comments). `#PB_Event_*`
+    // and `#PB_Window_*` (M7b) are oracle-verified via a direct
+    // `Debug #PB_Event_Xxx` probe on this Linux/x64 machine.
     static const std::unordered_map<std::string, std::int64_t> table = {
         {"pb_round_down", 0},
         {"pb_round_up", 1},
@@ -378,6 +427,22 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_processor_arm", 16},
         {"pb_compiler_os", kCompilerOs},
         {"pb_compiler_processor", kCompilerProcessor},
+        {"pb_event_menu", 1},
+        {"pb_event_closewindow", 2},
+        {"pb_event_gadget", 3},
+        {"pb_event_repaint", 4},
+        {"pb_event_movewindow", 5},
+        {"pb_event_sizewindow", 6},
+        {"pb_event_activatewindow", 7},
+        {"pb_event_timer", 15},
+        {"pb_event_firstcustomvalue", 65536},
+        {"pb_window_invisible", 1},
+        {"pb_window_sizegadget", 2},
+        {"pb_window_systemmenu", 4},
+        {"pb_window_titlebar", 8},
+        {"pb_window_maximizegadget", 16},
+        {"pb_window_minimizegadget", 32},
+        {"pb_window_screencentered", 64},
     };
     return table;
 }
@@ -1445,6 +1510,9 @@ void Sema::bringIntoScope(const std::unordered_map<std::string, TypeSuffix>& out
 }
 
 void Sema::visitCall(ast::CallExpr& call) {
+    if (isGuiLibBuiltinName(call.name)) {
+        usesGui_ = true;
+    }
     auto it = procedures_.find(call.name);
     if (it == procedures_.end()) {
         diagnostics_.error(call.loc, "'" + call.spelling + "' is not a declared procedure");

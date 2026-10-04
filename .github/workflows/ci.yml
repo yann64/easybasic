@@ -9,34 +9,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install GTK3 dev files (M7b GUI unit tests) and Xvfb
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev xvfb
       - name: Configure
         run: cmake --preset linux-gcc
       - name: Build
         run: cmake --build --preset linux-gcc
       - name: Test
-        run: ctest --preset linux-gcc
+        # GDK_BACKEND=x11 avoids GTK silently preferring a (nonexistent,
+        # on this runner) Wayland compositor over the Xvfb X11 display
+        # xvfb-run just started - see the M7b roadmap notes; this dev
+        # machine's own Xvfb+Wayland-coexistence testing hit the same
+        # thing.
+        run: xvfb-run -a env GDK_BACKEND=x11 ctest --preset linux-gcc
 
   linux-clang:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install clang
-        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Install clang, GTK3 dev files (M7b GUI unit tests), and Xvfb
+        run: sudo apt-get update && sudo apt-get install -y clang libgtk-3-dev xvfb
       - name: Configure
         run: cmake --preset linux-clang
       - name: Build
         run: cmake --build --preset linux-clang
       - name: Test
-        run: ctest --preset linux-clang
+        run: xvfb-run -a env GDK_BACKEND=x11 ctest --preset linux-clang
       - name: Test (clang++ as the generated-code backend too)
-        run: CXX=clang++ ctest --preset linux-clang
+        run: xvfb-run -a env GDK_BACKEND=x11 CXX=clang++ ctest --preset linux-clang
 
   sanitizers:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install clang
-        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Install clang, GTK3 dev files (M7b GUI unit tests), and Xvfb
+        run: sudo apt-get update && sudo apt-get install -y clang libgtk-3-dev xvfb
       - name: Configure
         run: cmake --preset linux-clang-sanitize
       - name: Build
@@ -44,14 +51,18 @@ jobs:
       - name: Test
         env:
           ASAN_OPTIONS: detect_leaks=1
-        run: ctest --preset linux-clang-sanitize
+          # fontconfig/pango-ft2's own process-lifetime cache looks like a
+          # leak to LSan but isn't a bug in pbcxx - see
+          # tests/lsan-suppressions.txt's own header comment.
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/lsan-suppressions.txt
+        run: xvfb-run -a env GDK_BACKEND=x11 ctest --preset linux-clang-sanitize
 
   static-analysis:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install clang-tidy and cppcheck
-        run: sudo apt-get update && sudo apt-get install -y clang-tidy cppcheck
+      - name: Install clang-tidy, cppcheck, and GTK3 dev files (M7b GUI unit tests)
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy cppcheck libgtk-3-dev
       - name: Configure (for compile_commands.json)
         run: cmake --preset linux-clang -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
       - name: clang-tidy

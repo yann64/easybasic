@@ -248,6 +248,27 @@ public:
     /// registration mechanism for just two functions.
     static bool isThreadLibBuiltinName(const std::string& lowerName);
 
+    /// True for the M7b GUI-core functions (`OpenWindow`, `CloseWindow`,
+    /// `IsWindow`, `ResizeWindow`, `HideWindow`, `WindowEvent`,
+    /// `WaitWindowEvent`, `EventWindow`, `EventGadget`, `EventType`) -
+    /// mirrors `isThreadLibBuiltinName`'s own role and registration
+    /// mechanism (`registerGuiLibBuiltins`). `OpenWindow`'s own `Title`
+    /// argument is the one String-typed parameter among these; every other
+    /// argument/return value is a plain Integer (a window ID, a coordinate,
+    /// an event code, or a native-handle-ish "truthy" value PB itself
+    /// doesn't document the exact numeric meaning of - see the M7b roadmap
+    /// notes on `OpenWindow`/`IsWindow`'s own oracle-observed return
+    /// values).
+    static bool isGuiLibBuiltinName(const std::string& lowerName);
+    /// True once `visitCall` has resolved at least one real call to a GUI
+    /// builtin (set in `visitCall` itself) - `main.cpp`'s own driver uses
+    /// this after a successful `analyze()` to decide whether the backend-
+    /// compiler invocation needs GTK3's own compile/link flags at all,
+    /// keeping every non-GUI program's build completely unaffected (no
+    /// GTK3 toolchain requirement, no `gtk_init()` call at runtime either -
+    /// see `guilib.hpp`'s own lazy-init notes).
+    bool usesGuiLibrary() const { return usesGui_; }
+
     /// The literal Integer value of one of the handful of built-in `#PB_*`
     /// constants Sema pre-declares (currently only `#PB_Round_Down` (0),
     /// `#PB_Round_Up` (1), `#PB_Round_Nearest` (2), for `Round`'s own mode
@@ -345,6 +366,9 @@ private:
     /// Same mechanism again, for the M7a thread library (`CreateThread` and
     /// friends) - see `isThreadLibBuiltinName`'s own doc comment.
     void registerThreadLibBuiltins();
+    /// Same mechanism again, for the M7b GUI-core library (`OpenWindow` and
+    /// friends) - see `isGuiLibBuiltinName`'s own doc comment.
+    void registerGuiLibBuiltins();
     /// Pre-populates `constants_` (but deliberately NOT `constOrder_` - see
     /// `Codegen::genExpr`'s `ConstRef` case) with the handful of built-in
     /// `#PB_*` constants Sema recognizes (currently just `Round`'s own
@@ -537,6 +561,7 @@ private:
     std::unordered_map<std::string, std::size_t> dataLabels_;
     std::size_t dataCount_ = 0;
     bool explicitEnabled_ = false;
+    bool usesGui_ = false; ///< Set by visitCall - see usesGuiLibrary()'s own doc comment.
     std::unordered_map<std::string, ProcedureInfo> procedures_;
     /// Names `Declare`d but not yet fulfilled by a matching `Procedure`,
     /// mapping the lowercased name to its original spelling and the

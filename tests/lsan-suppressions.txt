@@ -1,0 +1,12 @@
+# LeakSanitizer suppressions for known, intentional third-party "leaks" -
+# not bugs in pbcxx or its runtime. Referenced by CMakePresets.json's
+# linux-clang-sanitize test preset and ci.yml's sanitizers job via
+# LSAN_OPTIONS=suppressions=<this file>.
+#
+# fontconfig/pango-ft2 keep a process-lifetime font-config cache alive
+# deliberately (first touched by gtk_init, via guilib.hpp - M7b) - this is
+# a well-known false positive for GTK/Pango-linked programs under ASan's
+# leak detector, not a real leak: the allocation is reachable for the
+# program's entire lifetime and freed by the OS at process exit.
+leak:libfontconfig.so
+leak:libpangoft2

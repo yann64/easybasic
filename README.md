@@ -5,7 +5,7 @@ compiles the generated C++ with a real backend compiler (g++/clang++).
 
 ## Status
 
-`M0`-`M6` done, M7a (threads) done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
+`M0`-`M6` done, M7a (threads) and M7b's first GUI-core slice done: core literals, `Define`/`Debug`, assignment, the full oracle-derived
 operator/precedence table (arithmetic, bitwise, comparisons, logical), `If`/`Select`/
 `For`/`While`/`Repeat`, `EnableExplicit`, `#Name`/`Enumeration` constants,
 `Procedure`/`ProcedureReturn` with recursion and genuinely isolated per-procedure scope,
@@ -22,9 +22,13 @@ non-taken branches are never type-checked, matching real PB), `DataSection`/`Dat
 debug-mode-only "out of data" fatal error, matching real PB exactly), and non-recursive
 `Macro`/`EndMacro` (a genuine token-level textual substitution pass run before parsing,
 since a macro parameter is pasted as raw, unparenthesized text rather than a pre-evaluated
-value - oracle-verified), and threads (`CreateThread`/`IsThread`/`WaitThread`, re-entrant `Mutex`,
+value - oracle-verified), threads (`CreateThread`/`IsThread`/`WaitThread`, re-entrant `Mutex`,
 `Semaphore`, plus `@ProcedureName()` - a procedure's own address - and `Delay`/
-`ElapsedMilliseconds`) - all cross-checked against PureBasic's own compiler, including
+`ElapsedMilliseconds`), and GTK3-backed GUI window/event core (`OpenWindow`/`CloseWindow`/
+`IsWindow`/`ResizeWindow`/`HideWindow`, `WindowEvent`/`WaitWindowEvent`,
+`EventWindow`/`EventGadget`/`EventType`, the `#PB_Event_*`/`#PB_Window_*` constants - an
+optional build-time dependency, only pulled in for a program that actually calls a GUI
+command) - all cross-checked against PureBasic's own compiler, including
 real bugs (a target-typed `/`, a two-tier vs. one-tier bitwise precedence mix-up, a wrong
 initial assumption about primitive-typed pointers, an unaligned-memory-access UB in
 `Peek*`/`Poke*`) the differential test suite or a targeted oracle probe caught before they
@@ -41,6 +45,12 @@ ctest --preset linux-gcc
 
 Other presets (see `CMakePresets.json`): `linux-clang`, `linux-clang-sanitize` (ASan +
 UBSan), `windows-mingw` (run from an MSYS2 mingw64 shell), `haiku`.
+
+GTK3 dev files (e.g. `libgtk-3-dev` on Debian/Ubuntu, `gtk3_devel` on Haiku) are an
+*optional* build-time dependency: `pbcxx` itself only needs them to compile a `.pb`
+program that actually calls a GUI command, and the unit test binary only builds the GUI
+test cases (`runtime_guilib_test.cpp`) when `pkg-config gtk+-3.0` succeeds - everything
+else builds and passes without it.
 
 ## Usage
 

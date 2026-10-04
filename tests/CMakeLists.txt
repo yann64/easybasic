@@ -11,14 +11,27 @@ add_subdirectory(unit)
 
 # --- Golden e2e tests: fixed expected.stdout, no external PureBasic install
 # required. Discovers tests/e2e/<case>/{input.pb,expected.stdout} pairs.
+# GUI (M7b+) cases are run via run_gui_case.sh instead of plain
+# run_case.sh - it skips gracefully (SKIP_RETURN_CODE) rather than failing
+# when this environment has no GTK3 dev files or no usable display, the
+# same way e2e_diff cases skip when pbcompilerc isn't installed.
+set(EASYBASIC_GUI_E2E_CASES gui_window_core)
 file(GLOB EASYBASIC_E2E_CASES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/e2e ${CMAKE_CURRENT_SOURCE_DIR}/e2e/*)
 foreach(case ${EASYBASIC_E2E_CASES})
     set(case_dir ${CMAKE_CURRENT_SOURCE_DIR}/e2e/${case})
     if(EXISTS ${case_dir}/input.pb)
+        if(case IN_LIST EASYBASIC_GUI_E2E_CASES)
+            set(runner run_gui_case.sh)
+        else()
+            set(runner run_case.sh)
+        endif()
         add_test(
             NAME e2e_${case}
-            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/e2e/run_case.sh $<TARGET_FILE:pbcxx> ${case_dir}
+            COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/e2e/${runner} $<TARGET_FILE:pbcxx> ${case_dir}
         )
+        if(case IN_LIST EASYBASIC_GUI_E2E_CASES)
+            set_tests_properties(e2e_${case} PROPERTIES SKIP_RETURN_CODE 125)
+        endif()
     endif()
 endforeach()
 

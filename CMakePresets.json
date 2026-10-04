@@ -64,7 +64,7 @@
   "testPresets": [
     { "name": "linux-gcc", "configurePreset": "linux-gcc", "output": { "outputOnFailure": true } },
     { "name": "linux-clang", "configurePreset": "linux-clang", "output": { "outputOnFailure": true } },
-    { "name": "linux-clang-sanitize", "configurePreset": "linux-clang-sanitize", "output": { "outputOnFailure": true }, "environment": { "ASAN_OPTIONS": "detect_leaks=1" } },
+    { "name": "linux-clang-sanitize", "configurePreset": "linux-clang-sanitize", "output": { "outputOnFailure": true }, "environment": { "ASAN_OPTIONS": "detect_leaks=1", "LSAN_OPTIONS": "suppressions=${sourceDir}/tests/lsan-suppressions.txt" } },
     { "name": "windows-mingw", "configurePreset": "windows-mingw", "output": { "outputOnFailure": true } },
     { "name": "haiku", "configurePreset": "haiku", "output": { "outputOnFailure": true } }
   ]

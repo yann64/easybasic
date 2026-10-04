@@ -1,6 +1,8 @@
+#include <array>
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -70,6 +72,47 @@ std::string readFile(const std::string& path, bool& ok) {
 std::string runtimeIncludeDir() {
     // Build-tree fallback only for now; see version.hpp.in's own comment.
     return EASYBASIC_BUILD_TREE_RUNTIME_INCLUDE_DIR;
+}
+
+/// Runs `pkg-config <mode> <package>` (`mode` is `--cflags` or `--libs` -
+/// kept as two separate calls, not one combined `--cflags --libs`, because
+/// the resulting flags need to land in *different* positions on the
+/// backend-compiler command line: compile flags before the source file,
+/// link flags after it - GNU ld resolves library symbols against object
+/// files already seen, so `-lgtk-3` before the `.cpp` that uses it is a
+/// silent-until-link-time "undefined reference" failure, confirmed by
+/// trying the combined form first) and splits its one-line stdout on
+/// whitespace into separate argv-style tokens (pkg-config's own output
+/// never contains spaces within a single flag, so this simple split is
+/// safe). Returns `std::nullopt` when `pkg-config` itself isn't found or
+/// the package isn't known - the caller is expected to treat that as a
+/// hard error with its own clear message, not silently proceed to a
+/// confusing backend-compiler failure. POSIX-only (`popen`) - fine for
+/// this project's current Linux/Haiku-first GUI support; Windows/MinGW GUI
+/// linking isn't addressed by this helper yet (see M7b's own roadmap
+/// notes).
+std::optional<std::vector<std::string>> pkgConfigFlags(const std::string& mode, const std::string& package) {
+    std::string command = "pkg-config " + mode + " " + package + " 2>/dev/null";
+    FILE* pipe = popen(command.c_str(), "r");
+    if (pipe == nullptr) {
+        return std::nullopt;
+    }
+    std::string output;
+    std::array<char, 256> buffer{};
+    while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        output += buffer.data();
+    }
+    int exitCode = pclose(pipe);
+    if (exitCode != 0) {
+        return std::nullopt;
+    }
+    std::vector<std::string> flags;
+    std::istringstream stream(output);
+    std::string token;
+    while (stream >> token) {
+        flags.push_back(token);
+    }
+    return flags;
 }
 
 } // namespace
@@ -143,10 +186,30 @@ int main(int argc, char** argv) {
         "-std=c++20",
         "-pthread", // needed for std::thread/std::mutex/std::counting_semaphore (M7a) on GCC/Clang toolchains
         "-I" + runtimeIncludeDir(),
-        cppPath,
-        "-o",
-        opts.outputPath,
     };
+    std::optional<std::vector<std::string>> gtkLibFlags;
+    if (sema.usesGuiLibrary()) {
+        // Only added for a program that actually calls a GUI builtin (see
+        // Sema::usesGuiLibrary()'s own doc comment) - every other program's
+        // build stays completely unaffected, with no GTK3 toolchain
+        // requirement at all. Compile flags go in now (before the source
+        // file); the matching link flags are appended after it below.
+        auto gtkCflags = pkgConfigFlags("--cflags", "gtk+-3.0");
+        gtkLibFlags = pkgConfigFlags("--libs", "gtk+-3.0");
+        if (!gtkCflags || !gtkLibFlags) {
+            std::cerr << "pbcxx: this program uses GUI commands, but 'pkg-config gtk+-3.0' failed - install "
+                         "GTK3's development package (e.g. libgtk-3-dev on Debian/Ubuntu, gtk3_devel on Haiku) "
+                         "and make sure pkg-config can find it\n";
+            return 1;
+        }
+        cxxArgs.insert(cxxArgs.end(), gtkCflags->begin(), gtkCflags->end());
+    }
+    cxxArgs.push_back(cppPath);
+    if (gtkLibFlags) {
+        cxxArgs.insert(cxxArgs.end(), gtkLibFlags->begin(), gtkLibFlags->end());
+    }
+    cxxArgs.push_back("-o");
+    cxxArgs.push_back(opts.outputPath);
     easybasic::ProcessResult result = easybasic::runProcess(opts.cxxCompiler, cxxArgs);
     if (!result.launched) {
         std::cerr << "pbcxx: could not launch backend compiler '" << opts.cxxCompiler << "'\n";

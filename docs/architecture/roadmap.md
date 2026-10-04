@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done - see M7a notes (`KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` deliberately deferred) |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Not started - scoped, see M7 scoping notes |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | First slice done (Window + event core - see M7b notes); gadgets/`MessageRequester`/`Menu`/`StatusBar`/`ToolBar`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Not started - scoped, see M7 scoping notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Not started - scoped, see M7 scoping notes |
 
@@ -1712,4 +1712,130 @@ without it real PB prints an extra `[Debugger Warning]  ThreadSafe mode should b
 using threads.` pair of lines for any program that actually uses threads, which `pbcxx` has no
 equivalent internal-debugger-state concern to warn about. Simpler and more correct than trying to
 filter or special-case that warning out of the diff itself.
+
+## M7b Implementation Notes (GUI core, first slice: Window + event core)
+
+**Scope landed**: `OpenWindow`/`CloseWindow`/`IsWindow`/`ResizeWindow`/`HideWindow`,
+`WindowEvent`/`WaitWindowEvent`, `EventWindow`/`EventGadget`/`EventType`, the `#PB_Event_*`
+(`Menu`=1, `CloseWindow`=2, `Gadget`=3, `Repaint`=4, `MoveWindow`=5, `SizeWindow`=6,
+`ActivateWindow`=7, `Timer`=15, `FirstCustomValue`=65536) and `#PB_Window_*` (`Invisible`=1,
+`SizeGadget`=2, `SystemMenu`=4, `TitleBar`=8, `MaximizeGadget`=16, `MinimizeGadget`=32,
+`ScreenCentered`=64) constants - all oracle-verified by direct `Debug #PB_X` probes.
+`#PB_Event_RemoveWindow` does **not** exist in real PB (oracle: "Constant not found") despite
+looking like a plausible name next to `CloseWindow`/`Gadget`/etc. - a real case of `-k` correctly
+catching a bad *constant* name, distinct from this project's long-standing note that `-k` does
+*not* validate called function names.
+
+**New per-program conditional build dependency, kept out of everything else**: `guilib.hpp`
+(`runtime/include/easybasic/runtime/`) is deliberately **not** part of the plain `runtime.hpp`
+umbrella every other runtime library joins - it transitively pulls in `<gtk/gtk.h>`, which a
+program that never touches the GUI library shouldn't need installed at all. `Sema::usesGuiLibrary()`
+(set in `visitCall` whenever a GUI builtin is actually called) drives two independent conditional
+steps: `Codegen::generate()` only emits `#include <easybasic/runtime/guilib.hpp>` for a program
+that needs it, and `main.cpp`'s driver only shells out to `pkg-config --cflags --libs gtk+-3.0`
+(via `popen`, printing a clear "install GTK3's dev package" error rather than a confusing
+downstream g++ failure if it fails) and appends the resulting flags for that same program's
+backend-compiler invocation. **Linker-ordering gotcha hit immediately**: the first working version
+put pkg-config's combined `--cflags --libs` output all before the generated `.cpp` source file on
+the command line - GNU ld resolves library symbols only against object files it's already seen, so
+`-lgtk-3` before the `.cpp` that calls into it is a silent "undefined reference" at link time, not a
+configuration error. Fixed by querying `--cflags` and `--libs` *separately* and placing them on
+opposite sides of the source file (cflags before, libs after), rather than keeping pkg-config's one
+combined invocation.
+
+**The central design problem, same one scoped in the M7 notes above**: PB's own GUI API is
+poll-based (`WaitWindowEvent()` blocks and hands back what happened); GTK3's is callback-based (a
+signal fires while pumping the main loop). Bridged with a plain FIFO (`detail::eventQueue()`) that
+every GTK signal handler this slice registers (`"delete-event"`, `"configure-event"`, `"draw"`)
+just pushes onto; `pbWindowEvent`/`pbWaitWindowEvent` are the *only* functions that ever pump GTK's
+own main loop (`gtk_main_iteration()`) and pop from the queue. GTK itself is lazily initialized on
+first real use (a C++11 "magic static" `gtk_init()` call), so a program that never calls a GUI
+builtin never touches GTK at runtime, matching the build-time conditionality above.
+
+**Oracle-verified return-value simplification, consistent with this project's "PB source-level
+semantics, not PB's own internal ABI" stance since M0**: `OpenWindow`'s and `IsWindow`'s real
+return values are large, internal-pointer-looking nonzero Integers, not clean booleans (confirmed:
+two different huge values for the same window from the two different calls) - real PB code only
+ever uses them for truthiness (`If OpenWindow(...)`), never compares to a literal, so `pbcxx`'s own
+`pbOpenWindow`/`pbIsWindow` return a plain `1`/`0` instead. Similarly, oracle-verified that
+re-opening an already-open window ID is a harmless no-op returning the existing window's own value
+rather than erroring or creating a second one - **not** replicated exactly (`pbOpenWindow` destroys
+any existing widget at that ID and creates a genuinely new one instead), a narrow, documented
+divergence for an edge case no real program is likely to rely on deliberately.
+
+**Move vs. resize disambiguation**: GTK's single `"configure-event"` signal fires for *any*
+geometry change without saying which part changed. Solved with a per-window `WindowState{x, y,
+width, height}` struct (attached via `g_object_set_data`, freed in `CloseWindow`) diffed against
+each incoming event, emitting `#PB_Event_MoveWindow` and/or `#PB_Event_SizeWindow` (both, if both
+genuinely changed at once).
+
+**A real methodological self-correction worth recording** (mirroring the M4e `AddDate` one):
+`WaitWindowEvent`'s real timeout-expiry return value was initially misidentified as `-1`, from an
+under-drained test that saw `-1` after only ~2ms against a 300ms timeout. This contradicted the
+official docs (`-1` isn't documented as a return value at all; `0` is). Re-testing with a properly
+settled drain loop (waiting for a short *quiet streak* of empty polls, not just one) showed `-1` is
+actually a real, repeating spurious event value this specific headless-Xvfb-without-a-window-manager
+test environment generates as noise (unrelated to any `#PB_Event_*` constant) - once drained away
+properly, `WaitWindowEvent(300)` genuinely blocked for ~300ms (confirmed via `ElapsedMilliseconds()`
+before/after) and correctly returned `0`, matching the docs exactly. The lesson (a tight
+`while (WindowEvent() != 0) {}`-style drain loop can exit prematurely, before an event already in
+flight over the X11 socket actually arrives) recurred a second time independently while writing this
+slice's own Catch2 unit tests, and was fixed the same way there too (a `drainEvents()` helper
+requiring 5 consecutive empty polls, not just one, before considering the queue genuinely settled).
+
+**A real environment gotcha, not a `pbcxx` bug, that blocked GUI testing entirely until diagnosed**:
+a from-scratch, hand-written, pbcxx-independent GTK3 program (`gtk_init`/`gtk_window_new`/
+`gtk_widget_show_all`/a plain event-pump loop) run under `DISPLAY=:99` (a dedicated Xvfb instance
+started for this testing) still showed **zero** windows ever appearing on that X server
+(`xwininfo -root -tree` reported "0 children" even while the program was confirmed still running).
+Root cause: this dev environment's shell also has a real `WAYLAND_DISPLAY=wayland-0` set (a desktop
+Wayland session, separate from the Xvfb instance started purely for GUI testing) - GTK3 silently
+prefers Wayland over `DISPLAY` whenever both are present, with no warning that it ignored the X11
+display entirely. Fixed by explicitly forcing `GDK_BACKEND=x11` whenever running a GUI test under
+Xvfb - confirmed this exact class of gotcha (a toolkit silently preferring the wrong display backend
+in an environment with both present) was independently hit and documented by the separate
+`~/git/PureBasic/qt6_subsystem` reference project too, for Qt/`QT_QPA_PLATFORM`. `run_gui_case.sh`
+and CI's GUI-test steps both set it unconditionally now; harmless on a plain X11-only environment.
+
+**Close-button (`delete-event`) verified by direct GTK signal emission, not a real window-manager
+interaction**: this headless Xvfb instance has no window manager running at all, so there's nothing
+to translate a "close the window" request into the `WM_DELETE_WINDOW` protocol message GTK's
+`delete-event` signal actually listens for - confirmed directly: `xdotool windowclose` and a
+simulated `Alt+F4` both bypass it entirely (the former destroys the underlying `GdkWindow` directly,
+logging a `Gdk-WARNING: GdkWindow ... unexpectedly destroyed`; the latter does nothing, since no
+window manager exists to bind the shortcut). Verified the actual handler logic instead by emitting
+the real `"delete-event"` signal directly via `g_signal_emit_by_name` (the exact same code path a
+real close-button click would trigger, just invoked without the window-manager middleman) - confirms
+the handler returns `TRUE` (window not auto-destroyed, matching real PB), queues
+`#PB_Event_CloseWindow` for the right window ID, and that a subsequent `CloseWindow()` call still
+closes it normally. This is both a unit test (`runtime_guilib_test.cpp`) and the technique used for
+manual verification during development; installing a window manager under Xvfb to test the "real"
+interaction path end-to-end was considered and deliberately skipped as disproportionate
+infrastructure for what the direct-signal-emission test already covers with high confidence.
+
+**Window chrome/behavior flags (`#PB_Window_*`) are accepted but not yet acted on** - every window
+currently gets GTK's default titlebar/resize/close chrome regardless of what's requested. A
+deliberately deferred gap for this first slice, like gadgets/menus/everything past "window + event
+core" in the M7b scoping notes above.
+
+**Testing**: `runtime_guilib_test.cpp` (Catch2) and one golden e2e case (`tests/e2e/gui_window_core`,
+run via a dedicated `run_gui_case.sh` rather than the plain `run_case.sh`) both skip gracefully
+(Catch2's `SKIP()`; ctest's `SKIP_RETURN_CODE` property) rather than fail when no usable display is
+available - most CI runners have none at all. No `tests/e2e_diff` case was added for this slice: the
+deliberate `IsWindow`/`OpenWindow` return-value simplification above means a literal stdout diff
+against the real oracle would fail even on fully correct `pbcxx` behavior, making this feature area
+a poor fit for that testing style (unlike the stdlib libraries in M4, where output is expected to
+match byte-for-byte). GTK3 is an **optional** build-time dependency for the unit test binary itself
+too (`tests/unit/CMakeLists.txt` probes for it via `pkg_check_modules(... QUIET ...)`, not
+`REQUIRED`, compiling `runtime_guilib_test.cpp` only when found) - Windows-MinGW CI doesn't install
+it yet and the real Haiku machine doesn't have `gtk3_devel` installed yet, and neither should lose
+the rest of the unit test suite over that. A new `tests/lsan-suppressions.txt` (wired into both the
+`linux-clang-sanitize` CMake preset's own `LSAN_OPTIONS` and the `sanitizers` CI job) suppresses a
+confirmed-harmless LeakSanitizer false positive from fontconfig/pango-ft2's own process-lifetime
+font cache, first touched by `gtk_init()` - not a `pbcxx` leak.
+
+**Not yet done, left for later M7b slices**: gadgets, `MessageRequester`, `Menu`/`StatusBar`/
+`ToolBar`, and everything else in the phased scope above. Haiku verification (needs `gtk3_devel`
+installed there first) and Windows/MinGW GUI linking feasibility are both still open, deferred
+rather than blocking this slice.
 
