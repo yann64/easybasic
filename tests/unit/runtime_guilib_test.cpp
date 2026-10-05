@@ -1038,3 +1038,105 @@ TEST_CASE("PathRequester returns an empty string on cancel, and the chosen path 
     CHECK_FALSE(result.bytes().empty());
     CHECK(result.bytes().back() == '/');
 }
+
+TEST_CASE("ContainerGadget automatically captures subsequently created gadgets until CloseGadgetList",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(400, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbContainerGadget(1, 10, 10, 200, 200, 0) == 1);
+    CHECK(pbIsGadget(1) == 1);
+    CHECK(pbButtonGadget(2, 5, 5, 60, 20, PBString("Inside")) == 1);
+    CHECK(pbCloseGadgetList() == 1);
+    CHECK(pbButtonGadget(3, 5, 220, 60, 20, PBString("Outside")) == 1);
+
+    // Oracle-verified: gadget coordinates inside a container are relative
+    // to the container's own top-left, not the window's - a button
+    // placed at (0,0) inside a container at (50,50) reports GadgetX()=0,
+    // not 50 (this project has no GadgetX of its own yet, so this checks
+    // the same fact via the real GtkFixed child allocation instead).
+    GtkWidget* innerButton = detail::gadgetTable().at(2);
+    GtkWidget* containerFixed = detail::containerFixedTable().at(1);
+    CHECK(gtk_widget_get_parent(innerButton) == containerFixed);
+    GtkWidget* outerButton = detail::gadgetTable().at(3);
+    CHECK(gtk_widget_get_parent(outerButton) == detail::windowFixedTable().at(400));
+
+    pbCloseWindow(400);
+}
+
+TEST_CASE("Freeing a container recursively frees every gadget nested inside it, at any depth",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(401, 10, 10, 300, 300, PBString("Test"));
+
+    pbContainerGadget(10, 10, 10, 250, 250, 0);
+    pbContainerGadget(11, 20, 20, 150, 150, 0);
+    pbButtonGadget(12, 5, 5, 60, 20, PBString("Deep"));
+    pbCloseGadgetList(); // closes 11
+    pbButtonGadget(13, 5, 180, 60, 20, PBString("OuterLevel"));
+    pbCloseGadgetList(); // closes 10
+    pbButtonGadget(14, 5, 260, 60, 20, PBString("WindowLevel"));
+
+    for (std::int64_t id : {10, 11, 12, 13, 14}) {
+        CHECK(pbIsGadget(id) == 1);
+    }
+
+    CHECK(pbFreeGadget(10) == 1);
+    CHECK(pbIsGadget(10) == 0);
+    CHECK(pbIsGadget(11) == 0); // direct child
+    CHECK(pbIsGadget(12) == 0); // nested two levels deep
+    CHECK(pbIsGadget(13) == 0); // direct child
+    CHECK(pbIsGadget(14) == 1); // window-level, unaffected - oracle-verified
+
+    pbCloseWindow(401);
+}
+
+TEST_CASE("OpenGadgetList reopens a closed container so more gadgets can be added to it dynamically",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(402, 10, 10, 300, 300, PBString("Test"));
+
+    pbContainerGadget(20, 10, 10, 200, 200, 0);
+    pbCloseGadgetList();
+
+    CHECK(pbOpenGadgetList(20) == 1);
+    CHECK(pbButtonGadget(21, 5, 5, 60, 20, PBString("Reopened")) == 1);
+    CHECK(pbCloseGadgetList() == 1);
+
+    GtkWidget* reopenedButton = detail::gadgetTable().at(21);
+    GtkWidget* containerFixed = detail::containerFixedTable().at(20);
+    CHECK(gtk_widget_get_parent(reopenedButton) == containerFixed);
+
+    // Oracle-verified: a gadget added via a later OpenGadgetList is still
+    // a real child of that container, for FreeGadget's own purposes too.
+    pbFreeGadget(20);
+    CHECK(pbIsGadget(21) == 0);
+
+    // A non-container (or already-freed) #Gadget is a harmless failure.
+    CHECK(pbOpenGadgetList(20) == 0);
+    CHECK(pbOpenGadgetList(9999) == 0);
+
+    pbCloseWindow(402);
+}
+
+TEST_CASE("CloseGadgetList with nothing open is a harmless no-op", "[runtime][guilib]") {
+    // Oracle-verified: real PB's own debugger raises a fatal error here -
+    // this project deliberately simplifies to a silent no-op instead (see
+    // pbCloseGadgetList's own doc comment for why), so this only checks
+    // that it doesn't crash and leaves window-level gadget creation
+    // working normally afterward, not that it matches the fatal text.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(403, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbCloseGadgetList() == 0);
+    CHECK(pbButtonGadget(1, 10, 10, 60, 20, PBString("Still works")) == 1);
+    CHECK(pbIsGadget(1) == 1);
+    pbCloseWindow(403);
+}

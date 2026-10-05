@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Eight slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Nine slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -3042,4 +3042,87 @@ the portal issue). A new `scheduleDialogAction(std::function<void(GtkDialog*)>)`
 pre-existing `autoRespond` to let a callback do arbitrary setup (`gtk_entry_set_text`, etc.) before
 responding. 363 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan
 clean with the two new suppressions), including the 353 that predate this slice.
+
+## M7b Implementation Notes (GUI core, ninth slice: `ContainerGadget`, the start of a new
+gadget-nesting thread)
+
+**Scope landed**: `ContainerGadget` itself, plus the `OpenGadgetList`/`CloseGadgetList` pair real PB
+uses to manage it (and, oracle-verified, will later share unchanged with `PanelGadget`/
+`ScrollAreaGadget` whenever either is implemented - deliberately out of scope for this slice, the
+same phased approach every other M7b slice has used). Not a standalone gadget type in the usual
+sense - a plain layout panel whose entire purpose is changing *where* subsequently-created gadgets
+go, oracle-verified via `ContainerGadget.html`'s own "Remarques" section and confirmed directly with
+a dedicated probe program before writing a single line of implementation.
+
+**The core oracle finding, confirmed as directly as this project's own testing methodology allows -
+not assumed from either PB folklore or the Qt6 sibling project's own prior design notes for the same
+feature**: a gadget created while a container is "open" (between its own creation, or a reopening
+`OpenGadgetList` call, and the matching `CloseGadgetList()`) is positioned *relative to that
+container's own top-left corner*, not the window's - confirmed via `GadgetX()`/`GadgetY()` (not
+otherwise implemented by this project yet, added nowhere except this one throwaway oracle probe
+script) on a button nested two containers deep, reporting back exactly the coordinates it was
+created with, not their sum. This maps naturally onto plain nested `GtkFixed`s - `gtk_fixed_put`'s
+own coordinates are already relative to whichever `GtkFixed` a widget is placed into, so giving each
+container its own inner `GtkFixed` (wrapped in a `GtkFrame` for `Flags`' own border styling) and
+simply changing *which* `GtkFixed` `placeGadget` targets gets the right relative-coordinate behavior
+for free, with no coordinate arithmetic anywhere.
+
+**A real, multi-level nesting stack, designed from the start to be shared, unchanged, by
+`PanelGadget`/`ScrollAreaGadget` later** - `gadgetListStack()`, a plain `std::vector<GadgetListFrame>`
+(each frame: a container's own `#Gadget` ID and its inner `GtkFixed*`), pushed by `ContainerGadget`'s
+own successful creation and by `OpenGadgetList`, popped by `CloseGadgetList`. `placeGadget` - the one
+shared choke point every existing gadget-creation function already calls - consults the stack's own
+top frame first, falling back to the window's own top-level `GtkFixed` only when the stack is empty;
+every other gadget-creation function (`ButtonGadget`, etc.) needed *zero* changes to get real,
+multi-level nesting, the exact same "one shared call site, zero changes needed elsewhere" shape the
+Qt6 sibling project's own equivalent design (`docs/42-gadget-container-nesting.md`) already
+documented reaching for the identical reason. That project's own design notes, read *before*
+implementing here (not copied from - it targets Qt6, a different toolkit, and this project's own
+`GtkFixed`-nesting approach needed none of its particular stack-frame bookkeeping tricks), were
+genuinely useful for gap-awareness: its own real, user-visible bug (a stale stack frame surviving a
+same-Panel `AddGadgetItem` tab-switch, caught only by tracing the official `Gadget.pb` example's exact
+call sequence) is a `PanelGadget`-specific "replace, not push" edge case that doesn't exist yet in
+this project at all (no `PanelGadget` here, this slice is `ContainerGadget` only) - flagged here as a
+known trap to re-examine carefully whenever `PanelGadget`'s own `AddGadgetItem` is eventually
+implemented, not something this slice needed to solve.
+
+**Freeing a container needed its own recursive cleanup, oracle-verified directly rather than assumed
+from GTK's own widget-destruction semantics alone**: `FreeGadget` on a container makes `IsGadget`
+false for *every* gadget nested inside it, at *any* depth - not just its own immediate children -
+confirmed with a three-gadget-deep probe (`outer` containing `inner` containing a plain button) before
+writing `pruneContainerGadgets`. GTK itself already recursively destroys the actual *widgets* as
+children of the container being destroyed (nothing new needed there), but this project's own
+`gadgetTable()`/`containerFixedTable()` bookkeeping would otherwise be left holding dangling pointers,
+the exact same risk `destroyWindow`'s own pre-existing per-window scan already guards against for
+every other owned-widget table in this header - a new `gadgetContainerIdKey()` tag (the immediately-
+enclosing container's own ID, `0` if none, set by `placeGadget` itself) is what makes the recursive
+scan possible without needing to walk GTK's own live widget tree. `destroyWindow` itself needed only
+one small addition (clearing `containerFixedTable()` entries for whatever it already prunes from
+`gadgetTable()`) - the window-level case doesn't need `pruneContainerGadgets` at all, since its own
+existing flat scan (matching by owning *window* ID) already catches a container's nested gadgets
+too, regardless of nesting depth, for free.
+
+**One oracle-verified fatal error deliberately not replicated, a conscious simplification rather than
+an oversight**: calling `CloseGadgetList()` with nothing open is a real, fatal debugger error in real
+PB ("CloseGadgetList(): CloseGadgetList() can only be called after OpenGadgetList() or container
+gadgets.") - confirmed directly, then confirmed *again* that a release (non-`-d`) build does not
+crash either, ruling out "this is release-safe too" as an assumption. Not replicated here: this
+project has no existing mechanism for a plain generic-builtin runtime function to behave differently
+between debug and release the way `Read`'s own data-exhaustion check does (that check is injected
+directly by codegen around a dedicated `Read` statement - `CloseGadgetList()` is just an ordinary
+builtin call, with no dedicated AST node to hook a similar debug-only check into without adding a new
+one solely for this). `pbCloseGadgetList()` is a silent no-op on an empty stack instead, in both
+modes - a real, acknowledged, narrow divergence, not something worth a new codegen special case for.
+
+**Testing**: four new `runtime_guilib_test.cpp` cases covering auto-capture-until-`CloseGadgetList`
+(checked via each gadget's own real `gtk_widget_get_parent`, confirming it's the container's inner
+`GtkFixed` rather than the window's own), the three-level-deep recursive-free behavior above,
+`OpenGadgetList` reopening a closed container (plus its own two harmless-failure cases - a non-
+container `#Gadget`, an unknown one), and the empty-stack `CloseGadgetList` no-op. A new golden e2e
+case (`tests/e2e/gui_container`) exercises the same nesting/reopen/recursive-free sequence end to end
+through `pbcxx` itself, cross-checked pattern-for-pattern (not byte-for-byte, due to this project's
+own pre-existing, deliberate `IsGadget`-returns-a-clean-`1`-not-a-real-handle simplification) against
+a dedicated oracle probe program before being pinned as the golden `expected.stdout`. 369 tests pass
+across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean), including the 363
+that predate this slice.
 

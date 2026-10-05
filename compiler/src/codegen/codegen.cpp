@@ -180,6 +180,8 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"hidegadget", "pbHideGadget"},         {"disablegadget", "pbDisableGadget"},
         {"setgadgettext", "pbSetGadgetText"},   {"getgadgettext", "pbGetGadgetText"},
         {"setgadgetstate", "pbSetGadgetState"}, {"getgadgetstate", "pbGetGadgetState"},
+        {"containergadget", "pbContainerGadget"}, {"opengadgetlist", "pbOpenGadgetList"},
+        {"closegadgetlist", "pbCloseGadgetList"},
         {"messagerequester", "pbMessageRequester"},
         {"colorrequester", "pbColorRequester"}, {"fontrequester", "pbFontRequester"},
         {"selectedfontname", "pbSelectedFontName"}, {"selectedfontsize", "pbSelectedFontSize"},

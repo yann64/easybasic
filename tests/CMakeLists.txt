@@ -15,7 +15,7 @@ add_subdirectory(unit)
 # run_case.sh - it skips gracefully (SKIP_RETURN_CODE) rather than failing
 # when this environment has no GTK3 dev files or no usable display, the
 # same way e2e_diff cases skip when pbcompilerc isn't installed.
-set(EASYBASIC_GUI_E2E_CASES gui_window_core gui_basic_gadgets gui_menu_statusbar gui_image gui_toolbar gui_systray)
+set(EASYBASIC_GUI_E2E_CASES gui_window_core gui_basic_gadgets gui_menu_statusbar gui_image gui_toolbar gui_systray gui_container)
 file(GLOB EASYBASIC_E2E_CASES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/e2e ${CMAKE_CURRENT_SOURCE_DIR}/e2e/*)
 foreach(case ${EASYBASIC_E2E_CASES})
     set(case_dir ${CMAKE_CURRENT_SOURCE_DIR}/e2e/${case})

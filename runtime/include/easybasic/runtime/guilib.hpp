@@ -76,6 +76,39 @@ inline std::unordered_map<std::int64_t, GtkWidget*>& gadgetTable() {
     return table;
 }
 
+/// M7b's ninth GUI slice: `ContainerGadget`'s own "gadget-list stack" -
+/// oracle-verified (`ContainerGadget.html`'s own "Remarques"): once a
+/// container gadget is created, every gadget created afterward becomes
+/// part of it, until a matching `CloseGadgetList()` returns to whatever
+/// was current before - containers can nest (confirmed directly: an
+/// inner container's own `GadgetX()` is relative to its *immediate*
+/// parent container, not the outermost window), so this is a real stack,
+/// not a single global - designed to be shared, unchanged, by
+/// `PanelGadget`/`ScrollAreaGadget` whenever either of those is
+/// implemented, the same shared-infrastructure shape the Qt6 sibling
+/// project's own equivalent design settled on. `fixed` is the container's
+/// own inner `GtkFixed` - every other gadget-creation function keeps
+/// calling `placeGadget` exactly as it already does; the stack is
+/// consulted entirely inside `placeGadget` itself, so none of them need
+/// to know this exists at all.
+struct GadgetListFrame {
+    std::int64_t containerId = 0;
+    GtkWidget* fixed = nullptr;
+};
+
+inline std::vector<GadgetListFrame>& gadgetListStack() {
+    static std::vector<GadgetListFrame> stack;
+    return stack;
+}
+
+/// `#Gadget` (a container) -> its own inner `GtkFixed` - what
+/// `OpenGadgetList` re-pushes onto `gadgetListStack()` to resume adding
+/// gadgets to a container after an earlier `CloseGadgetList()`.
+inline std::unordered_map<std::int64_t, GtkWidget*>& containerFixedTable() {
+    static std::unordered_map<std::int64_t, GtkWidget*> table;
+    return table;
+}
+
 /// M7b's fourth GUI slice: `Menu`/`StatusBar`. `#Menu` -> its `GtkMenuBar`
 /// (the direct child of a window's own vbox, reordered to position 0 so it
 /// always renders above the gadget area regardless of creation order
@@ -238,6 +271,12 @@ inline const char* menuWindowIdKey() { return "pbcxx-menu-window-id"; }
 inline const char* menuCheckedKey() { return "pbcxx-menu-checked"; }
 inline const char* statusBarWindowIdKey() { return "pbcxx-statusbar-window-id"; }
 inline const char* toolBarWindowIdKey() { return "pbcxx-toolbar-window-id"; }
+// M7b's ninth GUI slice: `ContainerGadget`. The immediately-enclosing
+// container's own PB gadget ID (0 if placed directly into a window) -
+// read back by `pruneContainerGadgets` so freeing a container also frees
+// every gadget nested inside it, at any depth, the same way GTK itself
+// already recursively destroys their *widgets*.
+inline const char* gadgetContainerIdKey() { return "pbcxx-gadget-container-id"; }
 
 /// The last known position/size for one window - `configure-event` fires
 /// for *any* geometry change without saying which part changed, so this is
@@ -376,7 +415,19 @@ inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
     delete state;
     for (auto it = gadgetTable().begin(); it != gadgetTable().end();) {
         auto owner = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(it->second), gadgetWindowIdKey()));
-        it = (owner == windowId) ? gadgetTable().erase(it) : std::next(it);
+        if (owner == windowId) {
+            // M7b's ninth GUI slice: a container gadget owned by this
+            // window needs its own `containerFixedTable()` entry cleared
+            // too, same risk `gadgetTable()` itself already had - a plain
+            // erase (not `pruneContainerGadgets`, which is for a single
+            // live container being freed on its own) since this loop is
+            // already visiting every gadget this window owns, nested or
+            // not.
+            containerFixedTable().erase(it->first);
+            it = gadgetTable().erase(it);
+        } else {
+            ++it;
+        }
     }
     // Same idea again for M7b's fourth GUI slice's own two per-window
     // owned-widget tables - GTK will recursively destroy the actual
@@ -418,19 +469,34 @@ inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
     gtk_widget_destroy(window);
 }
 
-/// Shared by every gadget-creation function: places `widget` into
-/// `windowId`'s own `GtkFixed` at the given position/size, tags it with its
-/// PB gadget ID and owning window ID (read back by `queueGadgetEvent` and
-/// `destroyWindow`), and records it in `gadgetTable()`. Returns `false`
-/// (and destroys `widget` again without placing it) if `windowId` isn't a
-/// currently open window - a real PB program is very unlikely to reference
-/// one deliberately, and this project's own established stance only
-/// replicates real PB's debugger-fatal-error behavior for cases already
-/// found worth the trouble (see M7a's `KillThread` notes).
+/// Shared by every gadget-creation function: places `widget` into the
+/// *current* `GtkFixed` - `windowId`'s own top-level one, unless
+/// `gadgetListStack()` is non-empty, in which case its own top frame's
+/// inner `GtkFixed` (a container gadget's own, M7b's ninth GUI slice) -
+/// at the given position/size, tags it with its PB gadget ID, owning
+/// window ID (read back by `queueGadgetEvent` and `destroyWindow`), and
+/// immediately-enclosing container ID (`0` if none - read back by
+/// `pruneContainerGadgets`), and records it in `gadgetTable()`. Returns
+/// `false` (and destroys `widget` again without placing it) if `windowId`
+/// isn't a currently open window - a real PB program is very unlikely to
+/// reference one deliberately, and this project's own established stance
+/// only replicates real PB's debugger-fatal-error behavior for cases
+/// already found worth the trouble (see M7a's `KillThread` notes). Every
+/// existing gadget-creation function keeps calling this exactly as before
+/// (passing `windowId` for bookkeeping, never the target `GtkFixed`
+/// itself) - container-awareness lives entirely here, nowhere else.
 inline bool placeGadget(std::int64_t windowId, std::int64_t gadgetId, std::int64_t x, std::int64_t y,
                          std::int64_t width, std::int64_t height, GtkWidget* widget) {
-    auto fixedIt = windowFixedTable().find(windowId);
-    if (fixedIt == windowFixedTable().end()) {
+    GtkWidget* fixed = nullptr;
+    std::int64_t containerId = 0;
+    if (!gadgetListStack().empty()) {
+        fixed = gadgetListStack().back().fixed;
+        containerId = gadgetListStack().back().containerId;
+    } else {
+        auto fixedIt = windowFixedTable().find(windowId);
+        fixed = fixedIt == windowFixedTable().end() ? nullptr : fixedIt->second;
+    }
+    if (fixed == nullptr) {
         gtk_widget_destroy(widget);
         return false;
     }
@@ -443,11 +509,37 @@ inline bool placeGadget(std::int64_t windowId, std::int64_t gadgetId, std::int64
     }
     g_object_set_data(G_OBJECT(widget), gadgetIdKey(), reinterpret_cast<gpointer>(gadgetId));
     g_object_set_data(G_OBJECT(widget), gadgetWindowIdKey(), reinterpret_cast<gpointer>(windowId));
-    gtk_fixed_put(GTK_FIXED(fixedIt->second), widget, static_cast<int>(x), static_cast<int>(y));
+    g_object_set_data(G_OBJECT(widget), gadgetContainerIdKey(), reinterpret_cast<gpointer>(containerId));
+    gtk_fixed_put(GTK_FIXED(fixed), widget, static_cast<int>(x), static_cast<int>(y));
     gtk_widget_set_size_request(widget, static_cast<int>(width), static_cast<int>(height));
     gtk_widget_show(widget);
     gadgetTable()[gadgetId] = widget;
     return true;
+}
+
+/// `pbFreeGadget`'s own recursive half: erases every gadget nested inside
+/// `containerId`, at any depth, from `gadgetTable()`/`containerFixedTable()`
+/// - oracle-verified directly (freeing an outer container makes `IsGadget`
+/// false for *every* gadget nested inside it, not just its own immediate
+/// children) - GTK itself already recursively destroys the actual
+/// *widgets* as children of the container being destroyed; this just keeps
+/// this project's own id-keyed bookkeeping from being left holding
+/// dangling pointers, the same risk every other owned-widget table in this
+/// header already has. Safe to call before the container's own widget is
+/// destroyed: erasing a *different* key from `gadgetTable()` never
+/// invalidates `it` from `pbFreeGadget`'s own, separate lookup.
+inline void pruneContainerGadgets(std::int64_t containerId) {
+    for (auto it = gadgetTable().begin(); it != gadgetTable().end();) {
+        auto owner = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(it->second), gadgetContainerIdKey()));
+        if (owner == containerId) {
+            auto childId = it->first;
+            pruneContainerGadgets(childId);
+            containerFixedTable().erase(childId);
+            it = gadgetTable().erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 /// Finds the real `GtkLabel` for a menu item's own text, whether it's
@@ -842,6 +934,91 @@ inline std::int64_t pbFrameGadget(std::int64_t gadgetId, std::int64_t x, std::in
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
+/// M7b's ninth GUI slice: `ContainerGadget` - a plain panel meant to hold
+/// other gadgets, the first of PB's "gadget-list nesting" family
+/// (`PanelGadget`/`ScrollAreaGadget` share the same `OpenGadgetList`/
+/// `CloseGadgetList` mechanism, oracle-verified, but aren't implemented
+/// yet). A `GtkFrame` (for `Flags`' own border styling) wrapping an inner
+/// `GtkFixed` (the actual placement target gadgets created afterward land
+/// in) - `gtk_fixed_put`'s own coordinates are relative to *that* `GtkFixed`
+/// for free, exactly matching real PB's own oracle-verified behavior
+/// (`GadgetX()` on a gadget nested in a container is relative to the
+/// container's own top-left, not the window's - confirmed directly, both
+/// one level deep and nested two containers deep). Successfully creating
+/// one pushes it onto `gadgetListStack()` immediately - oracle-verified
+/// (`ContainerGadget.html`'s own "Remarques"): no separate "open" call is
+/// needed, unlike reopening one later via `OpenGadgetList`.
+inline std::int64_t pbContainerGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                       std::int64_t height, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* frame = gtk_frame_new(nullptr);
+    // Oracle-verified bit values (`#PB_Container_BorderLess`=0 (default),
+    // `Flat`=1, `Raised`=2, `Single`=4, `Double`=8) mapped onto GtkFrame's
+    // own shadow-type vocabulary by name, not pixel-matched against a real
+    // screenshot - no accessor exists yet to query a gadget's own visual
+    // chrome from PB code, so there's nothing to verify that precisely
+    // against.
+    GtkShadowType shadow = GTK_SHADOW_NONE;
+    if (flags & 8) {
+        shadow = GTK_SHADOW_ETCHED_IN; // #PB_Container_Double
+    } else if (flags & 4) {
+        shadow = GTK_SHADOW_IN; // #PB_Container_Single
+    } else if (flags & 2) {
+        shadow = GTK_SHADOW_OUT; // #PB_Container_Raised
+    } else if (flags & 1) {
+        shadow = GTK_SHADOW_ETCHED_OUT; // #PB_Container_Flat
+    }
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), shadow);
+    if (!detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, frame)) {
+        return 0;
+    }
+    GtkWidget* inner = gtk_fixed_new();
+    gtk_container_add(GTK_CONTAINER(frame), inner);
+    gtk_widget_show(inner);
+    detail::containerFixedTable()[gadgetId] = inner;
+    detail::gadgetListStack().push_back({gadgetId, inner});
+    return 1;
+}
+
+/// `OpenGadgetList(#Gadget [, Element])` - reopens a previously-created
+/// container as the current gadget-list target, so more gadgets can be
+/// added to it dynamically after its own matching `CloseGadgetList()`.
+/// `Element` is `PanelGadget`-specific (selects which tab to add to) -
+/// accepted but ignored here, oracle-verified a bare one-argument call
+/// against a plain `ContainerGadget` needs nothing else. Returns `0`
+/// (and pushes nothing) for a `#Gadget` that isn't a currently live
+/// container - this project's own established "not worth modeling every
+/// misuse precisely" stance (see `placeGadget`'s own doc comment).
+inline std::int64_t pbOpenGadgetList(std::int64_t gadgetId, std::int64_t /*element*/ = 0) {
+    auto it = detail::containerFixedTable().find(gadgetId);
+    if (it == detail::containerFixedTable().end()) {
+        return 0;
+    }
+    detail::gadgetListStack().push_back({gadgetId, it->second});
+    return 1;
+}
+
+/// `CloseGadgetList()` - pops `gadgetListStack()` back to whatever was
+/// current before the matching `ContainerGadget`/`OpenGadgetList` call.
+/// Oracle-verified: calling this with nothing open is a real, fatal
+/// debugger error ("CloseGadgetList(): CloseGadgetList() can only be
+/// called after OpenGadgetList() or container gadgets.") - not
+/// replicated here, a deliberate simplification (silent no-op instead),
+/// since a release (non-`-d`) build was oracle-confirmed to *not* crash
+/// either, and this project has no existing mechanism for a plain
+/// generic-builtin runtime function to behave differently in debug vs.
+/// release mode the way `Read`'s own data-exhaustion check does (that
+/// one's debug-only check is injected by codegen itself, around a
+/// dedicated `Read` statement - `CloseGadgetList()` is just an ordinary
+/// builtin call, nothing dedicated to hook into the same way).
+inline std::int64_t pbCloseGadgetList() {
+    if (detail::gadgetListStack().empty()) {
+        return 0;
+    }
+    detail::gadgetListStack().pop_back();
+    return 1;
+}
+
 /// Oracle-verified: real PB's own `IsGadget` also returns a native-handle-
 /// ish nonzero value, not a clean `1` - simplified the same way
 /// `pbIsWindow`'s own is.
@@ -852,8 +1029,13 @@ inline std::int64_t pbFreeGadget(std::int64_t gadgetId) {
     if (it == detail::gadgetTable().end()) {
         return 0;
     }
+    // M7b's ninth GUI slice: a no-op for a plain (non-container) gadget -
+    // see `pruneContainerGadgets`'s own doc comment for why this needs to
+    // happen *before* `gtk_widget_destroy` below, not after.
+    detail::pruneContainerGadgets(gadgetId);
     gtk_widget_destroy(it->second);
     detail::gadgetTable().erase(it);
+    detail::containerFixedTable().erase(gadgetId);
     return 1;
 }
 

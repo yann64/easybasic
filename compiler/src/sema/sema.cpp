@@ -398,6 +398,21 @@ void Sema::registerGuiLibBuiltins() {
         {"getgadgettext", TypeSuffix::String, {TypeSuffix::Integer}, 1},
         {"setgadgetstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"getgadgetstate", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // M7b's ninth GUI slice: ContainerGadget, the first of the
+        // "gadget-list nesting" family (OpenGadgetList/CloseGadgetList -
+        // shared machinery `PanelGadget`/`ScrollAreaGadget` will also need
+        // later). `Flags` is optional (oracle-verified: a bare five-
+        // argument call defaults to `#PB_Container_BorderLess`).
+        // `OpenGadgetList`'s own `Element` is optional too - it's
+        // PanelGadget-specific (selects which tab to add to); passed but
+        // ignored for a plain Container, oracle-verified a bare one-
+        // argument call reopens it correctly with nothing else needed.
+        {"containergadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         5},
+        {"opengadgetlist", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"closegadgetlist", TypeSuffix::Integer, {}, 0},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -534,6 +549,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "buttongadget",  "textgadget",  "stringgadget",     "checkboxgadget", "framegadget",
         "isgadget",      "freegadget",  "resizegadget",     "hidegadget",     "disablegadget",
         "setgadgettext", "getgadgettext", "setgadgetstate", "getgadgetstate", "messagerequester",
+        "containergadget", "opengadgetlist", "closegadgetlist",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -722,6 +738,16 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_font_strikeout", 0},
         {"pb_font_underline", 0},
         {"pb_requester_multiselection", 1},
+        // ContainerGadget (M7b's ninth GUI slice, the start of a new
+        // gadget-nesting thread) - oracle-verified via a direct
+        // `Debug #PB_Container_Xxx` probe, independent bits like
+        // `#PB_StatusBar_*`/`#PB_ToolBar_*` above, not a grouped-flags
+        // shape like MessageRequester's own.
+        {"pb_container_borderless", 0},
+        {"pb_container_flat", 1},
+        {"pb_container_raised", 2},
+        {"pb_container_single", 4},
+        {"pb_container_double", 8},
     };
     return table;
 }
