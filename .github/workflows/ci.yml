@@ -114,6 +114,16 @@ jobs:
         #     here is a raw pointer *to* a std::recursive_mutex that lives
         #     persistently in the global mutexTable(), not a local object -
         #     cppcheck's syntactic check doesn't trace that distinction.
+        #   - unsignedLessThanZero: a false positive in guilib.hpp's
+        #     pbNextSelectedFileName (M7b's Requester slice) - `cursor` is a
+        #     `std::size_t&` bound to a *persistent*, static reference cell
+        #     also written to (reset to `0`) by a separate function
+        #     (pbOpenFileRequester) earlier in the same file; cppcheck's
+        #     value-flow analysis incorrectly treats that unrelated write as
+        #     if it were a local invariant still holding here, misreading
+        #     the resulting always-unsigned `cursor >= files.size()` bounds
+        #     check as suspicious. Both operands are genuinely `std::size_t`
+        #     - no actual sign issue.
         # `compiler/src` is passed as a plain directory (cppcheck's normal
         # mode: scan each .cpp, pulling in its own headers via #include, so
         # a header's usage is seen in context) - but runtime/include's own
@@ -132,6 +142,7 @@ jobs:
             --suppress=useStlAlgorithm --suppress=constVariableReference \
             --suppress=unusedFunction --suppress=duplicateAssignExpression \
             --suppress=shadowFunction --suppress=localMutex \
+            --suppress=unsignedLessThanZero \
             --suppress=noExplicitConstructor -I compiler/src -I runtime/include --std=c++20 \
             compiler/src $(find runtime/include -name '*.hpp')
 

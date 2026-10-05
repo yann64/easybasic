@@ -973,7 +973,7 @@ void Codegen::genDataLabelArrayForwardDecls() {
     }
 }
 
-void Codegen::collectDataLabelSizes(const ast::Block& block, std::vector<std::pair<std::string, std::size_t>>& out) {
+void Codegen::collectDataLabelSizes(const ast::Block& block, std::vector<std::pair<std::string, std::size_t>>& out) const {
     for (const auto& stmt : block) {
         switch (stmt->kind) {
             case ast::StmtKind::DataSection: {

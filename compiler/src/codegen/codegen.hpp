@@ -95,7 +95,7 @@ private:
     /// calling `genExpr` at all (unlike `collectDataLabelArrays`, this
     /// doesn't need - and must not risk - whatever `genExpr` does for an
     /// item's own value, only its count).
-    void collectDataLabelSizes(const ast::Block& block, std::vector<std::pair<std::string, std::size_t>>& out);
+    void collectDataLabelSizes(const ast::Block& block, std::vector<std::pair<std::string, std::size_t>>& out) const;
     /// The recursive worker behind `genDataLabelArrays` - collects, per
     /// addressable label, its own ordered list of already-genExpr'd `.i`
     /// item value expressions into `out` (first-seen order, for

@@ -262,7 +262,11 @@ inline std::int64_t pbKillThread(std::int64_t threadId) {
         return 0;
     }
 #if defined(_WIN32)
-    TerminateThread(handle->thread.native_handle(), 0);
+    // MinGW's own std::thread::native_handle_type is an integer (not a real
+    // HANDLE) with its own generic pthread-style backend - an explicit cast
+    // is needed either way (MSVC's own native_handle_type already is a
+    // HANDLE, where this cast is a no-op).
+    TerminateThread(reinterpret_cast<HANDLE>(handle->thread.native_handle()), 0);
 #else
     pthread_cancel(handle->thread.native_handle());
 #endif

@@ -1419,7 +1419,7 @@ inline PBString pbOpenFileRequester(const PBString& title, const PBString& defau
     detail::multiSelectedFilesCursor() = 0;
     detail::selectedFilePatternIndex() = -1;
     if (response == GTK_RESPONSE_OK) {
-        GtkFileFilter* activeFilter = gtk_file_chooser_get_filter(chooser);
+        const GtkFileFilter* activeFilter = gtk_file_chooser_get_filter(chooser);
         for (std::size_t idx = 0; idx < filters.size(); ++idx) {
             if (filters[idx] == activeFilter) {
                 detail::selectedFilePatternIndex() = static_cast<std::int64_t>(idx);
@@ -1493,7 +1493,7 @@ inline PBString pbSaveFileRequester(const PBString& title, const PBString& defau
     PBString result;
     detail::selectedFilePatternIndex() = -1;
     if (response == GTK_RESPONSE_OK) {
-        GtkFileFilter* activeFilter = gtk_file_chooser_get_filter(chooser);
+        const GtkFileFilter* activeFilter = gtk_file_chooser_get_filter(chooser);
         for (std::size_t idx = 0; idx < filters.size(); ++idx) {
             if (filters[idx] == activeFilter) {
                 detail::selectedFilePatternIndex() = static_cast<std::int64_t>(idx);
