@@ -1741,3 +1741,202 @@ TEST_CASE("OpenGadgetList reopens a ScrollAreaGadget so more gadgets can be adde
 
     pbCloseWindow(705);
 }
+
+TEST_CASE("ListViewGadget round-trips items, selection state, selected text, and per-item data",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(800, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbListViewGadget(1, 10, 10, 250, 120) == 1);
+    for (int i = 1; i <= 5; ++i) {
+        CHECK(pbAddGadgetItem(1, -1, PBString("Item " + std::to_string(i))) == 1);
+    }
+    CHECK(pbCountGadgetItems(1) == 5);
+
+    CHECK(pbGetGadgetState(1) == -1); // nothing selected yet
+    CHECK(pbSetGadgetState(1, 2) == 1);
+    CHECK(pbGetGadgetState(1) == 2);
+    CHECK(pbGetGadgetText(1).bytes() == "Item 3");
+
+    // Oracle-verified: SetGadgetText selects whichever item's own text
+    // exactly matches, or *clears* the current selection entirely if
+    // none does (confirmed directly via a dedicated, isolated probe -
+    // not simply "leaves it unchanged", the initially assumed and
+    // incorrect behavior this project's own golden e2e comparison
+    // caught disagreeing with the real oracle).
+    CHECK(pbSetGadgetText(1, PBString("Item 4")) == 1);
+    CHECK(pbGetGadgetState(1) == 3);
+    CHECK(pbSetGadgetText(1, PBString("No such item")) == 1);
+    CHECK(pbGetGadgetState(1) == -1); // cleared, not left at 3
+
+    CHECK(pbSetGadgetState(1, 3) == 1); // reselect for the state checks below
+    CHECK(pbGetGadgetItemState(1, 3) == 1);
+    CHECK(pbGetGadgetItemState(1, 1) == 0);
+
+    // Oracle-verified: single-select mode already enforces exclusivity -
+    // selecting a different item deselects the previous one automatically.
+    CHECK(pbSetGadgetItemState(1, 1, 1) == 1);
+    CHECK(pbGetGadgetItemState(1, 1) == 1);
+    CHECK(pbGetGadgetItemState(1, 3) == 0);
+    CHECK(pbGetGadgetState(1) == 1);
+
+    CHECK(pbSetGadgetState(1, -1) == 1); // deselect all
+    CHECK(pbGetGadgetState(1) == -1);
+    CHECK(pbGetGadgetText(1).bytes().empty());
+
+    CHECK(pbSetGadgetItemData(1, 0, 777) == 1);
+    CHECK(pbGetGadgetItemData(1, 0) == 777);
+    CHECK(pbGetGadgetItemData(1, 1) == 0); // untouched, defaults to 0
+
+    CHECK(pbRemoveGadgetItem(1, 0) == 1);
+    CHECK(pbCountGadgetItems(1) == 4);
+    CHECK(pbGetGadgetItemText(1, 0).bytes() == "Item 2"); // re-indexed
+
+    CHECK(pbClearGadgetItems(1) == 1);
+    CHECK(pbCountGadgetItems(1) == 0);
+
+    pbCloseWindow(800);
+}
+
+TEST_CASE("ListViewGadget's own Multiselect flag allows more than one simultaneous selection",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(801, 10, 10, 300, 300, PBString("Test"));
+    pbListViewGadget(1, 10, 10, 250, 120, 1 /* #PB_ListView_Multiselect */);
+    for (int i = 1; i <= 3; ++i) {
+        pbAddGadgetItem(1, -1, PBString("Item " + std::to_string(i)));
+    }
+
+    CHECK(pbSetGadgetItemState(1, 0, 1) == 1);
+    CHECK(pbSetGadgetItemState(1, 2, 1) == 1);
+    CHECK(pbGetGadgetItemState(1, 0) == 1); // both stay selected at once
+    CHECK(pbGetGadgetItemState(1, 2) == 1);
+    CHECK(pbGetGadgetItemState(1, 1) == 0);
+
+    pbCloseWindow(801);
+}
+
+TEST_CASE("A real ListView selection change queues #PB_Event_Gadget with #PB_EventType_LeftClick",
+          "[runtime][guilib]") {
+    // gtk_tree_selection_select_path, called directly (bypassing
+    // pbSetGadgetItemState's own signal-blocking), is the GtkTreeView
+    // equivalent of gtk_button_clicked in this project's own existing
+    // click tests.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(802, 10, 10, 300, 300, PBString("Test"));
+    pbListViewGadget(1, 10, 10, 250, 120);
+    pbAddGadgetItem(1, -1, PBString("Item 1"));
+    pbAddGadgetItem(1, -1, PBString("Item 2"));
+    drainEvents();
+
+    GtkWidget* treeView = detail::listViewTreeView(detail::gadgetTable().at(1));
+    REQUIRE(treeView != nullptr);
+    GtkTreePath* path = gtk_tree_path_new_from_indices(1, -1);
+    gtk_tree_selection_select_path(gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView)), path);
+    gtk_tree_path_free(path);
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 1);
+    CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
+
+    pbCloseWindow(802);
+}
+
+TEST_CASE("ComboBoxGadget round-trips items, selection state, and selected text",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(803, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbComboBoxGadget(1, 10, 10, 250, 21) == 1);
+    for (int i = 1; i <= 5; ++i) {
+        CHECK(pbAddGadgetItem(1, -1, PBString("Item " + std::to_string(i))) == 1);
+    }
+    CHECK(pbCountGadgetItems(1) == 5);
+
+    CHECK(pbGetGadgetState(1) == -1);
+    CHECK(pbGetGadgetText(1).bytes().empty());
+    CHECK(pbSetGadgetState(1, 2) == 1);
+    CHECK(pbGetGadgetState(1) == 2);
+    CHECK(pbGetGadgetText(1).bytes() == "Item 3");
+
+    CHECK(pbSetGadgetText(1, PBString("Item 4")) == 1);
+    CHECK(pbGetGadgetState(1) == 3);
+    // Oracle-verified (same finding as ListViewGadget's own, confirmed
+    // for ComboBoxGadget too): a non-matching text clears the selection.
+    CHECK(pbSetGadgetText(1, PBString("No such item")) == 1);
+    CHECK(pbGetGadgetState(1) == -1);
+
+    CHECK(pbRemoveGadgetItem(1, 0) == 1);
+    CHECK(pbCountGadgetItems(1) == 4);
+    CHECK(pbGetGadgetItemText(1, 0).bytes() == "Item 2");
+
+    CHECK(pbClearGadgetItems(1) == 1);
+    CHECK(pbCountGadgetItems(1) == 0);
+
+    pbCloseWindow(803);
+}
+
+TEST_CASE("An editable ComboBoxGadget accepts arbitrary text that matches no item at all",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: an editable combo's own GetGadgetText
+    // reads back whatever was set via SetGadgetText verbatim, and
+    // GetGadgetState stays -1 since nothing in the list matches it.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(804, 10, 10, 300, 300, PBString("Test"));
+    pbComboBoxGadget(1, 10, 10, 250, 21, 1 /* #PB_ComboBox_Editable */);
+    pbAddGadgetItem(1, -1, PBString("Editable item"));
+
+    CHECK(pbSetGadgetText(1, PBString("Something typed")) == 1);
+    CHECK(pbGetGadgetText(1).bytes() == "Something typed");
+    CHECK(pbGetGadgetState(1) == -1);
+
+    pbCloseWindow(804);
+}
+
+TEST_CASE("A real ComboBox selection change queues #PB_Event_Gadget with #PB_EventType_Change",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(805, 10, 10, 300, 300, PBString("Test"));
+    pbComboBoxGadget(1, 10, 10, 250, 21);
+    pbAddGadgetItem(1, -1, PBString("Item 1"));
+    pbAddGadgetItem(1, -1, PBString("Item 2"));
+    drainEvents();
+
+    gtk_combo_box_set_active(GTK_COMBO_BOX(detail::gadgetTable().at(1)), 1);
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 1);
+    CHECK(pbEventType() == 768); // #PB_EventType_Change
+
+    pbCloseWindow(805);
+}
+
+TEST_CASE("ListView/ComboBox-only functions are a harmless failure on an unrelated gadget type",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(806, 10, 10, 300, 300, PBString("Test"));
+    pbButtonGadget(1, 10, 10, 60, 20, PBString("B"));
+
+    CHECK(pbGetGadgetItemState(1, 0) == 0);
+    CHECK(pbSetGadgetItemState(1, 0, 1) == 0);
+    CHECK(pbGetGadgetItemData(1, 0) == 0);
+    CHECK(pbSetGadgetItemData(1, 0, 1) == 0);
+    CHECK(pbAddGadgetItem(1, -1, PBString("x")) == 0);
+    CHECK(pbCountGadgetItems(1) == 0);
+
+    pbCloseWindow(806);
+}

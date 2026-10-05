@@ -466,6 +466,29 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
           TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
          7},
+        // M7b's thirteenth GUI slice: ListViewGadget/ComboBoxGadget - the
+        // first "universal item" gadget types besides PanelGadget itself.
+        // `Options` is optional for both (oracle-verified: a bare five-
+        // argument call defaults to single-selection for ListView, a
+        // plain non-editable combo for ComboBox). `GetGadgetItemState`/
+        // `SetGadgetItemState` (ListView only) and `GetGadgetItemData`/
+        // `SetGadgetItemData` (both) are new, generic, item-level
+        // functions real PB's own docs share across many gadget types,
+        // scoped to what this slice actually implements for now.
+        {"listviewgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         4},
+        {"comboboxgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         4},
+        {"getgadgetitemstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"setgadgetitemstate", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"getgadgetitemdata", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"setgadgetitemdata", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -606,6 +629,8 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "panelgadget", "addgadgetitem", "countgadgetitems", "removegadgetitem", "cleargadgetitems",
         "getgadgetitemtext", "setgadgetitemtext",
         "splittergadget", "getgadgetattribute", "setgadgetattribute", "scrollareagadget",
+        "listviewgadget", "comboboxgadget", "getgadgetitemstate", "setgadgetitemstate",
+        "getgadgetitemdata", "setgadgetitemdata",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -837,6 +862,18 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_scrollarea_x", 3},
         {"pb_scrollarea_y", 4},
         {"pb_scrollarea_scrollstep", 5},
+        // ListViewGadget/ComboBoxGadget (M7b's thirteenth GUI slice) -
+        // oracle-verified via a direct `Debug #PB_Xxx` probe.
+        // `#PB_ComboBox_LowerCase`/`UpperCase`/`Image` are registered even
+        // though this slice doesn't act on them yet (see
+        // pbComboBoxGadget's own doc comment) - a program referencing them
+        // by name should still compile.
+        {"pb_listview_multiselect", 1},
+        {"pb_listview_clickselect", 2},
+        {"pb_combobox_editable", 1},
+        {"pb_combobox_lowercase", 2},
+        {"pb_combobox_uppercase", 4},
+        {"pb_combobox_image", 8},
     };
     return table;
 }

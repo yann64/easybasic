@@ -411,6 +411,68 @@ inline void onScrollAreaValueChanged(GtkAdjustment*, gpointer userData) {
     queueGadgetEvent(GTK_WIDGET(userData), 0);
 }
 
+/// `GtkTreeSelection::changed` (M7b's thirteenth GUI slice:
+/// `ListViewGadget`) - oracle-verified via `ListViewGadget.html`'s own
+/// remarks: `#PB_EventType_LeftClick` ("également déclenché lors d'un
+/// changement de sélection") is the real event a selection change
+/// reports, not a dedicated `Change` the way `PanelGadget`'s own tab
+/// switch does. `userData` carries the real `GtkScrolledWindow*` wrapper
+/// itself (the gadget's own tagged widget, not the inner `GtkTreeView`
+/// the selection belongs to) - blocked around `SetGadgetState`/
+/// `SetGadgetItemState`'s own programmatic changes, the same established
+/// pattern every other gadget's own state-setter already uses.
+inline void onListViewSelectionChanged(GtkTreeSelection*, gpointer userData) {
+    queueGadgetEvent(GTK_WIDGET(userData), 0);
+}
+
+/// `GtkTreeView::row-activated` (a real double-click, or Enter/Return on
+/// the selected row) - oracle-verified `#PB_EventType_LeftDoubleClick`
+/// (`2`) via `ListViewGadget.html`'s own remarks.
+inline void onListViewRowActivated(GtkTreeView*, GtkTreePath*, GtkTreeViewColumn*, gpointer userData) {
+    queueGadgetEvent(GTK_WIDGET(userData), 2);
+}
+
+/// `GtkTreeView::button-press-event` - the only way to distinguish a
+/// right-click from `GtkTreeSelection::changed` alone (which fires for
+/// *any* button, or none at all for keyboard navigation) - oracle-
+/// verified `#PB_EventType_RightClick` (`1`) via `ListViewGadget.html`'s
+/// own remarks. Returns `FALSE` (GTK's own "didn't handle it, keep
+/// propagating") unconditionally - this only ever *observes* the click,
+/// never needs to stop GTK's own default handling (e.g. showing a
+/// context-appropriate selection) from running too.
+inline gboolean onListViewButtonPress(GtkWidget*, GdkEventButton* event, gpointer userData) {
+    if (event->button == 3) {
+        queueGadgetEvent(GTK_WIDGET(userData), 1);
+    }
+    return FALSE;
+}
+
+/// `GtkComboBox::changed` (M7b's thirteenth GUI slice: `ComboBoxGadget`)
+/// - oracle-verified `#PB_EventType_Change` (`768`, the same value
+/// `StringGadget`'s own edits and `PanelGadget`'s own tab switch use) via
+/// `ComboBoxGadget.html`'s own remarks. Fires for *either* a new item
+/// becoming active or (for an editable combo) the entry's own text
+/// changing - blocked around `SetGadgetState`/`SetGadgetText`'s own
+/// programmatic changes.
+inline void onComboBoxChanged(GtkWidget* combo, gpointer) { queueGadgetEvent(combo, 768); }
+
+/// `GtkEntry::focus-in-event`/`focus-out-event`, on an editable combo's
+/// own internal entry widget only - oracle-verified `#PB_EventType_Focus`
+/// (`256`)/`LostFocus` (`512`) via `ComboBoxGadget.html`'s own remarks
+/// ("ComboBox modifiable uniquement"). `userData` carries the combo
+/// itself (the entry has no gadget ID of its own tagged on it - it was
+/// never placed via `placeGadget`, just packed inside the combo).
+/// Returns `FALSE` unconditionally, the same reason `onListViewButtonPress`
+/// already does.
+inline gboolean onComboBoxFocusIn(GtkWidget*, GdkEvent*, gpointer userData) {
+    queueGadgetEvent(GTK_WIDGET(userData), 256);
+    return FALSE;
+}
+inline gboolean onComboBoxFocusOut(GtkWidget*, GdkEvent*, gpointer userData) {
+    queueGadgetEvent(GTK_WIDGET(userData), 512);
+    return FALSE;
+}
+
 /// Queues a `#PB_Event_Menu` for a leaf `MenuItem()`'s own `"activate"`
 /// signal, reading its element/window IDs back from `g_object_set_data`
 /// (set in `pbMenuItem`) - the menu equivalent of `queueGadgetEvent`.
@@ -661,6 +723,80 @@ inline GtkWidget* findLabelInTabWidget(GtkWidget* tabLabelWidget) {
         return label;
     }
     return nullptr;
+}
+
+/// M7b's thirteenth GUI slice: `ListViewGadget`/`ComboBoxGadget` share
+/// the exact same two-column model (`TEXT`, `DATA` - see
+/// `itemListColumn()` below) and so share every "universal item" function
+/// (`AddGadgetItem`/`CountGadgetItems`/etc.) uniformly too, dispatched
+/// through this one helper rather than duplicating the model-manipulation
+/// logic per widget type. Returns `nullptr` for anything else (falling
+/// through to `PanelGadget`'s own, separate `GtkNotebook`-based handling
+/// in each caller) - a `ListViewGadget` is a `GtkScrolledWindow` wrapping
+/// a `GtkTreeView` directly (unlike `ScrollAreaGadget`'s own
+/// `GtkScrolledWindow`, whose child is an auto-created `GtkViewport`
+/// wrapping a plain `GtkFixed` - `GtkTreeView` implements `GtkScrollable`
+/// natively, so no such auto-wrapping happens for it, letting this
+/// distinguish the two cases just by checking the immediate child's own
+/// type), while `ComboBoxGadget` is a plain `GtkComboBox` stored directly,
+/// no wrapper at all.
+inline GtkListStore* itemListStoreFor(GtkWidget* stored) {
+    if (GTK_IS_SCROLLED_WINDOW(stored) != 0) {
+        GtkWidget* inner = gtk_bin_get_child(GTK_BIN(stored));
+        if (inner != nullptr && GTK_IS_TREE_VIEW(inner) != 0) {
+            return GTK_LIST_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(inner)));
+        }
+        return nullptr;
+    }
+    if (GTK_IS_COMBO_BOX(stored) != 0) {
+        return GTK_LIST_STORE(gtk_combo_box_get_model(GTK_COMBO_BOX(stored)));
+    }
+    return nullptr;
+}
+
+/// The real `GtkTreeView` inside a `ListViewGadget`'s own `GtkScrolledWindow`
+/// wrapper, or `nullptr` for anything else - needed (unlike every other
+/// "universal item" function) by `GetGadgetItemState`/`SetGadgetItemState`,
+/// since selection is a `GtkTreeSelection` concept tied to the *view*, not
+/// the model `itemListStoreFor` already extracts - not applicable to
+/// `ComboBoxGadget` at all (real PB's own docs don't list either function
+/// for it).
+inline GtkWidget* listViewTreeView(GtkWidget* stored) {
+    if (GTK_IS_SCROLLED_WINDOW(stored) == 0) {
+        return nullptr;
+    }
+    GtkWidget* inner = gtk_bin_get_child(GTK_BIN(stored));
+    return (inner != nullptr && GTK_IS_TREE_VIEW(inner) != 0) ? inner : nullptr;
+}
+
+/// Column indices for `itemListStoreFor`'s own two-column
+/// `gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_INT64)` model, shared by
+/// `ListViewGadget`/`ComboBoxGadget` alike.
+inline int itemTextColumn() { return 0; }
+inline int itemDataColumn() { return 1; }
+
+/// Shared by `pbSetGadgetText`'s own `ListViewGadget`/non-editable-
+/// `ComboBoxGadget` case - oracle-verified `SetGadgetText` selects
+/// whichever item's own text *exactly* matches the given string, or does
+/// nothing at all if none does (confirmed directly: the selection/active
+/// item is left unchanged, not cleared). Returns a real, found iterator
+/// via `found`, or `false` if nothing matched.
+inline bool findRowByText(GtkTreeModel* model, const std::string& text, GtkTreeIter* found) {
+    GtkTreeIter iter;
+    if (gtk_tree_model_get_iter_first(model, &iter) == 0) {
+        return false;
+    }
+    do {
+        gchar* rowText = nullptr;
+        gtk_tree_model_get(model, &iter, itemTextColumn(), &rowText, -1);
+        bool matches = rowText != nullptr && text == rowText;
+        g_free(rowText);
+        if (matches) {
+            *found = iter;
+            return true;
+        }
+    } while (gtk_tree_model_iter_next(model, &iter) != 0);
+    return false;
 }
 
 /// Finds the real `GtkLabel` for a menu item's own text, whether it's
@@ -1180,6 +1316,102 @@ inline std::int64_t pbScrollAreaGadget(std::int64_t gadgetId, std::int64_t x, st
     return 1;
 }
 
+/// M7b's thirteenth GUI slice: `ListViewGadget`/`ComboBoxGadget` - the
+/// first "universal item" gadget types besides `PanelGadget` itself,
+/// sharing a plain two-column `GtkListStore` (`TEXT`/`DATA` -
+/// `itemTextColumn`/`itemDataColumn`) with it via `itemListStoreFor`,
+/// rather than duplicating `AddGadgetItem`'s own family per widget type.
+/// `#PB_ComboBox_Image`/`LowerCase`/`UpperCase` are deliberately out of
+/// scope for this slice (accepted but not acted on) - `Image` needs a
+/// genuinely different `GtkCellRendererPixbuf` setup alongside the text
+/// one, and `LowerCase`/`UpperCase` need their own live text-transforming
+/// `"changed"` handler on the entry - both real, separate pieces of work
+/// deferred the same deliberate way `#PB_Splitter_Separator`'s own "3D
+/// pattern" already is, not implemented partially/incorrectly instead.
+///
+/// `ListViewGadget` wraps a headerless, single-column `GtkTreeView` in a
+/// `GtkScrolledWindow` (needed for real scrolling through many items,
+/// the gadget's whole reason to exist) - oracle-verified `#PB_ListView_
+/// Multiselect`/`ClickSelect` both map onto `GTK_SELECTION_MULTIPLE`
+/// (GTK doesn't distinguish "consecutive range" from "individual toggle"
+/// selection as two separate modes the way PB's own docs describe them,
+/// but `GTK_SELECTION_MULTIPLE` already supports *both* interactions at
+/// once, so nothing meaningful is lost); no flags at all is
+/// `GTK_SELECTION_SINGLE`, confirmed to already enforce the same
+/// deselect-the-previous-one exclusivity oracle-verified directly for
+/// `SetGadgetItemState` below, with no extra code needed for that.
+inline std::int64_t pbListViewGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                      std::int64_t height, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkListStore* store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_INT64);
+    GtkWidget* treeView = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    g_object_unref(store);
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(treeView), FALSE);
+    GtkCellRenderer* renderer = gtk_cell_renderer_text_new();
+    GtkTreeViewColumn* column =
+        gtk_tree_view_column_new_with_attributes("", renderer, "text", detail::itemTextColumn(), nullptr);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(treeView), column);
+
+    GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+    gtk_tree_selection_set_mode(selection, (flags & 3) != 0 ? GTK_SELECTION_MULTIPLE : GTK_SELECTION_SINGLE);
+
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scrolled), treeView);
+    gtk_widget_show(treeView);
+
+    if (!detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, scrolled)) {
+        return 0;
+    }
+    g_signal_connect(selection, "changed", G_CALLBACK(detail::onListViewSelectionChanged), scrolled);
+    g_signal_connect(treeView, "row-activated", G_CALLBACK(detail::onListViewRowActivated), scrolled);
+    g_signal_connect(treeView, "button-press-event", G_CALLBACK(detail::onListViewButtonPress), scrolled);
+    return 1;
+}
+
+/// `ComboBoxGadget` - a plain `GtkComboBox` (not the simpler
+/// `GtkComboBoxText` convenience widget, despite not needing images or
+/// per-row data *yet* - building on the full model/cell-renderer API from
+/// the start means `#PB_ComboBox_Image` and `GetGadgetItemData`/
+/// `SetGadgetItemData` both have somewhere real to go later with no
+/// rework, not just a hypothetical future need) sharing the identical
+/// `TEXT`/`DATA` model `ListViewGadget` already uses. `#PB_ComboBox_
+/// Editable`'s own `"has-entry"` is a real `GObject` construct property;
+/// `gtk_combo_box_set_entry_text_column` is what makes the entry's own
+/// text track the active row's own `TEXT` column, oracle-verified
+/// `SetGadgetText` on an editable combo accepting arbitrary text that
+/// matches no item at all (so this is only wired up when editable - a
+/// non-editable combo has no entry to sync at all).
+inline std::int64_t pbComboBoxGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                      std::int64_t height, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkListStore* store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_INT64);
+    bool editable = (flags & 1) != 0;
+    GtkWidget* combo = GTK_WIDGET(g_object_new(GTK_TYPE_COMBO_BOX, "model", store, "has-entry",
+                                                editable ? TRUE : FALSE, nullptr));
+    g_object_unref(store);
+    if (editable) {
+        gtk_combo_box_set_entry_text_column(GTK_COMBO_BOX(combo), detail::itemTextColumn());
+    } else {
+        GtkCellRenderer* renderer = gtk_cell_renderer_text_new();
+        gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(combo), renderer, TRUE);
+        gtk_cell_layout_set_attributes(GTK_CELL_LAYOUT(combo), renderer, "text", detail::itemTextColumn(), nullptr);
+    }
+
+    if (!detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, combo)) {
+        return 0;
+    }
+    g_signal_connect(combo, "changed", G_CALLBACK(detail::onComboBoxChanged), nullptr);
+    if (editable) {
+        GtkWidget* entry = gtk_bin_get_child(GTK_BIN(combo));
+        if (entry != nullptr) {
+            g_signal_connect(entry, "focus-in-event", G_CALLBACK(detail::onComboBoxFocusIn), combo);
+            g_signal_connect(entry, "focus-out-event", G_CALLBACK(detail::onComboBoxFocusOut), combo);
+        }
+    }
+    return 1;
+}
+
 /// `AddGadgetItem(#Gadget, Position, Text$ [, ImageID [, Options]])` -
 /// scoped to `PanelGadget` only for now (the one gadget type this project
 /// actually has that supports it; real PB's own docs also list
@@ -1214,7 +1446,20 @@ inline std::int64_t pbScrollAreaGadget(std::int64_t gadgetId, std::int64_t x, st
 inline std::int64_t pbAddGadgetItem(std::int64_t gadgetId, std::int64_t position, const PBString& text,
                                      std::int64_t imageId = 0, std::int64_t /*options*/ = 0) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    // M7b's thirteenth GUI slice: ListViewGadget/ComboBoxGadget - `ImageID`
+    // isn't supported for either yet (`#PB_ComboBox_Image`'s own deferred
+    // gap - see pbComboBoxGadget's own doc comment), only for Panel.
+    if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
+        GtkTreeIter iter;
+        int insertAt = position < 0 ? -1 : static_cast<int>(position);
+        gtk_list_store_insert(store, &iter, insertAt);
+        gtk_list_store_set(store, &iter, detail::itemTextColumn(), text.bytes().c_str(), -1);
+        return 1;
+    }
+    if (GTK_IS_NOTEBOOK(it->second) == 0) {
         return 0;
     }
     auto* notebook = GTK_NOTEBOOK(it->second);
@@ -1235,7 +1480,13 @@ inline std::int64_t pbAddGadgetItem(std::int64_t gadgetId, std::int64_t position
 
 inline std::int64_t pbCountGadgetItems(std::int64_t gadgetId) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
+        return gtk_tree_model_iter_n_children(GTK_TREE_MODEL(store), nullptr);
+    }
+    if (GTK_IS_NOTEBOOK(it->second) == 0) {
         return 0;
     }
     return gtk_notebook_get_n_pages(GTK_NOTEBOOK(it->second));
@@ -1249,7 +1500,18 @@ inline std::int64_t pbCountGadgetItems(std::int64_t gadgetId) {
 /// the same reason.
 inline std::int64_t pbRemoveGadgetItem(std::int64_t gadgetId, std::int64_t position) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(position)) == 0) {
+            return 0;
+        }
+        gtk_list_store_remove(store, &iter);
+        return 1;
+    }
+    if (GTK_IS_NOTEBOOK(it->second) == 0) {
         return 0;
     }
     auto* notebook = GTK_NOTEBOOK(it->second);
@@ -1264,7 +1526,14 @@ inline std::int64_t pbRemoveGadgetItem(std::int64_t gadgetId, std::int64_t posit
 
 inline std::int64_t pbClearGadgetItems(std::int64_t gadgetId) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
+        gtk_list_store_clear(store);
+        return 1;
+    }
+    if (GTK_IS_NOTEBOOK(it->second) == 0) {
         return 0;
     }
     auto* notebook = GTK_NOTEBOOK(it->second);
@@ -1283,7 +1552,21 @@ inline std::int64_t pbClearGadgetItems(std::int64_t gadgetId) {
 /// remarks ("'Colonne' est ignorée" for Panel specifically).
 inline PBString pbGetGadgetItemText(std::int64_t gadgetId, std::int64_t element, std::int64_t /*column*/ = 0) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return PBString();
+    }
+    if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(element)) == 0) {
+            return PBString();
+        }
+        gchar* text = nullptr;
+        gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, detail::itemTextColumn(), &text, -1);
+        PBString result(text != nullptr ? text : "");
+        g_free(text);
+        return result;
+    }
+    if (GTK_IS_NOTEBOOK(it->second) == 0) {
         return PBString();
     }
     auto* notebook = GTK_NOTEBOOK(it->second);
@@ -1302,7 +1585,18 @@ inline PBString pbGetGadgetItemText(std::int64_t gadgetId, std::int64_t element,
 inline std::int64_t pbSetGadgetItemText(std::int64_t gadgetId, std::int64_t element, const PBString& text,
                                          std::int64_t /*column*/ = 0) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(element)) == 0) {
+            return 0;
+        }
+        gtk_list_store_set(store, &iter, detail::itemTextColumn(), text.bytes().c_str(), -1);
+        return 1;
+    }
+    if (GTK_IS_NOTEBOOK(it->second) == 0) {
         return 0;
     }
     auto* notebook = GTK_NOTEBOOK(it->second);
@@ -1315,6 +1609,98 @@ inline std::int64_t pbSetGadgetItemText(std::int64_t gadgetId, std::int64_t elem
         return 0;
     }
     gtk_label_set_text(GTK_LABEL(label), text.bytes().c_str());
+    return 1;
+}
+
+/// `GetGadgetItemState(#Gadget, Element)` - scoped to `ListViewGadget`
+/// only (real PB's own docs don't list `SetGadgetAttribute`'s sibling for
+/// `ComboBoxGadget` at all), since selection is a `GtkTreeSelection`
+/// concept tied to the *view*, not the model `itemListStoreFor` shares
+/// with `ComboBoxGadget` - hence `listViewTreeView` here, not that one.
+inline std::int64_t pbGetGadgetItemState(std::int64_t gadgetId, std::int64_t element) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* treeView = detail::listViewTreeView(it->second);
+    if (treeView == nullptr) {
+        return 0;
+    }
+    GtkTreePath* path = gtk_tree_path_new_from_indices(static_cast<int>(element), -1);
+    gboolean selected = gtk_tree_selection_path_is_selected(gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView)), path);
+    gtk_tree_path_free(path);
+    return selected != 0 ? 1 : 0;
+}
+
+/// `SetGadgetItemState(#Gadget, Element, State)` - oracle-verified
+/// directly: selecting a *different* row while in single-select mode
+/// already deselects the previous one automatically, `GtkTreeSelection`'s
+/// own built-in exclusivity needing no extra code to enforce it here.
+/// Blocked around `GtkTreeSelection::changed` the same established reason
+/// every other gadget's own state-setter already is.
+inline std::int64_t pbSetGadgetItemState(std::int64_t gadgetId, std::int64_t element, std::int64_t state) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* treeView = detail::listViewTreeView(it->second);
+    if (treeView == nullptr) {
+        return 0;
+    }
+    GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+    GtkTreePath* path = gtk_tree_path_new_from_indices(static_cast<int>(element), -1);
+    g_signal_handlers_block_by_func(selection, reinterpret_cast<gpointer>(detail::onListViewSelectionChanged),
+                                     it->second);
+    if (state != 0) {
+        gtk_tree_selection_select_path(selection, path);
+    } else {
+        gtk_tree_selection_unselect_path(selection, path);
+    }
+    g_signal_handlers_unblock_by_func(selection, reinterpret_cast<gpointer>(detail::onListViewSelectionChanged),
+                                       it->second);
+    gtk_tree_path_free(path);
+    return 1;
+}
+
+/// `GetGadgetItemData`/`SetGadgetItemData(#Gadget, Element [, Value])` -
+/// an arbitrary per-row integer tag, not displayed - the `DATA` column
+/// `itemListStoreFor`'s own model already has alongside `TEXT`, shared by
+/// `ListViewGadget`/`ComboBoxGadget` alike (real PB's own docs list
+/// `PanelGadget` too, but it isn't model-backed the same way - a
+/// `GtkNotebook`'s own tabs have no equivalent "extra column" to reuse -
+/// so this is scoped to the two model-backed types for now).
+inline std::int64_t pbGetGadgetItemData(std::int64_t gadgetId, std::int64_t element) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkListStore* store = detail::itemListStoreFor(it->second);
+    if (store == nullptr) {
+        return 0;
+    }
+    GtkTreeIter iter;
+    if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(element)) == 0) {
+        return 0;
+    }
+    gint64 data = 0;
+    gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, detail::itemDataColumn(), &data, -1);
+    return data;
+}
+
+inline std::int64_t pbSetGadgetItemData(std::int64_t gadgetId, std::int64_t element, std::int64_t value) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkListStore* store = detail::itemListStoreFor(it->second);
+    if (store == nullptr) {
+        return 0;
+    }
+    GtkTreeIter iter;
+    if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(element)) == 0) {
+        return 0;
+    }
+    gtk_list_store_set(store, &iter, detail::itemDataColumn(), static_cast<gint64>(value), -1);
     return 1;
 }
 
@@ -1435,7 +1821,13 @@ inline std::int64_t pbGetGadgetAttribute(std::int64_t gadgetId, std::int64_t att
     if (it == detail::gadgetTable().end()) {
         return 0;
     }
-    if (GTK_IS_SCROLLED_WINDOW(it->second) != 0) {
+    // `ListViewGadget` (M7b's thirteenth GUI slice) is *also* a
+    // `GtkScrolledWindow` (wrapping a natively-scrollable `GtkTreeView`
+    // directly, not an auto-created `GtkViewport`) - `containerFixedTable()`
+    // only ever holds a *ScrollArea's* own inner `GtkFixed`, so checking
+    // it too safely tells the two apart without needing to inspect the
+    // wrapped child's own type here as well.
+    if (GTK_IS_SCROLLED_WINDOW(it->second) != 0 && detail::containerFixedTable().contains(gadgetId)) {
         auto* scrolled = GTK_SCROLLED_WINDOW(it->second);
         // Not `gtk_bin_get_child(GTK_BIN(scrolled))` - GTK3 auto-wraps a
         // non-`GtkScrollable` child (a plain `GtkFixed`, same as every
@@ -1513,9 +1905,10 @@ inline std::int64_t pbSetGadgetAttribute(std::int64_t gadgetId, std::int64_t att
     if (it == detail::gadgetTable().end()) {
         return 0;
     }
-    if (GTK_IS_SCROLLED_WINDOW(it->second) != 0) {
+    // See pbGetGadgetAttribute's own note on disambiguating from ListViewGadget.
+    if (GTK_IS_SCROLLED_WINDOW(it->second) != 0 && detail::containerFixedTable().contains(gadgetId)) {
         auto* scrolled = GTK_SCROLLED_WINDOW(it->second);
-        GtkWidget* inner = detail::containerFixedTable().at(gadgetId); // see pbGetGadgetAttribute's own note
+        GtkWidget* inner = detail::containerFixedTable().at(gadgetId);
         switch (attribute) {
             case 1: { // #PB_ScrollArea_InnerWidth
                 int w = -1;
@@ -1765,6 +2158,43 @@ inline PBString pbGetGadgetText(std::int64_t gadgetId) {
     if (GTK_IS_FRAME(widget) != 0) {
         return safe(gtk_frame_get_label(GTK_FRAME(widget)));
     }
+    // M7b's thirteenth GUI slice: ListViewGadget's own selected row's
+    // text, or ComboBoxGadget's own entry (editable) / active row's text
+    // (not) - oracle-verified via each gadget's own remarks.
+    if (GtkWidget* treeView = detail::listViewTreeView(widget)) {
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        GList* rows = gtk_tree_selection_get_selected_rows(selection, nullptr);
+        if (rows == nullptr) {
+            return PBString();
+        }
+        auto* model = GTK_TREE_MODEL(detail::itemListStoreFor(widget));
+        GtkTreeIter iter;
+        PBString result;
+        if (gtk_tree_model_get_iter(model, &iter, static_cast<GtkTreePath*>(rows->data)) != 0) {
+            gchar* text = nullptr;
+            gtk_tree_model_get(model, &iter, detail::itemTextColumn(), &text, -1);
+            result = safe(text);
+            g_free(text);
+        }
+        g_list_free_full(rows, reinterpret_cast<GDestroyNotify>(gtk_tree_path_free));
+        return result;
+    }
+    if (GTK_IS_COMBO_BOX(widget) != 0) {
+        auto* combo = GTK_COMBO_BOX(widget);
+        GtkWidget* entry = gtk_bin_get_child(GTK_BIN(combo));
+        if (entry != nullptr && GTK_IS_ENTRY(entry) != 0) {
+            return safe(gtk_entry_get_text(GTK_ENTRY(entry)));
+        }
+        GtkTreeIter iter;
+        if (gtk_combo_box_get_active_iter(combo, &iter) == 0) {
+            return PBString();
+        }
+        gchar* text = nullptr;
+        gtk_tree_model_get(gtk_combo_box_get_model(combo), &iter, detail::itemTextColumn(), &text, -1);
+        PBString result = safe(text);
+        g_free(text);
+        return result;
+    }
     return PBString();
 }
 
@@ -1789,6 +2219,47 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
         gtk_label_set_text(GTK_LABEL(widget), text.bytes().c_str());
     } else if (GTK_IS_FRAME(widget) != 0) {
         gtk_frame_set_label(GTK_FRAME(widget), text.bytes().c_str());
+    } else if (GtkWidget* treeView = detail::listViewTreeView(widget)) {
+        // Oracle-verified directly (not just assumed): a non-matching
+        // text genuinely *clears* the current selection rather than
+        // leaving it unchanged - confirmed with a dedicated, isolated
+        // probe after this project's own golden e2e comparison caught it
+        // disagreeing with the real oracle.
+        GtkTreeIter iter;
+        auto* model = GTK_TREE_MODEL(detail::itemListStoreFor(widget));
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        g_signal_handlers_block_by_func(selection, reinterpret_cast<gpointer>(detail::onListViewSelectionChanged),
+                                         widget);
+        if (detail::findRowByText(model, text.bytes(), &iter)) {
+            gtk_tree_selection_select_iter(selection, &iter);
+        } else {
+            gtk_tree_selection_unselect_all(selection);
+        }
+        g_signal_handlers_unblock_by_func(selection, reinterpret_cast<gpointer>(detail::onListViewSelectionChanged),
+                                           widget);
+    } else if (GTK_IS_COMBO_BOX(widget) != 0) {
+        auto* combo = GTK_COMBO_BOX(widget);
+        GtkWidget* entry = gtk_bin_get_child(GTK_BIN(combo));
+        if (entry != nullptr && GTK_IS_ENTRY(entry) != 0) {
+            // Oracle-verified: an editable combo accepts arbitrary text,
+            // whether or not it matches any item - unlike a non-editable
+            // one (below), which only ever selects an existing item (or
+            // clears the selection entirely, the same real finding as
+            // ListViewGadget's own above).
+            g_signal_handlers_block_by_func(widget, reinterpret_cast<gpointer>(detail::onComboBoxChanged), nullptr);
+            gtk_entry_set_text(GTK_ENTRY(entry), text.bytes().c_str());
+            g_signal_handlers_unblock_by_func(widget, reinterpret_cast<gpointer>(detail::onComboBoxChanged), nullptr);
+        } else {
+            GtkTreeIter iter;
+            GtkTreeModel* model = gtk_combo_box_get_model(combo);
+            g_signal_handlers_block_by_func(widget, reinterpret_cast<gpointer>(detail::onComboBoxChanged), nullptr);
+            if (detail::findRowByText(model, text.bytes(), &iter)) {
+                gtk_combo_box_set_active_iter(combo, &iter);
+            } else {
+                gtk_combo_box_set_active(combo, -1);
+            }
+            g_signal_handlers_unblock_by_func(widget, reinterpret_cast<gpointer>(detail::onComboBoxChanged), nullptr);
+        }
     } else {
         return 0;
     }
@@ -1817,6 +2288,26 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     // barre de séparation, en pixels").
     if (GTK_IS_PANED(it->second) != 0) {
         return gtk_paned_get_position(GTK_PANED(it->second));
+    }
+    // M7b's thirteenth GUI slice: `ListViewGadget` reports the (0-based)
+    // index of its own first selected row, `-1` if none - oracle-verified
+    // via `ListViewGadget.html`'s own remarks. `ComboBoxGadget` maps onto
+    // `gtk_combo_box_get_active` directly, already using the identical
+    // `-1`-means-"none" convention PB's own docs describe, with no
+    // translation needed at all.
+    if (GtkWidget* treeView = detail::listViewTreeView(it->second)) {
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        GList* rows = gtk_tree_selection_get_selected_rows(selection, nullptr);
+        if (rows == nullptr) {
+            return -1;
+        }
+        auto* path = static_cast<GtkTreePath*>(rows->data);
+        std::int64_t index = gtk_tree_path_get_indices(path)[0];
+        g_list_free_full(rows, reinterpret_cast<GDestroyNotify>(gtk_tree_path_free));
+        return index;
+    }
+    if (GTK_IS_COMBO_BOX(it->second) != 0) {
+        return gtk_combo_box_get_active(GTK_COMBO_BOX(it->second));
     }
     if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {
         return 0;
@@ -1850,6 +2341,31 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
     // could spuriously fire in the first place.
     if (GTK_IS_PANED(it->second) != 0) {
         gtk_paned_set_position(GTK_PANED(it->second), static_cast<int>(state));
+        return 1;
+    }
+    // Oracle-verified: `-1` deselects every row, for `ListViewGadget`
+    // (even in multi-select mode) just like `ComboBoxGadget`'s own
+    // identical `-1` convention `gtk_combo_box_set_active` already uses
+    // natively.
+    if (GtkWidget* treeView = detail::listViewTreeView(it->second)) {
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        g_signal_handlers_block_by_func(selection, reinterpret_cast<gpointer>(detail::onListViewSelectionChanged),
+                                         it->second);
+        if (state < 0) {
+            gtk_tree_selection_unselect_all(selection);
+        } else {
+            GtkTreePath* path = gtk_tree_path_new_from_indices(static_cast<int>(state), -1);
+            gtk_tree_selection_select_path(selection, path);
+            gtk_tree_path_free(path);
+        }
+        g_signal_handlers_unblock_by_func(selection, reinterpret_cast<gpointer>(detail::onListViewSelectionChanged),
+                                           it->second);
+        return 1;
+    }
+    if (GTK_IS_COMBO_BOX(it->second) != 0) {
+        g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onComboBoxChanged), nullptr);
+        gtk_combo_box_set_active(GTK_COMBO_BOX(it->second), static_cast<int>(state));
+        g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onComboBoxChanged), nullptr);
         return 1;
     }
     if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {

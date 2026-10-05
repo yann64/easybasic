@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twelve slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirteen slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -3418,4 +3418,95 @@ a clean `1` here, the same already-established "don't chase undocumented garbage
 `ClearGadgetItems`/`SetGadgetItemText`/`SetGadgetAttribute` etc. all already share. 395 tests pass across
 `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean), including the 388 that predate
 this slice.
+
+## M7b Implementation Notes (GUI core, thirteenth slice: `ListViewGadget`/`ComboBoxGadget`)
+
+**Scope landed**: `ListViewGadget`/`ComboBoxGadget` themselves, extending every "universal item" function
+`PanelGadget`'s own tenth slice introduced (`AddGadgetItem`/`CountGadgetItems`/`RemoveGadgetItem`/
+`ClearGadgetItems`/`GetGadgetItemText`/`SetGadgetItemText`) with a shared new branch for both (not one
+each), plus `GetGadgetState`/`SetGadgetState`/`GetGadgetText`/`SetGadgetText` (already generic) gaining
+their own. Two genuinely new, generic, item-level functions this slice introduces:
+`GetGadgetItemState`/`SetGadgetItemState` (`ListViewGadget` only - real PB's own docs don't list
+`ComboBoxGadget` for either) and `GetGadgetItemData`/`SetGadgetItemData` (both). `#PB_ComboBox_Image`/
+`LowerCase`/`UpperCase` and `GetGadgetColor`/`SetGadgetColor` are explicitly out of scope - the former
+needs a genuinely different `GtkCellRendererPixbuf` setup (deferred, not partially/incorrectly
+implemented), the latter a separate, broad new feature affecting many gadget types already noted as out
+of scope for `ScrollAreaGadget`'s own twelfth slice too.
+
+**One shared two-column `GtkListStore` (`TEXT`/`DATA` - `itemTextColumn`/`itemDataColumn`) for both
+gadget types, dispatched through one new helper (`itemListStoreFor`) rather than duplicating the
+model-manipulation logic per widget type** - every "universal item" function becomes "ask
+`itemListStoreFor` first, fall through to `PanelGadget`'s own `GtkNotebook`-specific handling only if
+that returns `nullptr`", the same "one shared choke point, new branch not a rewrite" shape this
+project's own gadget-list nesting family (`ContainerGadget`'s ninth slice) already established for
+`placeGadget`. `ListViewGadget` wraps a headerless, single-column `GtkTreeView` in a `GtkScrolledWindow`
+(real scrolling through many items is the gadget's whole reason to exist); `ComboBoxGadget` is a plain
+`GtkComboBox` (not the simpler `GtkComboBoxText` convenience widget, even though this slice doesn't need
+images or per-row data *yet* - building on the full model/cell-renderer API from the start means
+`#PB_ComboBox_Image` and `GetGadgetItemData`/`SetGadgetItemData` both have somewhere real to go later
+with no rework).
+
+**A real, three-way widget-identity collision resolved by reusing already-existing state rather than
+adding new tracking**: `ListViewGadget`'s own `GtkScrolledWindow` wrapper is now the *third* distinct
+thing `gadgetTable()` can hold that's also a `GtkScrolledWindow` (`ScrollAreaGadget`'s own, from the
+twelfth slice, is the other) - `pbGetGadgetAttribute`/`pbSetGadgetAttribute`'s own pre-existing
+`ScrollAreaGadget` branch needed its condition tightened (also checking `containerFixedTable().contains
+(gadgetId)`, which only a *ScrollArea's* own inner `GtkFixed` is ever registered in) to keep correctly
+reporting "unsupported" for a `ListViewGadget`'s own id instead of misreading it as a ScrollArea - caught
+by reasoning through the shared-widget-type design up front, not by a failing test, since `GtkTreeView`
+natively implementing `GtkScrollable` (unlike a plain `GtkFixed`, which needs `ScrollArea`'s own
+auto-wrapped `GtkViewport`) made the two visually/structurally similar enough to deserve a close look
+before writing either gadget's own creation function.
+
+**Selection semantics, oracle-verified directly rather than assumed from GTK's own default behavior**:
+`#PB_ListView_Multiselect`/`ClickSelect` both map onto `GTK_SELECTION_MULTIPLE` (GTK doesn't distinguish
+"consecutive range" from "individual toggle" selection as two separate modes the way PB's own docs
+describe them, but `GTK_SELECTION_MULTIPLE` already supports *both* interactions at once, so nothing
+meaningful is lost); no flags at all is `GTK_SELECTION_SINGLE`, confirmed directly (not assumed) to
+already enforce automatic deselect-the-previous-one exclusivity when `SetGadgetItemState` selects a
+*different* row, with zero extra code needed to replicate that. `GetGadgetState`'s own `-1`-means-"none"
+convention, for both gadget types, already matches `gtk_combo_box_get_active`'s own identical native
+convention for `ComboBoxGadget` directly (no translation at all); for `ListViewGadget`,
+`gtk_tree_selection_get_selected_rows` (not `get_selected`, which only reliably works in single/browse
+mode) taking the first path's own index covers both selection modes uniformly.
+
+**A real bug caught only by the golden e2e comparison, not by the earlier, narrower oracle probing that
+had already (incorrectly) informed the initial implementation**: `SetGadgetText` with a string matching
+no item was assumed, based on reasoning rather than a dedicated check, to leave the current selection
+unchanged - the oracle instead *clears* it entirely, confirmed with a dedicated, isolated probe once the
+full end-to-end comparison surfaced the disagreement (both `ListViewGadget` and `ComboBoxGadget` behave
+the same way). Fixed by having the "no match" branch explicitly deselect (`gtk_tree_selection_unselect_
+all`/`gtk_combo_box_set_active(-1)`) instead of simply doing nothing - a reminder that reasoning about
+what a function "probably" does, even when it reads as the more intuitive behavior, isn't a substitute
+for checking, and that the project's own golden-e2e-comparison step (not just the narrower, hand-picked
+oracle probes written before implementing) is what actually caught this one.
+
+**`SetGadgetItemState`'s own undocumented return value** (confirmed via its own real doc page: "Valeur
+de retour: Aucune.") is the same already-established "don't chase undocumented garbage" pattern
+`ClearGadgetItems`/`SetGadgetItemText`/`SetGadgetAttribute`/`FreeGadget` etc. all already share - the
+golden e2e comparison's own only other surviving divergence, confirmed not to be a functional bug before
+accepting it, the same way every prior instance of this pattern was.
+
+**Events, both fully oracle-documented (`LeftClick`=`0`/`LeftDoubleClick`=`2`/`RightClick`=`1` for
+`ListViewGadget`; `Change`=`768`/`Focus`=`256`/`LostFocus`=`512` for `ComboBoxGadget`, all pre-existing
+constants) but only the selection-change ones independently verified to actually *fire* (via real signal
+emission, not simulated clicks - every GUI slice's own e2e case deliberately avoids `xdotool`, and this
+one does too, confirmed the exact same values are already registered rather than re-deriving them)**:
+`GtkTreeSelection::changed` → `LeftClick` (oracle-verified via `ListViewGadget.html`'s own remarks: "également
+déclenché lors d'un changement de sélection"), `GtkTreeView::row-activated` → `LeftDoubleClick`,
+`GtkTreeView::button-press-event` (checking `button == 3`) → `RightClick`; `GtkComboBox::changed` →
+`Change`; an editable combo's own internal entry's `focus-in-event`/`focus-out-event` → `Focus`/
+`LostFocus`. All three `SetGadgetState`/`SetGadgetText`/`SetGadgetItemState` setters block their own
+relevant signal around a programmatic change, the same established pattern every prior stateful gadget
+already uses.
+
+**Testing**: eight new `runtime_guilib_test.cpp` cases - full item/state/text/data round-trips for both
+gadget types, `Multiselect`'s own simultaneous-selection behavior, a real selection-change firing
+`LeftClick`/`Change` (driving the real GTK signal directly), an editable combo's own arbitrary-text
+acceptance, and harmless failures for `ListView`/`ComboBox`-only functions on an unrelated gadget type.
+One new golden e2e case (`tests/e2e/gui_listview_combobox`) exercises the same sequence end to end
+through `pbcxx` itself - this is what actually caught the `SetGadgetText` bug above, confirmed
+line-for-line against the real oracle afterward (modulo the two already-discussed, already-accounted-for
+divergences) before being pinned. 403 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize`
+(ASan/UBSan/LSan clean), including the 395 that predate this slice.
 
