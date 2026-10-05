@@ -13,6 +13,15 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+// A MinGW build configured for GCC's own *posix* threading model
+// (winpthreads - MSYS2's own mingw-w64-x86_64-gcc package) needs
+// pthread_cancel too, not just TerminateThread - see pbKillThread's own
+// doc comment for why. `<thread>` above already transitively includes
+// `<pthread.h>` in that configuration (via `bits/gthr-posix.h`), but
+// including it explicitly here doesn't rely on that staying true.
+#if defined(_GLIBCXX_GCC_GTHR_POSIX_H)
+#include <pthread.h>
+#endif
 #else
 #include <pthread.h>
 #endif
@@ -261,13 +270,31 @@ inline std::int64_t pbKillThread(std::int64_t threadId) {
     if (!handle || handle->finished.load()) {
         return 0;
     }
-#if defined(_WIN32)
-    // MinGW's own std::thread::native_handle_type is an integer (not a real
-    // HANDLE) with its own generic pthread-style backend - an explicit cast
-    // is needed either way (MSVC's own native_handle_type already is a
-    // HANDLE, where this cast is a no-op).
+#if defined(_WIN32) && !defined(_GLIBCXX_GCC_GTHR_POSIX_H)
+    // MSVC, and a MinGW build configured for GCC's own win32 threading
+    // model (`--enable-threads=win32` - Ubuntu's own cross-compiling
+    // g++-mingw-w64-x86-64-win32 package, confirmed via its own `-v`
+    // output), both implement std::thread directly over real Win32
+    // threads - native_handle_type really is a HANDLE there.
     TerminateThread(reinterpret_cast<HANDLE>(handle->thread.native_handle()), 0);
 #else
+    // Real PB's own PureBasic.com uses pthreads for Linux/macOS, where
+    // this is unconditionally correct - but a MinGW build configured for
+    // GCC's own *posix* threading model (`--enable-threads=posix`,
+    // winpthreads - MSYS2's own mingw-w64-x86_64-gcc package, the one
+    // windows-mingw's own CI job actually uses) *also* needs this branch,
+    // not `TerminateThread` above: confirmed via a real, hard runtime
+    // failure (the target thread's own counter kept advancing after
+    // `pbKillThread`) that `native_handle_type` there is a `pthread_t`
+    // (an opaque winpthreads handle), not a raw Win32 `HANDLE` - casting
+    // it to one and calling `TerminateThread` compiles cleanly (same
+    // integer width) but silently does nothing.
+    // `_GLIBCXX_GCC_GTHR_POSIX_H` is libstdc++'s own header guard for
+    // `bits/gthr-posix.h` (vs. `bits/gthr-default.h`'s win32 variant,
+    // guarded by a different macro) - already defined by the time this
+    // file's own `#include <thread>` above is processed, so it reliably
+    // tells the two apart at compile time without needing any build-
+    // system-level configuration of its own.
     pthread_cancel(handle->thread.native_handle());
 #endif
     handle->finished.store(true);
