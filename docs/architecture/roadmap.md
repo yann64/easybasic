@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Seven slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon` - see M7b notes); further gadget types/`Requester` family/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Eight slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -2958,4 +2958,88 @@ With this, M7d's own four-slice arc (Procedures/Globals, then Structures/Enumera
 Lists/Maps/DataSection, then Interface, then qualified Macro) is complete - every declaration kind real
 PB accepts inside a `Module`/`DeclareModule` is now namespaced and access-controlled the way real PB
 itself does, closing out the last of the three M7 threads reopened earlier in this milestone's own arc.
+
+## M7b Implementation Notes (GUI core, eighth slice: the Requester family)
+
+**Scope landed**: every Requester-family command real PB has, besides `MessageRequester` (already done
+in the third slice) - `ColorRequester`, `FontRequester` (+ its own `SelectedFontName`/`SelectedFontSize`/
+`SelectedFontStyle`/`SelectedFontColor` accessors), `InputRequester`, `OpenFileRequester` (+
+`NextSelectedFileName`/`SelectedFilePattern`), `SaveFileRequester`, `PathRequester` - oracle-verified via
+the library's own index page, nothing left unimplemented in the family. `RGB`/`RGBA`/`Red`/`Green`/
+`Blue`/`Alpha` (mathlib) landed alongside as a hard prerequisite for `ColorRequester`/`FontRequester`'s
+own color round-trip, oracle-verified to pack as `0x00BBGGRR` (`RGBA` the same with alpha in the highest
+byte) - the classic Win32 `COLORREF` byte order, not the `0x00RRGGBB` the argument order alone might
+suggest.
+
+**Backend mapping, one native GTK3 dialog type per PB command, no custom-built UI needed anywhere**:
+`GtkColorChooserDialog`/`GdkRGBA` for `ColorRequester`; `GtkFontChooserDialog`/`PangoFontDescription`
+for `FontRequester`; a plain `GtkDialog` + `GtkLabel` + `GtkEntry` for `InputRequester` (GTK3 has no
+`QInputDialog`-style built-in, unlike the Qt6 sibling project this slice used for gap-awareness only,
+never copied from directly since it targets a different toolkit); `GtkFileChooserDialog` with action
+`OPEN`/`SAVE`/`SELECT_FOLDER` for `OpenFileRequester`/`SaveFileRequester`/`PathRequester`. Every
+`ParentID` parameter is wired to the real `GtkWindow*` it already is (this project's own established
+"the handle already is the real pointer" convention), unlike the Qt6 reference project's own documented
+gap there.
+
+**One real, narrow gap, deliberately accepted rather than worked around**: `#PB_InputRequester_Cancel`
+is oracle-verified to be a *String* constant (`Chr(10)+Chr(9)`, a value no real file would ever collide
+with), but `Sema::builtinConstantValue`'s own table is `std::int64_t`-only, shared by every `#PB_*`
+constant this project has ever registered. `InputRequester`'s own `#PB_InputRequester_HandleCancel`
+*behavior* is implemented faithfully (returning that exact two-character string when the option is set
+and the user cancels) - only the named constant itself isn't exposed, a real caller must spell the
+literal string out rather than reference the constant by name. Everything else new this slice needed
+(`#PB_InputRequester_Password`, `#PB_FontRequester_Effects`, `#PB_Font_Bold`/`Italic`/`StrikeOut`/
+`Underline`, `#PB_Requester_MultiSelection`) is a plain Integer and registered normally -
+oracle-verified twice that `#PB_Font_StrikeOut`/`#PB_Font_Underline` really are both `0` (a second,
+independent probe after the first result looked suspicious enough to double-check).
+
+**A genuine bug, caught only by actually running the new tests, not by compiling or oracle-diffing
+alone - GTK's own file-chooser dialogs never return control to this project's existing dialog-testing
+helper when driven to *accept* (not cancel) programmatically in this sandboxed desktop environment,**
+isolated down to a minimal standalone reproduction entirely outside this project's own code before being
+understood: a `GtkFileChooserDialog` opened with `ACTION_OPEN` or `ACTION_SAVE`, run via `gtk_dialog_run`
+and sent a synthetic `gtk_dialog_response(..., GTK_RESPONSE_ACCEPT)` from a `g_timeout_add` callback (the
+exact mechanism this project's own `MessageRequester`/`ColorRequester`/`FontRequester`/`InputRequester`
+tests already use successfully), simply never returns - confirmed independent of response-code choice
+(`GTK_RESPONSE_OK` vs. the more conventional `GTK_RESPONSE_ACCEPT`), independent of whether a filename
+was set first (`gtk_file_chooser_set_filename`/`select_filename`), and independent of delay length (50ms
+through 1500ms all hang identically) - ruling out a race against the dialog's own startup. `ps aux`
+confirmed the root cause: `xdg-desktop-portal`/`xdg-desktop-portal-gtk`/`xdg-desktop-portal-gnome` are
+all running in this environment, and GTK3's own file-chooser "confirm" handling for *file* actions
+(Open/Save) hands off to the portal rather than the widget-level dialog this project's test can see or
+drive - the portal's own UI doesn't render anywhere the test's synthetic response can reach, so nothing
+ever answers it and `gtk_dialog_run`'s nested loop blocks forever. `ACTION_SELECT_FOLDER` (what
+`PathRequester` uses) is confirmed, the same isolated way, *not* affected - folder selection isn't
+portal-intercepted the same way file selection is, so `PathRequester`'s own accept-path test runs and
+passes normally. This is a test-environment limitation specific to driving these two dialogs
+non-interactively under a live portal-enabled desktop session, not a bug in `pbOpenFileRequester`/
+`pbSaveFileRequester` themselves - a real, interactive user accepting either dialog is unaffected (the
+portal exists precisely to handle that real interaction). Scoped accordingly: `OpenFileRequester`'s own
+accept-path round-trip (originally written assuming the same test idiom would just work, the same way
+it does for every other dialog in this family) was replaced with a direct, dialog-free unit test of
+`detail::parseFilterPattern` instead - the one piece of genuinely nontrivial logic either function has,
+and the only part a cancel-only test can't otherwise reach - leaving both functions' own cancel paths
+(which don't hit the portal hand-off at all) covered the ordinary way.
+
+**A second, smaller real bug, caught only once the sanitized build ran clean on everything else**: `LSan`
+flagged real, GTK/GIO-internal leaks (`g_local_file_get_parent` for Open/Save, `g_cancellable_set_
+error_if_cancelled` for the folder-only chooser) specific to cancelling a `GtkFileChooserDialog` quickly
+(the 50ms synthetic cancel this project's own tests use) - each dialog kicks off its own asynchronous
+default-folder enumeration via GIO on construction, and destroying the dialog while that's still in
+flight abandons its own internal `GTask`/`GError`/canonicalized-path objects. Confirmed entirely inside
+`libgtk-3.so`/`glib`/`gio`'s own internals (never anything this project's own `pbOpenFileRequester`/
+`pbSaveFileRequester`/`pbPathRequester` allocate or touch) - a real, interactive cancel gives the async
+operation time to finish and clean up normally, so this is the same category of known, accepted
+third-party false positive `tests/lsan-suppressions.txt` already carries two entries for (fontconfig's
+own process-lifetime cache, AT-SPI's own bridge setup) - two new entries added there to match.
+
+**Testing**: ~12 new `runtime_guilib_test.cpp` cases - `ColorRequester`'s cancel/accept round-trip,
+`FontRequester`'s cancel/accept round-trip through all four accessors, `InputRequester` across its
+default/`HandleCancel`/accept/`Password` variants (using a new `findDescendantOfType` helper to reach
+the dialog's own embedded `GtkEntry`), the `parseFilterPattern` test described above, `SaveFileRequester`
+and `PathRequester` each covering cancel (and, for `PathRequester`, accept too, confirmed unaffected by
+the portal issue). A new `scheduleDialogAction(std::function<void(GtkDialog*)>)` helper generalizes the
+pre-existing `autoRespond` to let a callback do arbitrary setup (`gtk_entry_set_text`, etc.) before
+responding. 363 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan
+clean with the two new suppressions), including the 353 that predate this slice.
 

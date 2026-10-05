@@ -104,6 +104,15 @@ void Sema::registerMathLibBuiltins() {
         {"int", TypeSuffix::Integer, {TypeSuffix::Double}, 1},
         {"random", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
         {"randomseed", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // A prerequisite for the Requester family (M7b) - see mathlib.hpp's
+        // own pbRGB doc comment.
+        {"rgb", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"rgba", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 4},
+        {"red", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"green", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"blue", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"alpha", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
     };
     for (const auto& sig : signatures) {
         ProcedureInfo info;
@@ -118,6 +127,7 @@ bool Sema::isMathLibBuiltinName(const std::string& lowerName) {
     static const std::unordered_set<std::string> names = {
         "abs", "sqr", "pow", "sin", "cos", "tan", "asin", "acos", "atan",
         "atan2", "exp", "log", "log10", "round", "int", "random", "randomseed",
+        "rgb", "rgba", "red", "green", "blue", "alpha",
     };
     return names.contains(lowerName);
 }
@@ -392,6 +402,30 @@ void Sema::registerGuiLibBuiltins() {
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
         {"messagerequester", TypeSuffix::Integer, {TypeSuffix::String, TypeSuffix::String, TypeSuffix::Integer}, 2},
+        // M7b: the rest of the Requester family (MessageRequester, the
+        // third slice, was the first). RGB()/RGBA()/Red()/Green()/Blue()/
+        // Alpha() (MathLib) are a prerequisite ColorRequester/FontRequester
+        // both need - see mathlib.hpp's own pbRGB doc comment.
+        {"colorrequester", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 0},
+        {"fontrequester", TypeSuffix::Integer,
+         {TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         3},
+        {"selectedfontname", TypeSuffix::String, {}, 0},
+        {"selectedfontsize", TypeSuffix::Integer, {}, 0},
+        {"selectedfontstyle", TypeSuffix::Integer, {}, 0},
+        {"selectedfontcolor", TypeSuffix::Integer, {}, 0},
+        {"inputrequester", TypeSuffix::String,
+         {TypeSuffix::String, TypeSuffix::String, TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"openfilerequester", TypeSuffix::String,
+         {TypeSuffix::String, TypeSuffix::String, TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         4},
+        {"savefilerequester", TypeSuffix::String,
+         {TypeSuffix::String, TypeSuffix::String, TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer}, 4},
+        {"nextselectedfilename", TypeSuffix::String, {}, 0},
+        {"selectedfilepattern", TypeSuffix::Integer, {}, 0},
+        {"pathrequester", TypeSuffix::String, {TypeSuffix::String, TypeSuffix::String, TypeSuffix::Integer}, 2},
         // M7b's fourth GUI slice: Menu/StatusBar. WindowID is a real gap-
         // filler this slice needed too - oracle-verified CreateMenu/
         // CreateStatusBar's own second argument must be real PB's own
@@ -509,7 +543,9 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "disabletoolbarbutton", "gettoolbarbuttonstate", "settoolbarbuttonstate", "toolbarbuttontext",
         "toolbartooltip", "toolbarheight", "toolbarid", "createpopupmenu", "createpopupimagemenu",
         "addsystrayicon", "changesystrayicon", "issystrayicon", "removesystrayicon", "systrayiconmenu",
-        "systrayicontooltip",
+        "systrayicontooltip", "colorrequester", "fontrequester", "selectedfontname", "selectedfontsize",
+        "selectedfontstyle", "selectedfontcolor", "inputrequester", "openfilerequester", "savefilerequester",
+        "nextselectedfilename", "selectedfilepattern", "pathrequester",
     };
     return names.contains(lowerName);
 }
@@ -667,6 +703,25 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_toolbar_inlinetext", 8},
         {"pb_toolbar_normal", 0},
         {"pb_toolbar_toggle", 1},
+        // The Requester family's remaining pieces (M7b) - oracle-verified
+        // via direct `Debug` probes. `#PB_Font_StrikeOut`/`#PB_Font_Underline`
+        // are both genuinely `0` on this oracle's own Linux build (not a
+        // probe mistake - confirmed twice, with explicit labels) - neither
+        // bit is ever detectable via `SelectedFontStyle()` on this platform
+        // at all, consistent with GTK's own font chooser having no
+        // strikeout/underline toggle of its own either.
+        // `#PB_InputRequester_Cancel` is a *String* constant (`Chr(10) +
+        // Chr(9)`, confirmed byte-by-byte) - this table is Integer-only,
+        // so it isn't registered here; see guilib.hpp's own pbInputRequester
+        // doc comment for the resulting, deliberately narrow gap.
+        {"pb_inputrequester_password", 1},
+        {"pb_inputrequester_handlecancel", 2},
+        {"pb_fontrequester_effects", 1},
+        {"pb_font_bold", 1},
+        {"pb_font_italic", 2},
+        {"pb_font_strikeout", 0},
+        {"pb_font_underline", 0},
+        {"pb_requester_multiselection", 1},
     };
     return table;
 }

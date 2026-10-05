@@ -17,3 +17,18 @@ leak:libpangoft2
 # reproduced on this project's own dev machine, which installs a leaner
 # GTK3 dependency set without the AT-SPI D-Bus bridge pulled in).
 leak:atk_bridge_adaptor_init
+
+# GtkFileChooserDialog (OpenFileRequester/SaveFileRequester/
+# PathRequester - M7b's Requester slice) kicks off its own asynchronous
+# default-folder enumeration via GIO on construction; cancelling quickly
+# (as this project's own unit tests do, via a 50ms g_timeout_add) destroys
+# the dialog while that operation is still in flight, abandoning its own
+# internal GTask/GLocalFile/GError/canonicalized-path objects - confirmed
+# entirely inside libgtk-3.so/glib/gio's own internals
+# (g_local_file_get_parent for Open/Save, g_cancellable_set_error_if_cancelled
+# for the folder-only chooser PathRequester uses), not caused by anything
+# pbOpenFileRequester/pbSaveFileRequester/pbPathRequester do themselves; a
+# real, interactive accept/cancel (not a 50ms-later synthetic one) gives
+# the async operation time to finish and clean up normally.
+leak:g_local_file_get_parent
+leak:g_cancellable_set_error_if_cancelled

@@ -1,15 +1,18 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <easybasic/runtime/guilib.hpp>
+#include <easybasic/runtime/mathlib.hpp> // pbRGB/pbRed/pbGreen/pbBlue - Requester round-trip tests
 #include <easybasic/runtime/threadlib.hpp> // pbElapsedMilliseconds
 
 using namespace easybasic::runtime;
@@ -392,6 +395,54 @@ gboolean autoRespond(gpointer userData) {
     }
     g_list_free(windows);
     return G_SOURCE_REMOVE;
+}
+
+/// A more general version of `autoRespond` for the Requester family (M7b):
+/// runs an arbitrary `setup` callback against the found dialog *before*
+/// responding - e.g. setting a `GtkFileChooser`'s own filename, or typing
+/// into an `InputRequester` dialog's own entry - rather than only ever
+/// choosing which button to click.
+gboolean dialogActionTrampoline(gpointer userData) {
+    auto* action = static_cast<std::function<void(GtkDialog*)>*>(userData);
+    GList* windows = gtk_window_list_toplevels();
+    for (GList* w = windows; w != nullptr; w = w->next) {
+        auto* widget = static_cast<GtkWidget*>(w->data);
+        if (GTK_IS_DIALOG(widget) != 0) {
+            (*action)(GTK_DIALOG(widget));
+            break;
+        }
+    }
+    g_list_free(windows);
+    delete action;
+    return G_SOURCE_REMOVE;
+}
+
+void scheduleDialogAction(std::function<void(GtkDialog*)> action) {
+    g_timeout_add(50, dialogActionTrampoline, new std::function<void(GtkDialog*)>(std::move(action)));
+}
+
+/// Finds the first descendant of `widget` that's an instance of `type` -
+/// used to reach `InputRequester`'s own `GtkEntry`, which isn't exposed
+/// any other way (unlike a `GtkFileChooserDialog`, whose own filename/
+/// folder is set directly on the dialog object itself via the
+/// `GtkFileChooser` interface, needing no child lookup at all).
+GtkWidget* findDescendantOfType(GtkWidget* widget, GType type) {
+    if (G_TYPE_CHECK_INSTANCE_TYPE(widget, type) != 0) {
+        return widget;
+    }
+    if (GTK_IS_CONTAINER(widget) == 0) {
+        return nullptr;
+    }
+    GList* children = gtk_container_get_children(GTK_CONTAINER(widget));
+    GtkWidget* found = nullptr;
+    for (GList* c = children; c != nullptr; c = c->next) {
+        found = findDescendantOfType(GTK_WIDGET(c->data), type);
+        if (found != nullptr) {
+            break;
+        }
+    }
+    g_list_free(children);
+    return found;
 }
 } // namespace
 
@@ -832,4 +883,158 @@ TEST_CASE("CreateToolBar reorders below an already-existing menu, above one crea
     pbFreeMenu(1);
     pbFreeToolBar(1);
     pbCloseWindow(312);
+}
+
+// The Requester family's remaining pieces (M7b) - MessageRequester (the
+// third GUI slice) already established the "drive the real dialog via
+// autoRespond/scheduleDialogAction, no xdotool" split this project's own
+// GUI testing uses throughout; every test below follows it.
+
+TEST_CASE("ColorRequester returns -1 on cancel, and round-trips an initial color on accept",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_CANCEL));
+    CHECK(pbColorRequester() == -1);
+
+    std::int64_t initial = pbRGB(10, 20, 30);
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_OK));
+    std::int64_t result = pbColorRequester(initial);
+    CHECK(pbRed(result) == 10);
+    CHECK(pbGreen(result) == 20);
+    CHECK(pbBlue(result) == 30);
+}
+
+TEST_CASE("FontRequester returns 0 on cancel, and round-trips name/size/style/color on accept",
+          "[runtime][guilib]") {
+    // "Sans" is a Pango alias guaranteed to resolve on any system (unlike
+    // a concrete family name such as "Arial", which may not be installed
+    // in this test environment) - chosen specifically so this assertion
+    // doesn't depend on the test machine's own installed fonts.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_CANCEL));
+    CHECK(pbFontRequester(PBString("Sans"), 12, 0) == 0);
+
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_OK));
+    std::int64_t ok = pbFontRequester(PBString("Sans"), 14, 0, pbRGB(1, 2, 3), 1 /* #PB_Font_Bold */);
+    CHECK(ok != 0);
+    CHECK(pbSelectedFontName().bytes() == "Sans");
+    CHECK(pbSelectedFontSize() == 14);
+    CHECK((pbSelectedFontStyle() & 1) != 0); // #PB_Font_Bold
+    CHECK(pbSelectedFontColor() == pbRGB(1, 2, 3)); // Echoed back unchanged - see pbFontRequester's own doc comment.
+}
+
+TEST_CASE("InputRequester returns an empty string on cancel by default", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_CANCEL));
+    CHECK(pbInputRequester(PBString("T"), PBString("M"), PBString("D")).bytes().empty());
+}
+
+TEST_CASE("InputRequester returns #PB_InputRequester_Cancel on cancel when HandleCancel is set",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_CANCEL));
+    PBString result = pbInputRequester(PBString("T"), PBString("M"), PBString("D"), 2); // #PB_InputRequester_HandleCancel
+    CHECK(result.bytes() == "\n\t"); // See pbInputRequester's own doc comment on this not being a referenceable constant yet.
+}
+
+TEST_CASE("InputRequester returns the entry's own (possibly edited) text on accept",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    scheduleDialogAction([](GtkDialog* dialog) {
+        GtkWidget* entry = findDescendantOfType(GTK_WIDGET(dialog), GTK_TYPE_ENTRY);
+        REQUIRE(entry != nullptr);
+        gtk_entry_set_text(GTK_ENTRY(entry), "typed value");
+        gtk_dialog_response(dialog, GTK_RESPONSE_OK);
+    });
+    CHECK(pbInputRequester(PBString("T"), PBString("M"), PBString("Default")).bytes() == "typed value");
+}
+
+TEST_CASE("InputRequester's Password option hides the entry's own text", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    scheduleDialogAction([](GtkDialog* dialog) {
+        GtkWidget* entry = findDescendantOfType(GTK_WIDGET(dialog), GTK_TYPE_ENTRY);
+        REQUIRE(entry != nullptr);
+        CHECK(gtk_entry_get_visibility(GTK_ENTRY(entry)) == FALSE);
+        gtk_dialog_response(dialog, GTK_RESPONSE_CANCEL);
+    });
+    pbInputRequester(PBString("T"), PBString("M"), PBString("D"), 1); // #PB_InputRequester_Password
+}
+
+TEST_CASE("OpenFileRequester returns an empty string and SelectedFilePattern -1 on cancel",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_CANCEL));
+    CHECK(pbOpenFileRequester(PBString("T"), PBString(""), PBString("Text|*.txt"), 0).bytes().empty());
+    CHECK(pbSelectedFilePattern() == -1);
+}
+
+TEST_CASE("OpenFileRequester/SaveFileRequester's own filter-pattern parsing splits labels/globs correctly",
+          "[runtime][guilib]") {
+    // Doesn't drive a real dialog at all - accepting (not cancelling) a
+    // real GtkFileChooserDialog opened with ACTION_OPEN/ACTION_SAVE hangs
+    // indefinitely in this specific sandboxed desktop environment
+    // (confirmed, in isolation, outside this test suite entirely: GTK3's
+    // own file-chooser machinery hands the "Open"/"Save" confirmation off
+    // to xdg-desktop-portal-gtk - confirmed running - whose own file-
+    // picker UI doesn't render anywhere this test can find or drive, so
+    // the simulated response this project's every other dialog test
+    // relies on never reaches anything real; ACTION_SELECT_FOLDER, used
+    // by PathRequester below, isn't affected the same way, confirmed the
+    // same isolated way). Real, interactive use is unaffected - this is
+    // a test-environment limitation, not a bug in pbOpenFileRequester/
+    // pbSaveFileRequester themselves - so filter-pattern parsing (the one
+    // piece of real, nontrivial logic in either function, oracle-verified
+    // via OpenFileRequester's own docs) is still verified directly here,
+    // and the cancel path (which doesn't hit this at all) is covered by
+    // the test above/below.
+    auto groups = detail::parseFilterPattern("Text (*.txt)|*.txt;*.bat|PureBasic (*.pb)|*.pb|All (*.*)|*.*");
+    REQUIRE(groups.size() == 3);
+    CHECK(groups[0].first == "Text (*.txt)");
+    REQUIRE(groups[0].second.size() == 2);
+    CHECK(groups[0].second[0] == "*.txt");
+    CHECK(groups[0].second[1] == "*.bat");
+    CHECK(groups[1].first == "PureBasic (*.pb)");
+    REQUIRE(groups[1].second.size() == 1);
+    CHECK(groups[1].second[0] == "*.pb");
+    CHECK(groups[2].first == "All (*.*)");
+    REQUIRE(groups[2].second.size() == 1);
+    CHECK(groups[2].second[0] == "*.*");
+}
+
+TEST_CASE("SaveFileRequester returns an empty string on cancel", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_CANCEL));
+    CHECK(pbSaveFileRequester(PBString("T"), PBString(""), PBString("Text|*.txt"), 0).bytes().empty());
+}
+
+TEST_CASE("PathRequester returns an empty string on cancel, and the chosen path (with a trailing "
+          "slash) on accept",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    g_timeout_add(50, autoRespond, reinterpret_cast<gpointer>(GTK_RESPONSE_CANCEL));
+    CHECK(pbPathRequester(PBString("T"), PBString("")).bytes().empty());
+
+    scheduleDialogAction(
+        [](GtkDialog* dialog) { gtk_dialog_response(dialog, GTK_RESPONSE_OK); });
+    PBString result = pbPathRequester(PBString("T"), PBString("/tmp"));
+    CHECK_FALSE(result.bytes().empty());
+    CHECK(result.bytes().back() == '/');
 }

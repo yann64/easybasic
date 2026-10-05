@@ -1,10 +1,14 @@
 #pragma once
 
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <deque>
+#include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <gtk/gtk.h>
 
@@ -199,6 +203,19 @@ inline void ensureGtkInit() {
         return true;
     }();
     (void)initialized;
+}
+
+/// Shared by every Requester function taking an optional `ParentID` -
+/// `0` (never a legitimate `WindowID()` value) means "no parent", the
+/// same convention every other optional-handle parameter in this library
+/// already uses. A real connection to `WindowID()`'s own return value
+/// (the real `GtkWidget*` pointer `pbWindowID` already established) -
+/// unlike the reference `qt6_subsystem` project's own documented gap here
+/// ("`ParentID` is accepted on every overload... but not connected to
+/// actual window parenting"), this project's own existing "the handle
+/// already is the real pointer" convention makes wiring it up free.
+inline GtkWindow* parentWindowFromId(std::int64_t parentId) {
+    return parentId != 0 ? GTK_WINDOW(reinterpret_cast<GtkWidget*>(parentId)) : nullptr;
 }
 
 // Tags for g_object_set_data - lets a GTK signal handler recover which PB
@@ -497,6 +514,112 @@ inline void attachMenuItemImage(GtkWidget* item, std::int64_t imageId) {
     gtk_box_pack_start(GTK_BOX(box), label, TRUE, TRUE, 0);
     gtk_container_add(GTK_CONTAINER(item), box);
     gtk_widget_show_all(box);
+}
+
+/// `FontRequester`'s own last-selected-font state, read back afterward by
+/// `SelectedFontName`/`SelectedFontSize`/`SelectedFontStyle`/
+/// `SelectedFontColor` - the same "separate accessor functions, not a
+/// return-value struct" shape real PB's own API has, so a single, plain
+/// struct (not a table keyed by anything) is all that's needed: there's
+/// only ever one "most recent" FontRequester result to ask about, exactly
+/// like there's only one "most recent" `EventWindow()`/`EventGadget()`.
+struct SelectedFontState {
+    std::string name;
+    std::int64_t size = 0;
+    std::int64_t style = 0;
+    std::int64_t color = 0;
+};
+inline SelectedFontState& selectedFont() {
+    static SelectedFontState state;
+    return state;
+}
+
+/// `OpenFileRequester`'s own `#PB_Requester_MultiSelection` state -
+/// `NextSelectedFileName()`'s own cursor into whatever the most recent
+/// multi-selection call returned (the *first* selected file is
+/// `OpenFileRequester`'s own return value directly; the rest queue up
+/// here, oracle-verified via `NextSelectedFileName`'s own docs: "renvoie
+/// le fichier sélectionné suivant" - the *next* one, after the first).
+inline std::vector<std::string>& multiSelectedFiles() {
+    static std::vector<std::string> files;
+    return files;
+}
+inline std::size_t& multiSelectedFilesCursor() {
+    static std::size_t cursor = 0;
+    return cursor;
+}
+/// `SelectedFilePattern`'s own state - the 0-based index (within the
+/// pattern string's own `|`-separated groups) of whichever filter was
+/// active when `OpenFileRequester`/`SaveFileRequester` closed, `-1` if
+/// the dialog was cancelled (oracle-verified via `SelectedFilePattern`'s
+/// own docs example: `If Index > -1`).
+inline std::int64_t& selectedFilePatternIndex() {
+    static std::int64_t index = -1;
+    return index;
+}
+
+/// Splits real PB's own file-pattern syntax (`"Label|*.ext;*.ext2|Label2|
+/// *.ext3"` - alternating label/glob-list pairs joined by `|`, oracle-
+/// verified via `OpenFileRequester`'s own docs) into `(label, globs)`
+/// pairs, each glob-list itself `;`-separated. Shared by
+/// `OpenFileRequester`/`SaveFileRequester`, the only two functions with a
+/// `Pattern$` argument at all.
+inline std::vector<std::pair<std::string, std::vector<std::string>>> parseFilterPattern(const std::string& pattern) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (true) {
+        std::size_t pos = pattern.find('|', start);
+        parts.push_back(pattern.substr(start, pos == std::string::npos ? std::string::npos : pos - start));
+        if (pos == std::string::npos) {
+            break;
+        }
+        start = pos + 1;
+    }
+    std::vector<std::pair<std::string, std::vector<std::string>>> result;
+    for (std::size_t i = 0; i + 1 < parts.size(); i += 2) {
+        std::vector<std::string> globs;
+        std::size_t globStart = 0;
+        const std::string& globStr = parts[i + 1];
+        while (true) {
+            std::size_t globPos = globStr.find(';', globStart);
+            globs.push_back(globStr.substr(globStart, globPos == std::string::npos ? std::string::npos
+                                                                                     : globPos - globStart));
+            if (globPos == std::string::npos) {
+                break;
+            }
+            globStart = globPos + 1;
+        }
+        result.emplace_back(parts[i], std::move(globs));
+    }
+    return result;
+}
+
+/// Builds one `GtkFileFilter` per `(label, globs)` pair from
+/// `parseFilterPattern`, adds each to `chooser`, and selects whichever one
+/// is at `patternPosition` (0-based, oracle-verified via
+/// `OpenFileRequester`'s own docs) - shared by `OpenFileRequester`/
+/// `SaveFileRequester`. Returns the full ordered filter list, so the
+/// caller can look its own active filter's index back up afterward for
+/// `SelectedFilePattern()` (`GtkFileChooser` only exposes the filter
+/// *object* itself, not its position).
+inline std::vector<GtkFileFilter*> applyFileFilters(GtkFileChooser* chooser, const std::string& pattern,
+                                                      std::int64_t patternPosition) {
+    std::vector<GtkFileFilter*> filters;
+    for (auto& [label, globs] : parseFilterPattern(pattern)) {
+        GtkFileFilter* filter = gtk_file_filter_new();
+        gtk_file_filter_set_name(filter, label.c_str());
+        for (auto& glob : globs) {
+            if (!glob.empty()) {
+                gtk_file_filter_add_pattern(filter, glob.c_str());
+            }
+        }
+        gtk_file_chooser_add_filter(chooser, filter);
+        filters.push_back(filter);
+    }
+    if (patternPosition >= 0 && static_cast<std::size_t>(patternPosition) < filters.size()) {
+        gtk_file_chooser_set_filter(chooser, filters[static_cast<std::size_t>(patternPosition)]);
+    }
+    return filters;
 }
 
 } // namespace detail
@@ -935,6 +1058,304 @@ inline std::int64_t pbMessageRequester(const PBString& title, const PBString& te
     default:
         return 6; // #PB_MessageRequester_Yes - see this function's own doc comment.
     }
+}
+
+/// M7b's own Requester family, completing it (`MessageRequester` was the
+/// third GUI slice already). `GtkColorChooserDialog` is the natural GTK3
+/// fit. Oracle-verified return: the selected color, packed the same way
+/// `RGB()` itself is (see mathlib.hpp's own doc comment) - `0x00BBGGRR`,
+/// not `0x00RRGGBB` - or `-1` on cancel.
+inline std::int64_t pbColorRequester(std::int64_t initialColor = -1, std::int64_t parentId = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* dialog = gtk_color_chooser_dialog_new("Choose Color", detail::parentWindowFromId(parentId));
+    if (initialColor != -1) {
+        GdkRGBA rgba;
+        rgba.red = static_cast<double>(initialColor & 0xff) / 255.0;
+        rgba.green = static_cast<double>((initialColor >> 8) & 0xff) / 255.0;
+        rgba.blue = static_cast<double>((initialColor >> 16) & 0xff) / 255.0;
+        rgba.alpha = 1.0;
+        gtk_color_chooser_set_rgba(GTK_COLOR_CHOOSER(dialog), &rgba);
+    }
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    std::int64_t result = -1;
+    if (response == GTK_RESPONSE_OK) {
+        GdkRGBA rgba;
+        gtk_color_chooser_get_rgba(GTK_COLOR_CHOOSER(dialog), &rgba);
+        auto r = static_cast<std::int64_t>(std::lround(rgba.red * 255.0));
+        auto g = static_cast<std::int64_t>(std::lround(rgba.green * 255.0));
+        auto b = static_cast<std::int64_t>(std::lround(rgba.blue * 255.0));
+        result = r | (g << 8) | (b << 16);
+    }
+    gtk_widget_destroy(dialog);
+    return result;
+}
+
+/// `GtkFontChooserDialog` is the natural GTK3 fit, built around a
+/// `PangoFontDescription` rather than string parsing (`gtk_font_chooser_
+/// get_font_desc` returns one directly, *transfer full* per its own GTK
+/// docs - freed here once its fields are copied into `detail::selectedFont()`
+/// for the separate accessor functions below to read back).
+///
+/// `Color` is accepted (real PB's own documented signature requires it)
+/// but not wired into an actual color swatch - `GtkFontChooser` has no
+/// built-in color picker at all, the identical gap the reference
+/// `qt6_subsystem` project's own port already found for the same reason
+/// (`QFontDialog` doesn't either) - echoed back unchanged by
+/// `SelectedFontColor()` rather than silently dropped. `Options`
+/// (`#PB_FontRequester_Effects`) is real PB's own Windows-only flag -
+/// accepted but not acted on, the same treatment every other OS-specific
+/// niceity in this library already gets.
+inline std::int64_t pbFontRequester(const PBString& fontName, std::int64_t fontSize, std::int64_t /*options*/,
+                                     std::int64_t color = 0, std::int64_t style = 0, std::int64_t parentId = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* dialog = gtk_font_chooser_dialog_new("Choose Font", detail::parentWindowFromId(parentId));
+    PangoFontDescription* initial = pango_font_description_new();
+    if (!fontName.bytes().empty()) {
+        pango_font_description_set_family(initial, fontName.bytes().c_str());
+    }
+    if (fontSize > 0) {
+        pango_font_description_set_size(initial, static_cast<gint>(fontSize) * PANGO_SCALE);
+    }
+    if ((style & 1) != 0) { // #PB_Font_Bold
+        pango_font_description_set_weight(initial, PANGO_WEIGHT_BOLD);
+    }
+    if ((style & 2) != 0) { // #PB_Font_Italic
+        pango_font_description_set_style(initial, PANGO_STYLE_ITALIC);
+    }
+    gtk_font_chooser_set_font_desc(GTK_FONT_CHOOSER(dialog), initial);
+    pango_font_description_free(initial);
+
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    std::int64_t result = 0;
+    if (response == GTK_RESPONSE_OK) {
+        PangoFontDescription* chosen = gtk_font_chooser_get_font_desc(GTK_FONT_CHOOSER(dialog));
+        if (chosen != nullptr) {
+            detail::SelectedFontState& state = detail::selectedFont();
+            const char* family = pango_font_description_get_family(chosen);
+            state.name = family != nullptr ? family : "";
+            state.size = pango_font_description_get_size(chosen) / PANGO_SCALE;
+            std::int64_t newStyle = 0;
+            if (pango_font_description_get_weight(chosen) >= PANGO_WEIGHT_BOLD) {
+                newStyle |= 1; // #PB_Font_Bold
+            }
+            if (pango_font_description_get_style(chosen) == PANGO_STYLE_ITALIC) {
+                newStyle |= 2; // #PB_Font_Italic
+            }
+            state.style = newStyle;
+            state.color = color;
+            pango_font_description_free(chosen);
+            result = 1;
+        }
+    }
+    gtk_widget_destroy(dialog);
+    return result;
+}
+
+inline PBString pbSelectedFontName() { return PBString(detail::selectedFont().name); }
+inline std::int64_t pbSelectedFontSize() { return detail::selectedFont().size; }
+inline std::int64_t pbSelectedFontStyle() { return detail::selectedFont().style; }
+/// Oracle-verified "OS Supportés Windows" only - on every other platform
+/// this is just `FontRequester`'s own `Color` argument, echoed back
+/// unchanged (see `pbFontRequester`'s own doc comment).
+inline std::int64_t pbSelectedFontColor() { return detail::selectedFont().color; }
+
+/// No native GTK3 "get a line of text" dialog exists (unlike Qt's own
+/// `QInputDialog`) - built from a plain `GtkDialog` + `GtkLabel` +
+/// `GtkEntry` instead. `gtk_entry_set_activates_default` + making the OK
+/// button the dialog's own default widget is what makes pressing Enter
+/// in the entry submit, rather than requiring an explicit button click.
+///
+/// Oracle-verified: cancelling returns an empty string by default: only
+/// with `#PB_InputRequester_HandleCancel` set does it instead return
+/// `#PB_InputRequester_Cancel` - itself a *String* constant (`Chr(10) +
+/// Chr(9)`, confirmed byte-by-byte against the real oracle), not an
+/// Integer the way every other `#PB_*` constant in this project is -
+/// Sema's own builtin-constant table is Integer-only, so that one
+/// specific constant isn't exposed as a referenceable name yet (a real,
+/// deliberately narrow gap - the *behavior* itself, returning that exact
+/// two-character string, is still implemented faithfully; a program can
+/// still compare against it by writing `Chr(10)+Chr(9)` directly).
+inline PBString pbInputRequester(const PBString& title, const PBString& message, const PBString& defaultText,
+                                  std::int64_t options = 0, std::int64_t parentId = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* dialog =
+        gtk_dialog_new_with_buttons(title.bytes().c_str(), detail::parentWindowFromId(parentId), GTK_DIALOG_MODAL,
+                                     "_Cancel", GTK_RESPONSE_CANCEL, "_OK", GTK_RESPONSE_OK, nullptr);
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget* label = gtk_label_new(message.bytes().c_str());
+    GtkWidget* entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(entry), defaultText.bytes().c_str());
+    if ((options & 1) != 0) { // #PB_InputRequester_Password
+        gtk_entry_set_visibility(GTK_ENTRY(entry), FALSE);
+    }
+    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+    gtk_container_add(GTK_CONTAINER(box), label);
+    gtk_container_add(GTK_CONTAINER(box), entry);
+    gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dialog))), box);
+    GtkWidget* okButton = gtk_dialog_get_widget_for_response(GTK_DIALOG(dialog), GTK_RESPONSE_OK);
+    gtk_widget_set_can_default(okButton, TRUE);
+    gtk_widget_grab_default(okButton);
+    gtk_widget_show_all(dialog);
+
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    PBString result;
+    if (response == GTK_RESPONSE_OK) {
+        result = PBString(gtk_entry_get_text(GTK_ENTRY(entry)));
+    } else if ((options & 2) != 0) { // #PB_InputRequester_HandleCancel
+        result = PBString("\n\t"); // #PB_InputRequester_Cancel - see this function's own doc comment.
+    }
+    gtk_widget_destroy(dialog);
+    return result;
+}
+
+/// `GtkFileChooserDialog` (action `OPEN`) is the natural GTK3 fit.
+/// `#PB_Requester_MultiSelection` is genuinely supported (unlike the
+/// reference `qt6_subsystem` project's own port, whose documented gap
+/// here was specifically not having this constant's real numeric value
+/// available to confirm - this project's own oracle access resolved that
+/// directly, see Sema's own builtin-constant table) - `NextSelectedFileName()`
+/// queues every selection after the first (this function's own return
+/// value) via `detail::multiSelectedFiles()`.
+inline PBString pbOpenFileRequester(const PBString& title, const PBString& defaultFile, const PBString& pattern,
+                                     std::int64_t patternPosition, std::int64_t options = 0,
+                                     std::int64_t parentId = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* dialog = gtk_file_chooser_dialog_new(title.bytes().c_str(), detail::parentWindowFromId(parentId),
+                                                     GTK_FILE_CHOOSER_ACTION_OPEN, "_Cancel", GTK_RESPONSE_CANCEL,
+                                                     "_Open", GTK_RESPONSE_OK, nullptr);
+    auto* chooser = GTK_FILE_CHOOSER(dialog);
+    bool multi = (options & 1) != 0; // #PB_Requester_MultiSelection
+    gtk_file_chooser_set_select_multiple(chooser, multi ? TRUE : FALSE);
+    if (!defaultFile.bytes().empty()) {
+        gtk_file_chooser_set_filename(chooser, defaultFile.bytes().c_str());
+    }
+    std::vector<GtkFileFilter*> filters = detail::applyFileFilters(chooser, pattern.bytes(), patternPosition);
+
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    PBString result;
+    detail::multiSelectedFiles().clear();
+    detail::multiSelectedFilesCursor() = 0;
+    detail::selectedFilePatternIndex() = -1;
+    if (response == GTK_RESPONSE_OK) {
+        GtkFileFilter* activeFilter = gtk_file_chooser_get_filter(chooser);
+        for (std::size_t idx = 0; idx < filters.size(); ++idx) {
+            if (filters[idx] == activeFilter) {
+                detail::selectedFilePatternIndex() = static_cast<std::int64_t>(idx);
+                break;
+            }
+        }
+        if (multi) {
+            GSList* names = gtk_file_chooser_get_filenames(chooser);
+            bool first = true;
+            for (GSList* n = names; n != nullptr; n = n->next) {
+                auto* name = static_cast<char*>(n->data);
+                if (first) {
+                    result = PBString(name);
+                    first = false;
+                } else {
+                    detail::multiSelectedFiles().emplace_back(name);
+                }
+                g_free(name);
+            }
+            g_slist_free(names);
+        } else {
+            gchar* filename = gtk_file_chooser_get_filename(chooser);
+            if (filename != nullptr) {
+                result = PBString(filename);
+                g_free(filename);
+            }
+        }
+    }
+    gtk_widget_destroy(dialog);
+    return result;
+}
+
+/// Oracle-verified: queues up every file after `OpenFileRequester`'s own
+/// first (`#PB_Requester_MultiSelection` only) - returns an empty string
+/// once exhausted, or if the last `OpenFileRequester` call wasn't multi-
+/// selection (or was cancelled) at all.
+inline PBString pbNextSelectedFileName() {
+    auto& files = detail::multiSelectedFiles();
+    auto& cursor = detail::multiSelectedFilesCursor();
+    if (cursor >= files.size()) {
+        return PBString();
+    }
+    return PBString(files[cursor++]);
+}
+
+/// Oracle-verified: the 0-based index of whichever filter was active when
+/// `OpenFileRequester`/`SaveFileRequester` closed, or `-1` after a
+/// cancelled call (see `detail::selectedFilePatternIndex`'s own doc
+/// comment).
+inline std::int64_t pbSelectedFilePattern() { return detail::selectedFilePatternIndex(); }
+
+/// `GtkFileChooserDialog` (action `SAVE`) - `set_do_overwrite_confirmation`
+/// is a reasonable UX default GTK itself provides (real PB's own docs
+/// don't say either way whether overwrite confirmation happens, so this
+/// isn't replicating a specific oracle-verified behavior, just a sensible
+/// choice consistent with what a native "Save As" dialog normally does).
+inline PBString pbSaveFileRequester(const PBString& title, const PBString& defaultFile, const PBString& pattern,
+                                     std::int64_t patternPosition, std::int64_t parentId = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* dialog = gtk_file_chooser_dialog_new(title.bytes().c_str(), detail::parentWindowFromId(parentId),
+                                                     GTK_FILE_CHOOSER_ACTION_SAVE, "_Cancel", GTK_RESPONSE_CANCEL,
+                                                     "_Save", GTK_RESPONSE_OK, nullptr);
+    auto* chooser = GTK_FILE_CHOOSER(dialog);
+    gtk_file_chooser_set_do_overwrite_confirmation(chooser, TRUE);
+    if (!defaultFile.bytes().empty()) {
+        gtk_file_chooser_set_filename(chooser, defaultFile.bytes().c_str());
+    }
+    std::vector<GtkFileFilter*> filters = detail::applyFileFilters(chooser, pattern.bytes(), patternPosition);
+
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    PBString result;
+    detail::selectedFilePatternIndex() = -1;
+    if (response == GTK_RESPONSE_OK) {
+        GtkFileFilter* activeFilter = gtk_file_chooser_get_filter(chooser);
+        for (std::size_t idx = 0; idx < filters.size(); ++idx) {
+            if (filters[idx] == activeFilter) {
+                detail::selectedFilePatternIndex() = static_cast<std::int64_t>(idx);
+                break;
+            }
+        }
+        gchar* filename = gtk_file_chooser_get_filename(chooser);
+        if (filename != nullptr) {
+            result = PBString(filename);
+            g_free(filename);
+        }
+    }
+    gtk_widget_destroy(dialog);
+    return result;
+}
+
+/// `GtkFileChooserDialog` (action `SELECT_FOLDER`). Oracle-verified: the
+/// returned path has a trailing `/` on Linux (a trailing `\` on Windows,
+/// not this backend's concern) - `gtk_file_chooser_get_filename` doesn't
+/// include one on its own, appended here to match.
+inline PBString pbPathRequester(const PBString& title, const PBString& initialPath, std::int64_t parentId = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* dialog =
+        gtk_file_chooser_dialog_new(title.bytes().c_str(), detail::parentWindowFromId(parentId),
+                                     GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, "_Cancel", GTK_RESPONSE_CANCEL,
+                                     "_Select", GTK_RESPONSE_OK, nullptr);
+    if (!initialPath.bytes().empty()) {
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(dialog), initialPath.bytes().c_str());
+    }
+    gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+    PBString result;
+    if (response == GTK_RESPONSE_OK) {
+        gchar* folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        if (folder != nullptr) {
+            std::string path = folder;
+            if (!path.empty() && path.back() != '/') {
+                path += '/';
+            }
+            result = PBString(path);
+            g_free(folder);
+        }
+    }
+    gtk_widget_destroy(dialog);
+    return result;
 }
 
 /// M7b's fourth GUI slice: `Menu`. `GtkMenuBar` is the natural GTK3 fit for

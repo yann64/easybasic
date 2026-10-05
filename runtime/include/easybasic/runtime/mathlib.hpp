@@ -80,4 +80,24 @@ inline std::int64_t pbRandom(std::int64_t maxValue, std::int64_t minValue = 0) {
     return dist(detail::pbRandomEngine());
 }
 
+/// `RGB`/`RGBA`/`Red`/`Green`/`Blue`/`Alpha` - a prerequisite for the
+/// Requester family's own `ColorRequester`/`FontRequester` (M7b), neither
+/// of which existed in this project before. Oracle-verified packing (a
+/// `Debug RGB(10,20,30)` probe, decoded): `0x00BBGGRR` - the classic Win32
+/// `COLORREF` byte order (red in the lowest byte), not `0x00RRGGBB` as the
+/// argument order alone might suggest. `RGBA` is the same layout with
+/// alpha in the highest byte (`0xAABBGGRR`), confirmed the same way.
+inline std::int64_t pbRGB(std::int64_t r, std::int64_t g, std::int64_t b) {
+    return (r & 0xff) | ((g & 0xff) << 8) | ((b & 0xff) << 16);
+}
+
+inline std::int64_t pbRGBA(std::int64_t r, std::int64_t g, std::int64_t b, std::int64_t a) {
+    return pbRGB(r, g, b) | ((a & 0xff) << 24);
+}
+
+inline std::int64_t pbRed(std::int64_t color) { return color & 0xff; }
+inline std::int64_t pbGreen(std::int64_t color) { return (color >> 8) & 0xff; }
+inline std::int64_t pbBlue(std::int64_t color) { return (color >> 16) & 0xff; }
+inline std::int64_t pbAlpha(std::int64_t color) { return (color >> 24) & 0xff; }
+
 } // namespace easybasic::runtime

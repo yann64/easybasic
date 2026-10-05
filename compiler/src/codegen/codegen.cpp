@@ -101,6 +101,8 @@ std::string mathLibRuntimeName(const std::string& lowerName) {
         {"atan", "pbATan"},   {"atan2", "pbATan2"}, {"exp", "pbExp"},   {"log", "pbLog"},
         {"log10", "pbLog10"}, {"round", "pbRound"}, {"int", "pbInt"},
         {"random", "pbRandom"}, {"randomseed", "pbRandomSeed"},
+        {"rgb", "pbRGB"}, {"rgba", "pbRGBA"}, {"red", "pbRed"}, {"green", "pbGreen"},
+        {"blue", "pbBlue"}, {"alpha", "pbAlpha"},
     };
     return "easybasic::runtime::" + names.at(lowerName);
 }
@@ -179,6 +181,12 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"setgadgettext", "pbSetGadgetText"},   {"getgadgettext", "pbGetGadgetText"},
         {"setgadgetstate", "pbSetGadgetState"}, {"getgadgetstate", "pbGetGadgetState"},
         {"messagerequester", "pbMessageRequester"},
+        {"colorrequester", "pbColorRequester"}, {"fontrequester", "pbFontRequester"},
+        {"selectedfontname", "pbSelectedFontName"}, {"selectedfontsize", "pbSelectedFontSize"},
+        {"selectedfontstyle", "pbSelectedFontStyle"}, {"selectedfontcolor", "pbSelectedFontColor"},
+        {"inputrequester", "pbInputRequester"}, {"openfilerequester", "pbOpenFileRequester"},
+        {"savefilerequester", "pbSaveFileRequester"}, {"nextselectedfilename", "pbNextSelectedFileName"},
+        {"selectedfilepattern", "pbSelectedFilePattern"}, {"pathrequester", "pbPathRequester"},
         {"windowid", "pbWindowID"},
         {"createmenu", "pbCreateMenu"},     {"menutitle", "pbMenuTitle"},
         {"menuitem", "pbMenuItem"},         {"menubar", "pbMenuBar"},
