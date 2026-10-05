@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Ten slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Eleven slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -3231,4 +3231,109 @@ this slice - one genuine test bug caught and fixed along the way (a missing `Clo
 `CloseWindow()` in this slice's own first unit test, left a stale `gadgetListStack()` frame that corrupted
 the *next* test's own gadget placement - a real, if narrow, instance of the already-documented
 mismatched-Open/Close-pairs gap, triggered by this slice's own test code rather than by a real PB program).
+
+## M7b Implementation Notes (GUI core, eleventh slice: `SplitterGadget`)
+
+**Scope landed**: `SplitterGadget` itself, plus two brand new, generic, dispatch-based functions this
+slice introduces - `GetGadgetAttribute`/`SetGadgetAttribute` - scoped to Splitter's own four attributes
+(`FirstMinimumSize`/`SecondMinimumSize`/`FirstGadget`/`SecondGadget`) for now; real PB's own docs list
+many more gadget types sharing both functions, none implemented yet. `GetGadgetState`/`SetGadgetState`
+(already generic, dispatch-based since M7b's tenth slice) gained a `GtkPaned` branch alongside their
+existing ones, for the divider's own position.
+
+**A fundamentally different shape from the ninth/tenth slices' own "gadget-list nesting" family,
+confirmed directly from the real docs before writing any code**: `SplitterGadget(#Gadget, X, Y, W, H,
+#Gadget1, #Gadget2 [, Options])` takes two *already-existing* gadgets directly as arguments, rather than
+being an `OpenGadgetList`/`CloseGadgetList` target gadgets get created *into* - real PB's own official
+examples create `#Gadget1`/`#Gadget2` with a throwaway `0, 0, 0, 0` position/size first, since the
+Splitter determines their real position/size itself. `GtkPaned` is the natural match: each child is
+removed from whatever parent `placeGadget` originally put it into (a window's own top-level `GtkFixed`,
+or a container/panel's own inner one - this works unchanged either way) and packed into the new `GtkPaned`
+instead.
+
+**A real, two-site bug caught only by actually running the oracle comparison, not by compiling or
+reasoning about the code alone**: `gtk_container_remove` drops the *old* parent's own reference on a
+widget - since nothing else in this project's own runtime ever takes a reference of its own on a plain
+gadget widget, that was always the *only* reference, so the first attempt silently destroyed both
+`#Gadget1`/`#Gadget2` the instant they were removed from their old parent, before `gtk_paned_pack1`/
+`pack2` ever got a chance to adopt them - surfaced as a real, unprompted `Gtk-CRITICAL **:
+gtk_paned_pack1: assertion 'GTK_IS_WIDGET (child)' failed` the moment the oracle-comparison smoke test
+actually ran (never caught by compiling pbcxx cleanly, since nothing about the C++ itself was wrong -
+only its *runtime* reference-counting behavior). Fixed with `g_object_ref` immediately before
+`gtk_container_remove`, `g_object_unref` immediately after the pack call hands ownership back to the new
+parent - the exact same bracketing `SetGadgetAttribute`'s own `FirstGadget`/`SecondGadget` replacement
+case already needed independently (and initially had too, for its own *new* child specifically, caught
+the same way - the *old* child's own removal was correct from the start, written with this lesson already
+in mind, but the *new* child's own removal from *its* prior parent made the identical mistake once more
+before being caught by the same oracle run).
+
+**Orientation, oracle-verified directly rather than assumed from the flag's own name alone**:
+`#PB_Splitter_Vertical`'s own default divider position (no explicit `SetGadgetState`) is half of the
+Splitter's own *width* - confirmed against a default (no-flag) Splitter's own default position being half
+its own *height* instead - meaning `Vertical` means "the divider bar itself is vertical" (panes side by
+side, `GTK_ORIENTATION_HORIZONTAL` for `GtkPaned`), the opposite naming convention from `ContainerGadget`'s
+own shadow-type flags (whose own names describe the *border*, not an axis) - genuinely easy to get backward
+without checking, which is exactly why it was checked. A related, smaller fix the same comparison run
+caught: `gtk_paned_new` doesn't pick a sensible default divider position on its own this early (its real
+natural position depends on a size allocation that hasn't happened yet) - `gtk_paned_set_position` is
+called explicitly at creation time with half of whichever dimension the resolved orientation splits, to
+match the oracle's own default exactly rather than leaving GTK's own arbitrary starting value in place.
+
+**`FirstFixed`/`SecondFixed`, oracle-verified directly via `ResizeGadget`**: a `FirstFixed` Splitter's own
+divider position (pixels from the start) stays unchanged after widening it with `ResizeGadget` - maps onto
+`gtk_paned_pack1`/`pack2`'s own `resize` parameter (the fixed pane doesn't grow/shrink when the Splitter
+itself is resized, the other one absorbs the difference) - `shrink` is unconditionally `TRUE` either way,
+so `FirstMinimumSize`/`SecondMinimumSize` can still take effect (real PB's own docs describing a
+configurable minimum size would be meaningless otherwise). This resolved `resize` boolean is tagged
+directly on the `GtkPaned` itself (`splitterFirstResizeKey`/`SecondResizeKey`) since `GtkPaned` has no
+public getter to read a child's own already-packed `resize` property back from - needed so
+`SetGadgetAttribute`'s own gadget-replacement case can re-pack a *new* child with the *same* resize
+behavior the Splitter was originally created with, not silently reset it to `TRUE`.
+
+**A real, narrow divergence from "harmless failure" found and deliberately not replicated**: unlike
+every other "doesn't exist" case this project has implemented so far (`ContainerGadget`/`AddGadgetItem`/
+etc., all harmless `0`s), a `SplitterGadget` whose own `#Gadget1`/`#Gadget2` doesn't exist at all is a
+real, fatal debugger error in real PB ("The specified #Gadget is not initialised.") - as is
+`GetGadgetAttribute`/`SetGadgetAttribute` on a genuinely unknown `#Gadget` (though *not* on one that
+exists but simply doesn't support the given attribute, which *is* a harmless `0` - oracle-verified both
+ways, a real, meaningful distinction). This project's own already-established stance (not replicating
+most debugger-fatal errors - see `placeGadget`'s own doc comment) applies here too: both return `0`
+harmlessly instead, and the golden e2e case below deliberately excludes both exact fatal-error-triggering
+calls (since they'd crash the *oracle* itself mid-comparison), covering them with dedicated Catch2 unit
+tests instead.
+
+**`SetGadgetAttribute`'s own `FirstGadget`/`SecondGadget` replacement, oracle-verified directly**: the
+*old* child is not freed - it's reparented back onto the window containing the Splitter (read via the
+Splitter's own pre-existing `gadgetWindowIdKey()` tag), confirmed via `IsGadget` staying true and the
+widget's own real parent becoming the window's top-level `GtkFixed` again. Real PB's own docs don't say
+exactly where it lands, only that it isn't destroyed, so `(0, 0)` is used - arbitrary but harmless, and a
+caller that cares can `ResizeGadget` it afterward the same way real PB code would reposition it manually
+too. `FirstGadget`/`SecondGadget`'s own *query* side needs no new state at all: `gtk_paned_get_child1`/
+`get_child2` retrieve the real child widget directly, and its own PB gadget ID is already tagged on it via
+`gadgetIdKey()` (set by `placeGadget` itself, back when it was first created) - reused as-is, nothing new
+to track.
+
+**`#PB_Splitter_Separator`'s own "3D pattern in the separator bar" is accepted but not acted on** - a
+rare case in this project where the oracle-verified cosmetic flag genuinely has no portable GTK mapping to
+reach for (unlike `ContainerGadget`'s own shadow-type flags, which map cleanly onto `GtkFrame`'s own
+vocabulary): GTK's theme engine already owns a `GtkPaned` handle's appearance, with no "always render a 3D
+pattern regardless of theme" knob exposed to override it. No `EventType()` is documented for this gadget
+at all either (unlike `PanelGadget`'s own `Change`/`Resize`) - confirmed by its own absence from
+`SplitterGadget.html`'s own remarks - so no signal handler is connected for it at all, and
+`SetGadgetState` needs no blocking-signal dance either (nothing to spuriously fire in the first place).
+
+**Testing**: six new `runtime_guilib_test.cpp` cases - the orientation-default-position behavior (both
+ways, with a direct `gtk_orientable_get_orientation` check), reparenting (confirmed via `gtk_paned_get_
+child1`/`get_child2` and the child's own real GTK parent), `GetGadgetState`/`SetGadgetState`'s own pixel
+round-trip, `FirstFixed`'s own resize behavior, `GetGadgetAttribute`/`SetGadgetAttribute` covering all
+four attributes plus their own harmless-failure cases, and the `FirstGadget` replacement's own reparent-
+not-destroy behavior. One new golden e2e case (`tests/e2e/gui_splitter`) exercises the same creation/
+orientation/attribute sequence end to end through `pbcxx` itself, confirmed line-for-line (modulo the
+same pre-existing `IsGadget`-handle-vs-`1` simplification, plus one new, equally deliberate divergence -
+`SetGadgetAttribute`'s own undocumented, PB-internal-garbage return value, where this project returns a
+clean `1` instead, the same already-established convention `ClearGadgetItems`/`SetGadgetItemText` etc.
+already use for their own "no documented return value" case) against the real oracle, with both
+fatal-error-triggering calls deliberately left out of the golden file for the reason above. 388 tests
+pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean - the ref-counting fix
+above mattering doubly here), including the 381 that predate this slice.
 

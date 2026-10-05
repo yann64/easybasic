@@ -434,6 +434,26 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"setgadgetitemtext", TypeSuffix::Integer,
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String, TypeSuffix::Integer}, 3},
+        // M7b's eleventh GUI slice: SplitterGadget - unlike Container/
+        // Panel, this isn't a gadget-list nesting type at all: it takes
+        // two *already-existing* gadgets (#Gadget1/#Gadget2) and
+        // reparents them into itself, oracle-verified via its own real
+        // syntax. `Options` is optional (oracle-verified: a bare seven-
+        // argument call defaults to no flags at all - a horizontal
+        // divider, no 3D pattern, both panes resizing together).
+        // `GetGadgetAttribute`/`SetGadgetAttribute` are brand new, generic,
+        // dispatch-based functions (like `AddGadgetItem`'s own family) -
+        // scoped to Splitter's own four attributes for now, since it's
+        // the only gadget type this project has that documents using
+        // them; real PB's own docs list many more gadget types sharing
+        // the same two functions, none implemented yet.
+        {"splittergadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         7},
+        {"getgadgetattribute", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"setgadgetattribute", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -573,6 +593,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "containergadget", "opengadgetlist", "closegadgetlist",
         "panelgadget", "addgadgetitem", "countgadgetitems", "removegadgetitem", "cleargadgetitems",
         "getgadgetitemtext", "setgadgetitemtext",
+        "splittergadget", "getgadgetattribute", "setgadgetattribute",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -771,6 +792,21 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_container_raised", 2},
         {"pb_container_single", 4},
         {"pb_container_double", 8},
+        // SplitterGadget (M7b's eleventh GUI slice) - oracle-verified via
+        // a direct `Debug #PB_Splitter_Xxx` probe. The two flag groups
+        // are independent bits of each other (both `#PB_Splitter_Vertical`
+        // and the Fixed flags can combine), but the `GetGadgetAttribute`/
+        // `SetGadgetAttribute` constants are a *separate* numbering
+        // (1-4, not bit flags - only ever used one at a time, never
+        // combined).
+        {"pb_splitter_vertical", 1},
+        {"pb_splitter_separator", 2},
+        {"pb_splitter_firstfixed", 4},
+        {"pb_splitter_secondfixed", 8},
+        {"pb_splitter_firstminimumsize", 1},
+        {"pb_splitter_secondminimumsize", 2},
+        {"pb_splitter_firstgadget", 3},
+        {"pb_splitter_secondgadget", 4},
     };
     return table;
 }

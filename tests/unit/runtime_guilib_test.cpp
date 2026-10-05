@@ -1427,3 +1427,167 @@ TEST_CASE("Freeing a Panel recursively frees every gadget nested in every tab, t
 
     pbCloseWindow(510);
 }
+
+TEST_CASE("SplitterGadget's own default divider position is half of whichever dimension its "
+          "orientation splits",
+          "[runtime][guilib]") {
+    // Oracle-verified: #PB_Splitter_Vertical means the divider *bar*
+    // itself is vertical (panes side by side, split by width) - the
+    // opposite of what the flag's own name might suggest at first
+    // glance, confirmed directly rather than assumed (a default, no-flag
+    // Splitter's own position is half its own *height* instead).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(600, 10, 10, 400, 400, PBString("Test"));
+
+    pbButtonGadget(1, 0, 0, 0, 0, PBString("B1"));
+    pbButtonGadget(2, 0, 0, 0, 0, PBString("B2"));
+    CHECK(pbSplitterGadget(10, 10, 10, 300, 200, 1, 2, 1 /* #PB_Splitter_Vertical */) == 1);
+    CHECK(pbGetGadgetState(10) == 150); // half of width
+
+    pbButtonGadget(3, 0, 0, 0, 0, PBString("B3"));
+    pbButtonGadget(4, 0, 0, 0, 0, PBString("B4"));
+    CHECK(pbSplitterGadget(11, 10, 220, 300, 200, 3, 4, 0) == 1);
+    CHECK(pbGetGadgetState(11) == 100); // half of height, no Vertical flag
+
+    GtkWidget* paned = detail::gadgetTable().at(10);
+    CHECK(gtk_orientable_get_orientation(GTK_ORIENTABLE(paned)) == GTK_ORIENTATION_HORIZONTAL);
+    GtkWidget* panedDefault = detail::gadgetTable().at(11);
+    CHECK(gtk_orientable_get_orientation(GTK_ORIENTABLE(panedDefault)) == GTK_ORIENTATION_VERTICAL);
+
+    pbCloseWindow(600);
+}
+
+TEST_CASE("SplitterGadget reparents its own two already-existing child gadgets, which stay "
+          "placed into its own window-level Fixed beforehand",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(601, 10, 10, 400, 400, PBString("Test"));
+
+    pbButtonGadget(1, 0, 0, 0, 0, PBString("B1"));
+    pbButtonGadget(2, 0, 0, 0, 0, PBString("B2"));
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(1)) == detail::windowFixedTable().at(601));
+
+    CHECK(pbSplitterGadget(10, 10, 10, 300, 200, 1, 2) == 1);
+
+    auto* paned = GTK_PANED(detail::gadgetTable().at(10));
+    CHECK(gtk_paned_get_child1(paned) == detail::gadgetTable().at(1));
+    CHECK(gtk_paned_get_child2(paned) == detail::gadgetTable().at(2));
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(1)) == GTK_WIDGET(paned));
+
+    // A #Gadget1/#Gadget2 that doesn't exist is a harmless failure, not
+    // a crash.
+    CHECK(pbSplitterGadget(11, 10, 220, 300, 200, 1, 9999) == 0);
+
+    pbCloseWindow(601);
+}
+
+TEST_CASE("GetGadgetState/SetGadgetState round-trip a Splitter's own divider position in pixels",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(602, 10, 10, 400, 400, PBString("Test"));
+    pbButtonGadget(1, 0, 0, 0, 0, PBString("B1"));
+    pbButtonGadget(2, 0, 0, 0, 0, PBString("B2"));
+    pbSplitterGadget(10, 10, 10, 300, 200, 1, 2);
+
+    CHECK(pbSetGadgetState(10, 77) == 1);
+    CHECK(pbGetGadgetState(10) == 77);
+
+    pbCloseWindow(602);
+}
+
+TEST_CASE("FirstFixed/SecondFixed keep that pane's own size unchanged when the Splitter itself "
+          "is resized",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: a FirstFixed Splitter's own divider
+    // position (pixels from the start) stays unchanged after widening it
+    // with ResizeGadget - the first pane keeps its own size, the second
+    // absorbs the difference.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(603, 10, 10, 500, 500, PBString("Test"));
+    pbButtonGadget(1, 0, 0, 0, 0, PBString("B1"));
+    pbButtonGadget(2, 0, 0, 0, 0, PBString("B2"));
+    pbSplitterGadget(10, 10, 10, 300, 200, 1, 2, 1 | 4 /* Vertical | FirstFixed */);
+
+    CHECK(pbGetGadgetState(10) == 150);
+    pbResizeGadget(10, 10, 10, 400, 200);
+    CHECK(pbGetGadgetState(10) == 150); // unchanged - gadget1 stayed fixed
+
+    pbCloseWindow(603);
+}
+
+TEST_CASE("GetGadgetAttribute/SetGadgetAttribute report and configure a Splitter's own two panes",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(604, 10, 10, 400, 400, PBString("Test"));
+    pbButtonGadget(1, 0, 0, 0, 0, PBString("B1"));
+    pbButtonGadget(2, 0, 0, 0, 0, PBString("B2"));
+    pbSplitterGadget(10, 10, 10, 300, 200, 1, 2);
+
+    CHECK(pbGetGadgetAttribute(10, 3 /* #PB_Splitter_FirstGadget */) == 1);
+    CHECK(pbGetGadgetAttribute(10, 4 /* #PB_Splitter_SecondGadget */) == 2);
+
+    CHECK(pbSetGadgetAttribute(10, 1 /* #PB_Splitter_FirstMinimumSize */, 42) == 1);
+    CHECK(pbGetGadgetAttribute(10, 1) == 42);
+    CHECK(pbSetGadgetAttribute(10, 2 /* #PB_Splitter_SecondMinimumSize */, 24) == 1);
+    CHECK(pbGetGadgetAttribute(10, 2) == 24);
+
+    // No #PB_Splitter_Vertical flag here, so the default orientation
+    // splits by height - FirstMinimumSize applies to the child's own
+    // minimum *height*, not width.
+    int unusedW = -1;
+    int minH = -1;
+    gtk_widget_get_size_request(detail::gadgetTable().at(1), &unusedW, &minH);
+    CHECK(minH == 42);
+
+    // Oracle-verified unsupported-attribute and non-Splitter/unknown-
+    // gadget cases are all a harmless 0, not a crash (a genuinely
+    // *unknown* #Gadget is a real, fatal debugger error in real PB
+    // itself - this project's own established "not worth modeling every
+    // misuse precisely" stance, see placeGadget's own doc comment).
+    CHECK(pbGetGadgetAttribute(10, 99) == 0);
+    CHECK(pbGetGadgetAttribute(1, 3) == 0); // not a Splitter at all
+    CHECK(pbGetGadgetAttribute(9999, 3) == 0); // unknown gadget
+    CHECK(pbSetGadgetAttribute(10, 99, 1) == 0);
+    CHECK(pbSetGadgetAttribute(1, 1, 1) == 0);
+
+    pbCloseWindow(604);
+}
+
+TEST_CASE("SetGadgetAttribute's FirstGadget/SecondGadget swap a pane's own child without "
+          "destroying the old one - it's reparented back onto the window instead",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: replacing a pane's own gadget doesn't
+    // free it - IsGadget stays true, and it's put back onto the window
+    // that contains the Splitter.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(605, 10, 10, 400, 400, PBString("Test"));
+    pbButtonGadget(1, 0, 0, 0, 0, PBString("B1"));
+    pbButtonGadget(2, 0, 0, 0, 0, PBString("B2"));
+    pbSplitterGadget(10, 10, 10, 300, 200, 1, 2);
+
+    pbButtonGadget(3, 0, 0, 0, 0, PBString("B3"));
+    CHECK(pbSetGadgetAttribute(10, 3 /* #PB_Splitter_FirstGadget */, 3) == 1);
+    CHECK(pbGetGadgetAttribute(10, 3) == 3);
+
+    CHECK(pbIsGadget(1) == 1); // the old gadget is not destroyed
+    CHECK(pbIsGadget(3) == 1);
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(1)) == detail::windowFixedTable().at(605));
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(3)) == detail::gadgetTable().at(10));
+
+    // Replacing with an unknown #Gadget is a harmless failure.
+    CHECK(pbSetGadgetAttribute(10, 3, 9999) == 0);
+
+    pbCloseWindow(605);
+}

@@ -277,6 +277,22 @@ inline const char* toolBarWindowIdKey() { return "pbcxx-toolbar-window-id"; }
 // every gadget nested inside it, at any depth, the same way GTK itself
 // already recursively destroys their *widgets*.
 inline const char* gadgetContainerIdKey() { return "pbcxx-gadget-container-id"; }
+// M7b's eleventh GUI slice: `SplitterGadget`. The minimum size (in
+// pixels) each of its own two panes should keep, tagged directly on the
+// `GtkPaned` itself (not its current child - `SetGadgetAttribute`'s own
+// `#PB_Splitter_FirstGadget`/`SecondGadget` can swap a pane's child out
+// later, and a previously-set minimum size still applies to whatever
+// replaces it, oracle-verified real PB's own docs never say it resets).
+inline const char* splitterFirstMinSizeKey() { return "pbcxx-splitter-first-minsize"; }
+inline const char* splitterSecondMinSizeKey() { return "pbcxx-splitter-second-minsize"; }
+// `#PB_Splitter_FirstFixed`/`SecondFixed`'s own resolved `gtk_paned_pack1`/
+// `pack2` "resize" bool, tagged the same way - `SetGadgetAttribute`'s own
+// `FirstGadget`/`SecondGadget` replacement needs to re-pack the new child
+// with the *same* resize behavior the Splitter was created with, and
+// GtkPaned has no public getter for a child's own already-packed
+// "resize" property to read it back from instead.
+inline const char* splitterFirstResizeKey() { return "pbcxx-splitter-first-resize"; }
+inline const char* splitterSecondResizeKey() { return "pbcxx-splitter-second-resize"; }
 
 /// The last known position/size for one window - `configure-event` fires
 /// for *any* geometry change without saying which part changed, so this is
@@ -1225,6 +1241,226 @@ inline std::int64_t pbSetGadgetItemText(std::int64_t gadgetId, std::int64_t elem
     return 1;
 }
 
+/// M7b's eleventh GUI slice: `SplitterGadget` - a resizable divider
+/// between two *already-existing* gadgets, oracle-verified via its own
+/// real syntax to be fundamentally different from `ContainerGadget`/
+/// `PanelGadget`: it takes `#Gadget1`/`#Gadget2` directly, rather than
+/// being a gadget-list nesting target gadgets are created *into* -
+/// `GtkPaned` is the exact match. `#Gadget1`/`#Gadget2` must already
+/// exist (real PB's own official examples create them with a throwaway
+/// `0,0,0,0` position/size first, since the Splitter determines their
+/// real position/size itself) - each is removed from its own current
+/// parent (whatever `placeGadget` originally put it into) and packed
+/// into the new `GtkPaned` instead.
+///
+/// **Orientation, oracle-verified directly rather than assumed from the
+/// flag's own name alone**: `#PB_Splitter_Vertical`'s default divider
+/// position (no explicit `SetGadgetState`) is half of the Splitter's own
+/// *width*, confirmed against a default (no-flag) Splitter's own default
+/// position being half its own *height* instead - meaning `Vertical`
+/// means "the divider bar itself is vertical" (panes side by side,
+/// `GTK_ORIENTATION_HORIZONTAL` for `GtkPaned`), the opposite naming
+/// convention from `ContainerGadget`'s own shadow-type flags, confirmed
+/// this way rather than guessed from the name.
+///
+/// **`FirstFixed`/`SecondFixed`**: oracle-verified directly (a
+/// `FirstFixed` Splitter's own divider position, in pixels from the
+/// start, stays unchanged after widening it with `ResizeGadget`) to map
+/// onto `gtk_paned_pack1`/`pack2`'s own `resize` parameter - the fixed
+/// pane doesn't grow/shrink when the Splitter itself is resized, the
+/// other one absorbs the difference. `shrink` is unconditionally `TRUE`
+/// either way, so `FirstMinimumSize`/`SecondMinimumSize` (set via
+/// `SetGadgetAttribute` below) can still take effect - real PB's own
+/// docs describe configuring a minimum size at all, which would be
+/// meaningless if a pane could never be dragged smaller than its natural
+/// size in the first place.
+///
+/// **`#PB_Splitter_Separator`'s own "3D pattern in the separator bar" is
+/// accepted but not acted on** - purely cosmetic (GTK's own theme engine
+/// already decides a `GtkPaned` handle's appearance; there's no portable
+/// "always render a 3D pattern regardless of theme" knob to hook into),
+/// the same kind of deliberate simplification `ContainerGadget`'s own
+/// shadow-type flags are a *positive* example of doing properly - this
+/// one genuinely has no equivalent to map onto.
+///
+/// No `EventType()` is documented for this gadget at all (unlike
+/// `PanelGadget`'s own `#PB_EventType_Change`/`Resize`) - oracle-verified
+/// by its own absence from `SplitterGadget.html`'s own remarks, so no
+/// signal handler is connected here at all.
+inline std::int64_t pbSplitterGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                      std::int64_t height, std::int64_t gadget1Id, std::int64_t gadget2Id,
+                                      std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    auto it1 = detail::gadgetTable().find(gadget1Id);
+    auto it2 = detail::gadgetTable().find(gadget2Id);
+    if (it1 == detail::gadgetTable().end() || it2 == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* child1 = it1->second;
+    GtkWidget* child2 = it2->second;
+    GtkWidget* paned = gtk_paned_new((flags & 1) != 0 ? GTK_ORIENTATION_HORIZONTAL : GTK_ORIENTATION_VERTICAL);
+
+    // `gtk_container_remove` drops the *old* parent's own reference - if
+    // that was the only one (always true here, nothing else of this
+    // project's own ever takes a reference of its own on a plain gadget
+    // widget), the child is destroyed on the spot unless a reference of
+    // its own is taken first, exactly like `pbSetGadgetAttribute`'s own
+    // replacement case below already does.
+    GtkWidget* oldParent1 = gtk_widget_get_parent(child1);
+    if (oldParent1 != nullptr) {
+        g_object_ref(child1);
+        gtk_container_remove(GTK_CONTAINER(oldParent1), child1);
+    }
+    GtkWidget* oldParent2 = gtk_widget_get_parent(child2);
+    if (oldParent2 != nullptr) {
+        g_object_ref(child2);
+        gtk_container_remove(GTK_CONTAINER(oldParent2), child2);
+    }
+    gboolean resize1 = (flags & 4) == 0 ? TRUE : FALSE;
+    gboolean resize2 = (flags & 8) == 0 ? TRUE : FALSE;
+    gtk_paned_pack1(GTK_PANED(paned), child1, resize1, TRUE);
+    gtk_paned_pack2(GTK_PANED(paned), child2, resize2, TRUE);
+    if (oldParent1 != nullptr) {
+        g_object_unref(child1);
+    }
+    if (oldParent2 != nullptr) {
+        g_object_unref(child2);
+    }
+    g_object_set_data(G_OBJECT(paned), detail::splitterFirstResizeKey(),
+                       reinterpret_cast<gpointer>(static_cast<std::intptr_t>(resize1)));
+    g_object_set_data(G_OBJECT(paned), detail::splitterSecondResizeKey(),
+                       reinterpret_cast<gpointer>(static_cast<std::intptr_t>(resize2)));
+    // Oracle-verified: a freshly created Splitter's own divider starts at
+    // the halfway point of whichever dimension its own orientation
+    // splits (width for Vertical/side-by-side, height otherwise) - GTK's
+    // own `gtk_paned_new` doesn't pick this on its own (its own natural
+    // position depends on a size allocation that hasn't happened yet,
+    // this early), so it's set explicitly here instead.
+    gtk_paned_set_position(GTK_PANED(paned),
+                           static_cast<int>(((flags & 1) != 0 ? width : height) / 2));
+
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, paned) ? 1 : 0;
+}
+
+/// `GetGadgetAttribute(#Gadget, Attribute)` - a brand new, generic,
+/// dispatch-based function (the same shape `AddGadgetItem`'s own family
+/// already has), scoped to `SplitterGadget`'s own four attributes for
+/// now - real PB's own docs list many more gadget types sharing this
+/// function, none implemented yet. Oracle-verified: an unsupported
+/// attribute (or a `#Gadget` that isn't a `Splitter` at all) harmlessly
+/// returns `0` - a *nonexistent* `#Gadget` is instead a real, fatal
+/// debugger error, not replicated here (this project's own established
+/// stance - see `placeGadget`'s own doc comment), so this returns `0`
+/// for that case too, the same as an unsupported one.
+inline std::int64_t pbGetGadgetAttribute(std::int64_t gadgetId, std::int64_t attribute) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end() || GTK_IS_PANED(it->second) == 0) {
+        return 0;
+    }
+    auto* paned = GTK_PANED(it->second);
+    switch (attribute) {
+        case 1: // #PB_Splitter_FirstMinimumSize
+            return reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(paned), detail::splitterFirstMinSizeKey()));
+        case 2: // #PB_Splitter_SecondMinimumSize
+            return reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(paned), detail::splitterSecondMinSizeKey()));
+        case 3: { // #PB_Splitter_FirstGadget
+            GtkWidget* child = gtk_paned_get_child1(paned);
+            return child == nullptr ? 0
+                                     : reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(child), detail::gadgetIdKey()));
+        }
+        case 4: { // #PB_Splitter_SecondGadget
+            GtkWidget* child = gtk_paned_get_child2(paned);
+            return child == nullptr ? 0
+                                     : reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(child), detail::gadgetIdKey()));
+        }
+        default:
+            return 0;
+    }
+}
+
+/// `SetGadgetAttribute(#Gadget, Attribute, Value)` - see
+/// `pbGetGadgetAttribute`'s own doc comment for the general shape.
+/// `FirstMinimumSize`/`SecondMinimumSize` apply via `gtk_widget_set_size_
+/// request` on whichever dimension the Splitter's own orientation makes
+/// relevant (width for a `Vertical` - side-by-side - Splitter, height
+/// otherwise), preserving the *other* dimension's own existing request.
+/// `FirstGadget`/`SecondGadget` replace a pane's own child with a
+/// different, already-existing gadget - oracle-verified directly: the
+/// *old* child is not freed, it's reparented back onto the window that
+/// contains the Splitter (read via the Splitter's own `gadgetWindowIdKey()`
+/// tag), landing at `(0, 0)` - real PB's own docs don't specify exactly
+/// where, only that it isn't destroyed, so an arbitrary but harmless
+/// placement is enough; a caller that cares can `ResizeGadget` it
+/// afterward, the same way real PB code would reposition it manually too.
+inline std::int64_t pbSetGadgetAttribute(std::int64_t gadgetId, std::int64_t attribute, std::int64_t value) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end() || GTK_IS_PANED(it->second) == 0) {
+        return 0;
+    }
+    auto* paned = GTK_PANED(it->second);
+    GtkWidget* panedWidget = it->second;
+    switch (attribute) {
+        case 1: // #PB_Splitter_FirstMinimumSize
+        case 2: { // #PB_Splitter_SecondMinimumSize
+            const char* key =
+                attribute == 1 ? detail::splitterFirstMinSizeKey() : detail::splitterSecondMinSizeKey();
+            g_object_set_data(G_OBJECT(paned), key, reinterpret_cast<gpointer>(value));
+            GtkWidget* child = attribute == 1 ? gtk_paned_get_child1(paned) : gtk_paned_get_child2(paned);
+            if (child == nullptr) {
+                return 0;
+            }
+            int curW = -1;
+            int curH = -1;
+            gtk_widget_get_size_request(child, &curW, &curH);
+            if (gtk_orientable_get_orientation(GTK_ORIENTABLE(paned)) == GTK_ORIENTATION_HORIZONTAL) {
+                gtk_widget_set_size_request(child, static_cast<int>(value), curH);
+            } else {
+                gtk_widget_set_size_request(child, curW, static_cast<int>(value));
+            }
+            return 1;
+        }
+        case 3: // #PB_Splitter_FirstGadget
+        case 4: { // #PB_Splitter_SecondGadget
+            auto newIt = detail::gadgetTable().find(value);
+            if (newIt == detail::gadgetTable().end()) {
+                return 0;
+            }
+            GtkWidget* oldChild = attribute == 3 ? gtk_paned_get_child1(paned) : gtk_paned_get_child2(paned);
+            GtkWidget* newChild = newIt->second;
+            GtkWidget* newChildParent = gtk_widget_get_parent(newChild);
+            if (newChildParent != nullptr) {
+                g_object_ref(newChild);
+                gtk_container_remove(GTK_CONTAINER(newChildParent), newChild);
+            }
+            if (oldChild != nullptr) {
+                g_object_ref(oldChild);
+                gtk_container_remove(GTK_CONTAINER(panedWidget), oldChild);
+                auto windowId =
+                    reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(panedWidget), detail::gadgetWindowIdKey()));
+                auto fixedIt = detail::windowFixedTable().find(windowId);
+                if (fixedIt != detail::windowFixedTable().end()) {
+                    gtk_fixed_put(GTK_FIXED(fixedIt->second), oldChild, 0, 0);
+                }
+                g_object_unref(oldChild);
+            }
+            const char* resizeKey = attribute == 3 ? detail::splitterFirstResizeKey() : detail::splitterSecondResizeKey();
+            auto resize = static_cast<gboolean>(
+                reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(panedWidget), resizeKey)));
+            if (attribute == 3) {
+                gtk_paned_pack1(paned, newChild, resize, TRUE);
+            } else {
+                gtk_paned_pack2(paned, newChild, resize, TRUE);
+            }
+            if (newChildParent != nullptr) {
+                g_object_unref(newChild);
+            }
+            return 1;
+        }
+        default:
+            return 0;
+    }
+}
+
 /// `OpenGadgetList(#Gadget [, Element])` - reopens a previously-created
 /// container as the current gadget-list target, so more gadgets can be
 /// added to it dynamically after its own matching `CloseGadgetList()`.
@@ -1422,6 +1658,13 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     if (GTK_IS_NOTEBOOK(it->second) != 0) {
         return gtk_notebook_get_current_page(GTK_NOTEBOOK(it->second));
     }
+    // `SplitterGadget` (M7b's eleventh GUI slice, a `GtkPaned`) reports
+    // its own divider position in pixels - oracle-verified via
+    // `SplitterGadget.html`'s own remarks ("Renvoie la position de la
+    // barre de séparation, en pixels").
+    if (GTK_IS_PANED(it->second) != 0) {
+        return gtk_paned_get_position(GTK_PANED(it->second));
+    }
     if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {
         return 0;
     }
@@ -1446,6 +1689,14 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
         g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
         gtk_notebook_set_current_page(GTK_NOTEBOOK(it->second), static_cast<int>(state));
         g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
+        return 1;
+    }
+    // No signal to block here at all - `SplitterGadget` has no
+    // documented `EventType()` support of its own (see `pbSplitterGadget`'s
+    // own doc comment), so there's nothing a programmatic position change
+    // could spuriously fire in the first place.
+    if (GTK_IS_PANED(it->second) != 0) {
+        gtk_paned_set_position(GTK_PANED(it->second), static_cast<int>(state));
         return 1;
     }
     if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {
