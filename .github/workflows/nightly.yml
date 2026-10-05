@@ -10,8 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install valgrind
-        run: sudo apt-get update && sudo apt-get install -y valgrind
+      - name: Install valgrind, and GTK3/ayatana-appindicator3 dev files (M7b GUI unit tests)
+        # No `xvfb` here unlike ci.yml's own matching step - this job only
+        # *compiles* each e2e test's own input.pb under Valgrind (see the
+        # step below's own comment), never runs the resulting binary, so
+        # no live DISPLAY is ever needed, only GTK3's headers/pkg-config
+        # files for pbcxx's own compile-time check (`Sema::usesGuiLibrary()`)
+        # to succeed instead of refusing to compile a GUI program at all.
+        run: sudo apt-get update && sudo apt-get install -y valgrind libgtk-3-dev libayatana-appindicator3-dev
       - name: Configure
         run: cmake --preset linux-gcc
       - name: Build
