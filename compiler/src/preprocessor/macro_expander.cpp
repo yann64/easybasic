@@ -88,8 +88,60 @@ std::size_t MacroExpander::defineMacro(const std::vector<Token>& input, std::siz
     def.body = std::move(body);
     def.loc = defLoc;
     def.spelling = spelling;
-    macros_[name] = std::move(def); // Last definition for a given name wins - not oracle-verified, a pragmatic default.
+    // A Macro declared inside a Module's own body belongs to that module's
+    // namespace, the identical mangled-key convention Sema's own
+    // StructureDecl/InterfaceDecl/etc. cases already use - see
+    // resolveBareMacroName's/resolveQualifiedMacroName's own doc comments
+    // for the lookup side. Declared inside DeclareModule specifically
+    // (not Module) makes it public, tracked in modulePublicMacros_ the
+    // same way Sema's own modulePublicMembers_ is - captured here, before
+    // mangling, exactly like Sema's own "capture the plain name just
+    // before visitStmt mangles it in place" pattern.
+    std::string key = name;
+    if (!currentModule_.empty()) {
+        if (insideDeclareModuleSection_) {
+            modulePublicMacros_[currentModule_].insert(name);
+        }
+        key = currentModule_ + "::" + name;
+    }
+    macros_[key] = std::move(def); // Last definition for a given name wins - not oracle-verified, a pragmatic default.
     return i;
+}
+
+std::string MacroExpander::resolveBareMacroName(const std::string& name) const {
+    if (!currentModule_.empty()) {
+        std::string ownKey = currentModule_ + "::" + name;
+        if (macros_.contains(ownKey)) {
+            return ownKey;
+        }
+    }
+    for (const std::string& imported : activeImports_) {
+        auto publicIt = modulePublicMacros_.find(imported);
+        if (publicIt != modulePublicMacros_.end() && publicIt->second.contains(name)) {
+            return imported + "::" + name;
+        }
+    }
+    if (currentModule_.empty() && macros_.contains(name)) {
+        return name;
+    }
+    return "";
+}
+
+std::string MacroExpander::resolveQualifiedMacroName(const std::string& moduleLower, const std::string& nameLower,
+                                                       const std::string& nameSpelling, SourceLoc loc) {
+    std::string key = moduleLower + "::" + nameLower;
+    if (!macros_.contains(key)) {
+        return ""; // Not a macro at all - could be a qualified variable/procedure/Structure/etc. reference instead.
+    }
+    if (moduleLower == currentModule_) {
+        return key; // A module's own code can always see its own macros, public or private.
+    }
+    auto publicIt = modulePublicMacros_.find(moduleLower);
+    if (publicIt != modulePublicMacros_.end() && publicIt->second.contains(nameLower)) {
+        return key;
+    }
+    diagnostics_.error(loc, "Module item '" + nameSpelling + "' is not declared as public.");
+    return "";
 }
 
 std::vector<Token> MacroExpander::expandTokens(const std::vector<Token>& input) {
@@ -106,6 +158,59 @@ std::vector<Token> MacroExpander::expandTokens(const std::vector<Token>& input) 
             i = defineMacro(input, i);
             continue;
         }
+        // Module/DeclareModule boundary tracking, purely for Macro's own
+        // namespacing (see resolveBareMacroName's/resolveQualifiedMacroName's
+        // own doc comments) - every one of these tokens is still passed
+        // through to `output` unchanged below (this pass has no other
+        // reason to care about them at all; the Parser handles the actual
+        // Module/DeclareModule grammar itself, completely independently).
+        if (input[i].kind == TokenKind::KwDeclareModule || input[i].kind == TokenKind::KwModule) {
+            bool isDeclareModule = input[i].kind == TokenKind::KwDeclareModule;
+            output.push_back(input[i]);
+            ++i;
+            if (i < input.size() && input[i].kind == TokenKind::Identifier) {
+                currentModule_ = toLower(input[i].text);
+                insideDeclareModuleSection_ = isDeclareModule;
+                if (!isDeclareModule) {
+                    // Saved/restored around Module's own body only -
+                    // DeclareModule can't contain UseModule/UnuseModule at
+                    // all in this project's own supported subset, so
+                    // entering one never needs to save anything.
+                    importsBeforeCurrentModule_ = activeImports_;
+                }
+                output.push_back(input[i]);
+                ++i;
+            }
+            continue;
+        }
+        if (input[i].kind == TokenKind::KwEndDeclareModule || input[i].kind == TokenKind::KwEndModule) {
+            if (input[i].kind == TokenKind::KwEndModule) {
+                activeImports_ = importsBeforeCurrentModule_;
+            }
+            currentModule_.clear();
+            insideDeclareModuleSection_ = false;
+            output.push_back(input[i]);
+            ++i;
+            continue;
+        }
+        if (input[i].kind == TokenKind::KwUseModule || input[i].kind == TokenKind::KwUnuseModule) {
+            bool isUse = input[i].kind == TokenKind::KwUseModule;
+            output.push_back(input[i]);
+            ++i;
+            if (i < input.size() && input[i].kind == TokenKind::Identifier) {
+                std::string importedLower = toLower(input[i].text);
+                if (isUse) {
+                    if (std::ranges::find(activeImports_, importedLower) == activeImports_.end()) {
+                        activeImports_.push_back(importedLower);
+                    }
+                } else {
+                    std::erase(activeImports_, importedLower);
+                }
+                output.push_back(input[i]);
+                ++i;
+            }
+            continue;
+        }
         const Token& tok = input[i];
         if (tok.kind != TokenKind::Identifier) {
             output.push_back(tok);
@@ -113,14 +218,39 @@ std::vector<Token> MacroExpander::expandTokens(const std::vector<Token>& input) 
             continue;
         }
         std::string lower = toLower(tok.text);
-        auto it = macros_.find(lower);
-        if (it == macros_.end()) {
+        // A qualified `Module::Name` reference is tried first, exactly
+        // like Sema's own resolveModuleQualifiedName does for every other
+        // kind - an already-qualified reference is resolved as itself,
+        // never re-interpreted as a bare name. `resolveQualifiedMacroName`
+        // itself distinguishes "not a macro at all" (empty, silently - this
+        // might be a qualified variable/procedure/Structure/etc. reference
+        // instead) from "is a macro, but access denied" (empty, after
+        // already reporting the real error) - both cases fall through to
+        // the plain-token path below identically, since in neither case is
+        // there a macro body to substitute.
+        std::size_t headEnd = i + 1;
+        std::string key;
+        std::string invocationSpelling = tok.text; // Widened below for a qualified reference - used only in diagnostics.
+        if (i + 2 < input.size() && input[i + 1].kind == TokenKind::ColonColon &&
+            input[i + 2].kind == TokenKind::Identifier) {
+            const Token& nameTok = input[i + 2];
+            key = resolveQualifiedMacroName(lower, toLower(nameTok.text), nameTok.text, tok.loc);
+            if (!key.empty()) {
+                headEnd = i + 3;
+                invocationSpelling = tok.text + "::" + nameTok.text;
+            }
+        }
+        if (key.empty()) {
+            key = resolveBareMacroName(lower);
+        }
+        if (key.empty()) {
             output.push_back(tok);
             ++i;
             continue;
         }
+        auto it = macros_.find(key);
         const MacroDef& def = it->second;
-        bool hasParens = (i + 1 < input.size() && input[i + 1].kind == TokenKind::LParen);
+        bool hasParens = (headEnd < input.size() && input[headEnd].kind == TokenKind::LParen);
 
         // Oracle-verified: a zero-parameter macro is invoked *bare*, with no
         // parens at all - `Greet()` is a syntax error, not a zero-arg call
@@ -139,11 +269,11 @@ std::vector<Token> MacroExpander::expandTokens(const std::vector<Token>& input) 
         }
 
         std::vector<Token> substituted;
-        std::size_t afterInvocation = i + 1;
+        std::size_t afterInvocation = headEnd;
         if (isBareZeroArgInvocation) {
             substituted = def.body;
         } else {
-            std::size_t j = i + 2; // past the name and '('
+            std::size_t j = headEnd + 1; // past the name (or Module::name) and '('
             std::vector<std::vector<Token>> args;
             std::vector<Token> currentArg;
             int depth = 1;
@@ -167,15 +297,16 @@ std::vector<Token> MacroExpander::expandTokens(const std::vector<Token>& input) 
             }
             args.push_back(std::move(currentArg));
             if (depth != 0) {
-                diagnostics_.error(tok.loc, "Macro '" + tok.text + "' call is missing a closing ')'");
+                diagnostics_.error(tok.loc, "Macro '" + invocationSpelling + "' call is missing a closing ')'");
                 output.push_back(tok);
                 ++i;
                 continue;
             }
             afterInvocation = j;
             if (args.size() != def.params.size()) {
-                diagnostics_.error(tok.loc, "Macro '" + tok.text + "' expects " + std::to_string(def.params.size()) +
-                                                 " argument(s), got " + std::to_string(args.size()));
+                diagnostics_.error(tok.loc, "Macro '" + invocationSpelling + "' expects " +
+                                                 std::to_string(def.params.size()) + " argument(s), got " +
+                                                 std::to_string(args.size()));
                 i = afterInvocation;
                 continue;
             }
@@ -200,15 +331,20 @@ std::vector<Token> MacroExpander::expandTokens(const std::vector<Token>& input) 
         // the set of macro names currently being expanded along *this*
         // chain, so a cycle of any length (not just immediate self-
         // recursion) is caught here, on entry to the nested expansion that
-        // would otherwise never terminate.
-        if (!activeExpansion_.insert(lower).second) {
+        // would otherwise never terminate. Keyed by `key` (the fully
+        // mangled identity), not `lower` (just this invocation's own
+        // spelling) - two different modules' own same-named macros are
+        // genuinely different macros, and must not be confused for a
+        // recursion cycle with each other just because they share a bare
+        // name.
+        if (!activeExpansion_.insert(key).second) {
             diagnostics_.error(tok.loc,
-                                "Macro '" + tok.text + "' cannot invoke itself, directly or indirectly");
+                                "Macro '" + invocationSpelling + "' cannot invoke itself, directly or indirectly");
             i = afterInvocation;
             continue;
         }
         std::vector<Token> expanded = expandTokens(substituted);
-        activeExpansion_.erase(lower);
+        activeExpansion_.erase(key);
         output.insert(output.end(), expanded.begin(), expanded.end());
         i = afterInvocation;
     }

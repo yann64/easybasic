@@ -34,7 +34,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
 | **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Seven slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon` - see M7b notes); further gadget types/`Requester` family/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
-| **M7d** | `Module`/`DeclareModule`/`EndModule` | Three slices done (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface - see M7d notes); unqualified `Macro` inside a Module already works, qualified `Module::Macro()` invocation from outside remains deliberately deferred (a separate `MacroExpander` subsystem effort, not Sema's own namespacing) |
+| **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
 ## M0 Implementation Notes
 
@@ -2872,4 +2872,90 @@ diffs byte-for-byte against the real oracle; `tests/e2e_diff/interfaces` gained 
 module addition for the general `?Label`-inside-a-Procedure fix. 334 tests pass across
 `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean), including the 331 that predate
 this slice.
+
+## M7d Implementation Notes (`Module`/`DeclareModule`/`EndModule`, fourth slice: qualified `Module::Macro()`)
+
+**Scope landed**: qualified `Module::MacroName(args)` invocation from outside a module, `UseModule`/
+`UnuseModule` bringing a module's own public macros into (and back out of) unqualified scope, and
+public/private enforcement for `Macro` - the one piece the third slice's own notes left genuinely
+deferred, having confirmed the *common* case (a macro used only inside its own defining module) already
+worked by coincidence. All of it lives in `MacroExpander` itself, a completely separate token-stream
+pass with no access to Sema's own `currentModule_`/`modulePublicMembers_`/`activeImports_` - this slice
+gives it an independent copy of the identical bookkeeping, not a shared one (there isn't an AST yet at
+this point in the pipeline for the two passes to share state through).
+
+**Oracle-testing methodology note, stated plainly since it shaped how every finding below was
+checked**: `-k` (syntax check only) is **not reliable** for anything macro-related - confirmed directly,
+more than once, by a case that syntax-checked clean under `-k` but failed with a real, fatal error under
+a full `-d -o` compile+run. Every finding in this slice was verified against a full compile+run, never
+`-k` alone - a lesson this project's own earlier `?Module::Label` mistake (see the third slice's own
+notes: added "as a reasonable, low-risk extrapolation," only now caught as genuinely wrong) already
+should have taught, but is worth restating explicitly here since it bit this slice's own early testing
+too before that was remembered.
+
+**The core design mirrors Sema's own `resolveModuleQualifiedName`/`checkModuleAccess` closely, but isn't
+the same code, and oracle-testing found the two aren't even governed by quite the same rules** - `Macro`
+declared inside `DeclareModule` is public (`modulePublicMacros_`, keyed by module name, populated the
+moment a `Macro` definition is reached while `insideDeclareModuleSection_`, mirroring Sema's own "capture
+the plain name just before mangling" pattern); declared only inside `Module` is private, rejected via
+qualified access with the exact same `"Module item 'X' is not declared as public."` error text Sema's
+own `checkModuleAccess` already uses (confirmed character-for-character against real PB's own error,
+itself attributed to "the expanded macro" - consistent with this check genuinely belonging to the macro
+layer, not something Sema could ever catch on its own, since an unexpanded private qualified reference
+never reaches Sema as anything recognizable as a macro at all). A bare, unqualified reference resolves
+in the same order Sema's own algorithm does - the current module's own macros first (public or private,
+no restriction for a module's own code), then each `UseModule`'d import's *public* macros only (a
+private import member is never even a lookup candidate for a bare reference - oracle-verified this is
+a real, meaningful distinction from the qualified case: asking for a *specific* private member by name is
+a reportable violation, but a bare name simply not matching anything public is just "not a macro," no
+different from any other unresolved identifier) - and, oracle-verified directly (not assumed from Sema's
+own precedent alone), the "sealed box" model applies here too: a top-level macro is *never* visible
+unqualified from inside a module, even with nothing else in scope to prefer instead ("`Double() is not a
+function, array, list, map or macro`" - a real, fatal error, confirmed directly rather than assumed).
+
+**A genuinely surprising oracle finding neither extrapolated from Sema's own behavior nor initially
+expected, caught by testing one macro's body calling another rather than assumed safe**: real PB's own
+macro-body resolution depends entirely on the *call site's* own textual module context at the moment of
+expansion, not the referencing macro's own defining module. A `Wrapper` macro declared (and promised
+public) inside `Module M`, whose own body bare-references another macro `Helper` *also* declared in that
+same module, fails to resolve `Helper` at all - a real, fatal `"Helper() is not a function, array, list,
+map or macro"` - when `Wrapper` itself is invoked via qualified access from *outside* the module (`M::`
+`Wrapper(5)`), since by the time `Wrapper`'s own substituted body is scanned, the scan is textually back
+at the top-level call site, with `currentModule_` already empty again - but `Helper` resolves correctly
+when `Wrapper` is instead invoked from code textually *inside* the same module (a `Procedure` defined
+there calling `Wrapper(5)` directly). This project's own implementation reproduces this exactly, *not*
+by deliberately modeling it, but because tracking `currentModule_` purely as a function of the scan's own
+current textual position (rather than trying to bind a macro's body to some remembered "definition-time"
+context) is the natural, simplest implementation - and happens to be exactly what real PB itself does
+too, confirmed by this same test passing without requiring the "remember the defining module" fix that
+seemed necessary before checking. A real instance of resisting the urge to "fix" a surprising result
+before confirming it's actually wrong - this one wasn't.
+
+**Self-recursion detection needed its own fix, caught immediately by extending the third slice's own
+module-scoping to a module-scoped recursive macro**: `activeExpansion_` (the guard against real PB's own
+"Endless recursivity detected in the Macro." case) was keyed by a macro's own bare spelling
+(`toLower(tok.text)`), not its mangled identity - meaning two *different* modules' own same-named macros
+would have been wrongly treated as the same macro for recursion-detection purposes (one module's own
+`Combine` entering its own expansion would have blocked the *other* module's unrelated `Combine` from
+expanding at all, as a false "recursion"). Fixed by keying `activeExpansion_` (and the matching
+diagnostic) by the already-resolved, fully mangled key instead of the bare invocation spelling - caught
+before it shipped, by a dedicated "two modules, same macro name" test, not by the recursion case itself
+(which happens not to exercise two *different* mangled identities colliding at all).
+
+**Testing**: 11 new `MacroExpander`-level unit tests (module-scoped unqualified use, qualified
+invocation, `UseModule`/`UnuseModule`, private-macro rejection, the "sealed box" top-level-invisible-
+inside-a-module case, two modules' own same-named macros staying independent, and the call-site-context
+finding above, both directions) - using a `containsSubsequence` helper rather than exact-length/exact-
+position assertions throughout, since the surrounding `DeclareModule`/`Module`/`EndModule` boilerplate's
+own exact token count was never the point of any of them, only whether the macro's own body was (or
+wasn't) actually substituted in. One new differential e2e test (`tests/e2e_diff/modules_macro`,
+exercising two modules with same-named macros, qualified invocation, `UseModule`, and the already-
+working unqualified-same-module case together) diffs byte-for-byte against the real oracle. 353 tests
+pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean), including the 345
+that predate this slice.
+
+With this, M7d's own four-slice arc (Procedures/Globals, then Structures/Enumerations/constants/arrays/
+Lists/Maps/DataSection, then Interface, then qualified Macro) is complete - every declaration kind real
+PB accepts inside a `Module`/`DeclareModule` is now namespaced and access-controlled the way real PB
+itself does, closing out the last of the three M7 threads reopened earlier in this milestone's own arc.
 

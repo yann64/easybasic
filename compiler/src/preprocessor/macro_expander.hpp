@@ -70,9 +70,69 @@ private:
     /// checked on entry to each nested expansion.
     std::vector<Token> expandTokens(const std::vector<Token>& input);
 
+    /// Resolves `name` (already lowercased) as it would be seen from a
+    /// *bare*, unqualified reference at the current scanning position -
+    /// `Module::Name` qualified references go through `resolveQualifiedMacroName`
+    /// instead (see its own doc comment for why the two need different
+    /// rules, not just different lookup syntax). Returns the mangled
+    /// `macros_` key to use, or an empty string if `name` doesn't resolve
+    /// to any macro visible from here at all (not an error - just means
+    /// this identifier isn't a macro invocation, handled as an ordinary
+    /// token). Mirrors `Sema::resolveModuleQualifiedName`'s own resolution
+    /// order and "sealed box" rule - oracle-verified directly (not assumed
+    /// from that precedent alone) that both hold for `Macro` too: own-
+    /// module access always sees its own macros first (public or private),
+    /// then each `UseModule`'d import's own *public* macros only (a
+    /// private import member is deliberately not even a candidate here -
+    /// unlike a qualified reference, nothing asked to see a *specific*
+    /// private member by name, so there's no access violation to report,
+    /// only "not found"), and a top-level macro is only visible from
+    /// top-level code - *never* as a fallback from inside a module, even
+    /// when no better match exists (confirmed directly: a macro defined
+    /// before any module, used unqualified inside one, is a real "not a
+    /// function, array, list, map or macro" compile error in real PB).
+    std::string resolveBareMacroName(const std::string& name) const;
+
+    /// Resolves an explicit `Module::Name` qualified reference, enforcing
+    /// the same public/private rule `Sema::checkModuleAccess` already does
+    /// for every other declaration kind - oracle-verified this is a real,
+    /// separate error (`"Module item 'Name' is not declared as public."`,
+    /// attributed to the expanded macro itself, confirmed via real PB's
+    /// own error text) when `moduleLower` exists but `nameLower` isn't one
+    /// of its own `DeclareModule`-promised macros, not silently treated as
+    /// "not a macro" the way an unresolved *bare* name is - a qualified
+    /// reference explicitly asks for one specific member, so there's a
+    /// real violation to report when it exists but isn't reachable, unlike
+    /// `resolveBareMacroName`'s own "not found" case. Returns the mangled
+    /// `macros_` key on success, or an empty string either when
+    /// `moduleLower::nameLower` isn't a macro at all (not an error - could
+    /// be a qualified variable/procedure/Structure/etc. reference instead,
+    /// entirely legitimate) or after reporting the access violation (the
+    /// caller treats both the same way: not a macro invocation to expand).
+    std::string resolveQualifiedMacroName(const std::string& moduleLower, const std::string& nameLower,
+                                           const std::string& nameSpelling, SourceLoc loc);
+
     DiagnosticEngine& diagnostics_;
     std::unordered_map<std::string, MacroDef> macros_;
     std::unordered_set<std::string> activeExpansion_;
+    /// Mirrors `Sema::currentModule_`/`modulePublicMembers_`/`activeImports_`
+    /// at the token-stream level - see `expandTokens`'s own doc comment on
+    /// why this project's `MacroExpander` needs an independent copy of
+    /// this bookkeeping rather than sharing Sema's (a completely separate
+    /// pass, running before any AST exists at all).
+    std::string currentModule_; ///< Empty at the top level.
+    bool insideDeclareModuleSection_ = false; ///< Only meaningful while `currentModule_` is non-empty.
+    std::unordered_map<std::string, std::unordered_set<std::string>> modulePublicMacros_;
+    std::vector<std::string> activeImports_;
+    /// `activeImports_`'s own value from just before entering the current
+    /// `Module`'s body - restored on `EndModule`, the same save/restore
+    /// `Sema::visitStmt`'s own `Module` case already does, so a `UseModule`
+    /// inside one module's body doesn't leak into a sibling module's.
+    /// `DeclareModule` needs no matching save/restore: `UseModule`/
+    /// `UnuseModule` aren't legal inside one at all (not in this project's
+    /// own supported subset), so entering one can never change
+    /// `activeImports_` in the first place.
+    std::vector<std::string> importsBeforeCurrentModule_;
 };
 
 } // namespace easybasic
