@@ -440,7 +440,7 @@ inline void onListViewRowActivated(GtkTreeView*, GtkTreePath*, GtkTreeViewColumn
 /// propagating") unconditionally - this only ever *observes* the click,
 /// never needs to stop GTK's own default handling (e.g. showing a
 /// context-appropriate selection) from running too.
-inline gboolean onListViewButtonPress(GtkWidget*, GdkEventButton* event, gpointer userData) {
+inline gboolean onListViewButtonPress(GtkWidget*, const GdkEventButton* event, gpointer userData) {
     if (event->button == 3) {
         queueGadgetEvent(GTK_WIDGET(userData), 1);
     }
