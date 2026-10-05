@@ -394,6 +394,23 @@ inline void onPanelSwitchPage(GtkNotebook* notebook, GtkWidget*, guint, gpointer
     queueGadgetEvent(GTK_WIDGET(notebook), 768);
 }
 
+/// `GtkAdjustment::value-changed` (M7b's twelfth GUI slice:
+/// `ScrollAreaGadget`), connected to both the horizontal and vertical
+/// adjustment - oracle-verified real PB's own docs: "Un évènement est
+/// généré lorsque l'utilisateur déplace les ascenseurs du gadget", but
+/// its own `EventType()` isn't independently confirmed (simulating a
+/// real scrollbar drag against the oracle needs interactive automation
+/// this project's own test methodology deliberately avoids - every GUI
+/// slice's own e2e case says so explicitly); `0` is used as the same
+/// "nothing distinctive" default `ButtonGadget`/`CheckBoxGadget`'s own
+/// clicks already use, a reasonable choice rather than a confirmed one.
+/// `userData` carries the real `GtkScrolledWindow*` itself (not derivable
+/// from the adjustment), tagged with this gadget's own PB id the normal
+/// way.
+inline void onScrollAreaValueChanged(GtkAdjustment*, gpointer userData) {
+    queueGadgetEvent(GTK_WIDGET(userData), 0);
+}
+
 /// Queues a `#PB_Event_Menu` for a leaf `MenuItem()`'s own `"activate"`
 /// signal, reading its element/window IDs back from `g_object_set_data`
 /// (set in `pbMenuItem`) - the menu equivalent of `queueGadgetEvent`.
@@ -1103,6 +1120,66 @@ inline std::int64_t pbPanelGadget(std::int64_t gadgetId, std::int64_t x, std::in
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, notebook) ? 1 : 0;
 }
 
+/// M7b's twelfth GUI slice: `ScrollAreaGadget` - back to the gadget-list
+/// nesting family (`ContainerGadget`'s own ninth slice), auto-capturing
+/// subsequently created gadgets immediately on creation, like Container
+/// (not `PanelGadget`, which needs `AddGadgetItem` first) - oracle-
+/// verified directly via `ScrollAreaGadget.html`'s own "Remarques": "Une
+/// fois créé, tous les gadgets suivants seront placés dans ce gadget."
+/// `GtkScrolledWindow` is the natural match, with a plain `GtkFixed` -
+/// sized to `InnerWidth`/`InnerHeight`, exactly like `ContainerGadget`'s
+/// own inner one - as its content; GTK already auto-hides a scrollbar
+/// when the inner area doesn't exceed the outer one in that axis
+/// (`GTK_POLICY_AUTOMATIC`), the same behavior real PB's own docs
+/// describe ("si sa taille est plus petite..., les barres de défilement
+/// seront masquées"). `#PB_ScrollArea_Center` (centering a smaller inner
+/// area) is accepted but not acted on - GTK has no direct equivalent to
+/// hook into here, the same kind of narrow, deliberate gap
+/// `#PB_Splitter_Separator`'s own "3D pattern" flag already is. Unlike
+/// `ContainerGadget`'s own border flags, this gadget's own bit values
+/// are *not* assumed to match - confirmed independently via a direct
+/// `Debug #PB_ScrollArea_Xxx` probe.
+inline std::int64_t pbScrollAreaGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                        std::int64_t height, std::int64_t innerWidth, std::int64_t innerHeight,
+                                        std::int64_t scrollStep = 0, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    GtkShadowType shadow = GTK_SHADOW_NONE; // #PB_ScrollArea_BorderLess (8), or no flags at all
+    if ((flags & 4) != 0) {
+        shadow = GTK_SHADOW_IN; // #PB_ScrollArea_Single
+    } else if ((flags & 2) != 0) {
+        shadow = GTK_SHADOW_OUT; // #PB_ScrollArea_Raised
+    } else if ((flags & 1) != 0) {
+        shadow = GTK_SHADOW_ETCHED_OUT; // #PB_ScrollArea_Flat
+    }
+    gtk_scrolled_window_set_shadow_type(GTK_SCROLLED_WINDOW(scrolled), shadow);
+
+    GtkWidget* inner = gtk_fixed_new();
+    gtk_widget_set_size_request(inner, static_cast<int>(innerWidth), static_cast<int>(innerHeight));
+    gtk_container_add(GTK_CONTAINER(scrolled), inner);
+    gtk_widget_show(inner);
+
+    GtkAdjustment* hAdjust = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(scrolled));
+    GtkAdjustment* vAdjust = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scrolled));
+    if (scrollStep > 0) {
+        gtk_adjustment_set_step_increment(hAdjust, static_cast<double>(scrollStep));
+        gtk_adjustment_set_step_increment(vAdjust, static_cast<double>(scrollStep));
+    }
+
+    if (!detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, scrolled)) {
+        return 0;
+    }
+    // Connected *after* `placeGadget` so the gadget/window IDs `queueGadgetEvent`
+    // (via `onScrollAreaValueChanged`'s own `userData`) reads back are
+    // already tagged on `scrolled` itself.
+    g_signal_connect(hAdjust, "value-changed", G_CALLBACK(detail::onScrollAreaValueChanged), scrolled);
+    g_signal_connect(vAdjust, "value-changed", G_CALLBACK(detail::onScrollAreaValueChanged), scrolled);
+    detail::containerFixedTable()[gadgetId] = inner;
+    detail::gadgetListStack().push_back({gadgetId, inner});
+    return 1;
+}
+
 /// `AddGadgetItem(#Gadget, Position, Text$ [, ImageID [, Options]])` -
 /// scoped to `PanelGadget` only for now (the one gadget type this project
 /// actually has that supports it; real PB's own docs also list
@@ -1344,17 +1421,56 @@ inline std::int64_t pbSplitterGadget(std::int64_t gadgetId, std::int64_t x, std:
 
 /// `GetGadgetAttribute(#Gadget, Attribute)` - a brand new, generic,
 /// dispatch-based function (the same shape `AddGadgetItem`'s own family
-/// already has), scoped to `SplitterGadget`'s own four attributes for
-/// now - real PB's own docs list many more gadget types sharing this
-/// function, none implemented yet. Oracle-verified: an unsupported
-/// attribute (or a `#Gadget` that isn't a `Splitter` at all) harmlessly
-/// returns `0` - a *nonexistent* `#Gadget` is instead a real, fatal
-/// debugger error, not replicated here (this project's own established
-/// stance - see `placeGadget`'s own doc comment), so this returns `0`
-/// for that case too, the same as an unsupported one.
+/// already has), scoped to `SplitterGadget`'s own four attributes and
+/// `ScrollAreaGadget`'s own five (M7b's twelfth slice) for now - real PB's
+/// own docs list many more gadget types sharing this function, none
+/// implemented yet. Oracle-verified: an unsupported attribute (or a
+/// `#Gadget` that isn't one of these at all) harmlessly returns `0` - a
+/// *nonexistent* `#Gadget` is instead a real, fatal debugger error, not
+/// replicated here (this project's own established stance - see
+/// `placeGadget`'s own doc comment), so this returns `0` for that case
+/// too, the same as an unsupported one.
 inline std::int64_t pbGetGadgetAttribute(std::int64_t gadgetId, std::int64_t attribute) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_PANED(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (GTK_IS_SCROLLED_WINDOW(it->second) != 0) {
+        auto* scrolled = GTK_SCROLLED_WINDOW(it->second);
+        // Not `gtk_bin_get_child(GTK_BIN(scrolled))` - GTK3 auto-wraps a
+        // non-`GtkScrollable` child (a plain `GtkFixed`, same as every
+        // other gadget-list nesting type's own inner one) in a
+        // `GtkViewport` on `gtk_container_add`, so that would find the
+        // auto-created viewport, not the real inner `GtkFixed` - already
+        // tracked directly in `containerFixedTable()` since creation (the
+        // same lookup `OpenGadgetList`'s own fallback case already uses),
+        // reused here instead of navigating the widget tree.
+        GtkWidget* inner = detail::containerFixedTable().at(gadgetId);
+        switch (attribute) {
+            case 1: { // #PB_ScrollArea_InnerWidth
+                int w = -1;
+                int h = -1;
+                gtk_widget_get_size_request(inner, &w, &h);
+                return w;
+            }
+            case 2: { // #PB_ScrollArea_InnerHeight
+                int w = -1;
+                int h = -1;
+                gtk_widget_get_size_request(inner, &w, &h);
+                return h;
+            }
+            case 3: // #PB_ScrollArea_X
+                return static_cast<std::int64_t>(gtk_adjustment_get_value(gtk_scrolled_window_get_hadjustment(scrolled)));
+            case 4: // #PB_ScrollArea_Y
+                return static_cast<std::int64_t>(gtk_adjustment_get_value(gtk_scrolled_window_get_vadjustment(scrolled)));
+            case 5: // #PB_ScrollArea_ScrollStep
+                return static_cast<std::int64_t>(
+                    gtk_adjustment_get_step_increment(gtk_scrolled_window_get_hadjustment(scrolled)));
+            default:
+                return 0;
+        }
+    }
+    if (GTK_IS_PANED(it->second) == 0) {
         return 0;
     }
     auto* paned = GTK_PANED(it->second);
@@ -1394,7 +1510,44 @@ inline std::int64_t pbGetGadgetAttribute(std::int64_t gadgetId, std::int64_t att
 /// afterward, the same way real PB code would reposition it manually too.
 inline std::int64_t pbSetGadgetAttribute(std::int64_t gadgetId, std::int64_t attribute, std::int64_t value) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_PANED(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (GTK_IS_SCROLLED_WINDOW(it->second) != 0) {
+        auto* scrolled = GTK_SCROLLED_WINDOW(it->second);
+        GtkWidget* inner = detail::containerFixedTable().at(gadgetId); // see pbGetGadgetAttribute's own note
+        switch (attribute) {
+            case 1: { // #PB_ScrollArea_InnerWidth
+                int w = -1;
+                int h = -1;
+                gtk_widget_get_size_request(inner, &w, &h);
+                gtk_widget_set_size_request(inner, static_cast<int>(value), h);
+                return 1;
+            }
+            case 2: { // #PB_ScrollArea_InnerHeight
+                int w = -1;
+                int h = -1;
+                gtk_widget_get_size_request(inner, &w, &h);
+                gtk_widget_set_size_request(inner, w, static_cast<int>(value));
+                return 1;
+            }
+            case 3: // #PB_ScrollArea_X
+                gtk_adjustment_set_value(gtk_scrolled_window_get_hadjustment(scrolled), static_cast<double>(value));
+                return 1;
+            case 4: // #PB_ScrollArea_Y
+                gtk_adjustment_set_value(gtk_scrolled_window_get_vadjustment(scrolled), static_cast<double>(value));
+                return 1;
+            case 5: // #PB_ScrollArea_ScrollStep
+                gtk_adjustment_set_step_increment(gtk_scrolled_window_get_hadjustment(scrolled),
+                                                   static_cast<double>(value));
+                gtk_adjustment_set_step_increment(gtk_scrolled_window_get_vadjustment(scrolled),
+                                                   static_cast<double>(value));
+                return 1;
+            default:
+                return 0;
+        }
+    }
+    if (GTK_IS_PANED(it->second) == 0) {
         return 0;
     }
     auto* paned = GTK_PANED(it->second);

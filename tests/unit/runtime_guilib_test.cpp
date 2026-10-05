@@ -1591,3 +1591,153 @@ TEST_CASE("SetGadgetAttribute's FirstGadget/SecondGadget swap a pane's own child
 
     pbCloseWindow(605);
 }
+
+TEST_CASE("ScrollAreaGadget automatically captures subsequently created gadgets immediately, "
+          "like Container not Panel",
+          "[runtime][guilib]") {
+    // Oracle-verified (ScrollAreaGadget.html's own "Remarques"): "Une fois
+    // créé, tous les gadgets suivants seront placés dans ce gadget" - no
+    // AddGadgetItem-style separate step needed, unlike PanelGadget.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(700, 10, 10, 400, 400, PBString("Test"));
+
+    CHECK(pbScrollAreaGadget(10, 10, 10, 200, 150, 500, 500, 20) == 1);
+    CHECK(pbButtonGadget(1, 5, 5, 60, 20, PBString("InScroll")) == 1);
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(1)) == detail::containerFixedTable().at(10));
+
+    CHECK(pbCloseGadgetList() == 1);
+    CHECK(pbButtonGadget(2, 5, 300, 60, 20, PBString("WindowLevel")) == 1);
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(2)) == detail::windowFixedTable().at(700));
+
+    pbCloseWindow(700);
+}
+
+TEST_CASE("GetGadgetAttribute/SetGadgetAttribute round-trip a ScrollArea's own inner size, scroll "
+          "position, and scroll step",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(701, 10, 10, 400, 400, PBString("Test"));
+    pbScrollAreaGadget(10, 10, 10, 200, 150, 500, 500, 20);
+    pbCloseGadgetList();
+
+    CHECK(pbGetGadgetAttribute(10, 1 /* #PB_ScrollArea_InnerWidth */) == 500);
+    CHECK(pbGetGadgetAttribute(10, 2 /* #PB_ScrollArea_InnerHeight */) == 500);
+    CHECK(pbGetGadgetAttribute(10, 3 /* #PB_ScrollArea_X */) == 0);
+    CHECK(pbGetGadgetAttribute(10, 4 /* #PB_ScrollArea_Y */) == 0);
+    CHECK(pbGetGadgetAttribute(10, 5 /* #PB_ScrollArea_ScrollStep */) == 20);
+
+    CHECK(pbSetGadgetAttribute(10, 1, 800) == 1);
+    CHECK(pbGetGadgetAttribute(10, 1) == 800);
+    CHECK(pbSetGadgetAttribute(10, 2, 600) == 1);
+    CHECK(pbGetGadgetAttribute(10, 2) == 600);
+    CHECK(pbSetGadgetAttribute(10, 5, 99) == 1);
+    CHECK(pbGetGadgetAttribute(10, 5) == 99);
+
+    // Harmless failures: an unsupported attribute, a non-ScrollArea
+    // gadget, and an unknown gadget - consistent with Splitter's own
+    // established precedent.
+    CHECK(pbGetGadgetAttribute(10, 99) == 0);
+    pbButtonGadget(1, 0, 0, 0, 0, PBString("B"));
+    CHECK(pbGetGadgetAttribute(1, 1) == 0);
+    CHECK(pbGetGadgetAttribute(9999, 1) == 0);
+    CHECK(pbSetGadgetAttribute(1, 1, 1) == 0);
+
+    pbCloseWindow(701);
+}
+
+TEST_CASE("ScrollAreaGadget maps its own border flags onto GtkScrolledWindow's shadow type, "
+          "independently of ContainerGadget's own bit values",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(702, 10, 10, 400, 400, PBString("Test"));
+
+    pbScrollAreaGadget(10, 10, 10, 100, 100, 200, 200, 0, 4 /* #PB_ScrollArea_Single */);
+    pbCloseGadgetList();
+    CHECK(gtk_scrolled_window_get_shadow_type(GTK_SCROLLED_WINDOW(detail::gadgetTable().at(10))) ==
+          GTK_SHADOW_IN);
+
+    pbScrollAreaGadget(11, 120, 10, 100, 100, 200, 200, 0, 2 /* #PB_ScrollArea_Raised */);
+    pbCloseGadgetList();
+    CHECK(gtk_scrolled_window_get_shadow_type(GTK_SCROLLED_WINDOW(detail::gadgetTable().at(11))) ==
+          GTK_SHADOW_OUT);
+
+    pbScrollAreaGadget(12, 230, 10, 100, 100, 200, 200); // no flags at all
+    pbCloseGadgetList();
+    CHECK(gtk_scrolled_window_get_shadow_type(GTK_SCROLLED_WINDOW(detail::gadgetTable().at(12))) ==
+          GTK_SHADOW_NONE);
+
+    pbCloseWindow(702);
+}
+
+TEST_CASE("A real scrollbar value change queues #PB_Event_Gadget for ScrollAreaGadget",
+          "[runtime][guilib]") {
+    // gtk_adjustment_set_value fires the exact "value-changed" signal a
+    // real scrollbar drag does - the GtkAdjustment equivalent of
+    // gtk_button_clicked in this project's own existing click tests.
+    // The exact EventType() value isn't independently oracle-verified
+    // (see onScrollAreaValueChanged's own doc comment) - only that an
+    // event is queued at all, oracle-verified via ScrollAreaGadget.html's
+    // own remarks.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(703, 10, 10, 400, 400, PBString("Test"));
+    pbScrollAreaGadget(10, 10, 10, 100, 100, 500, 500, 20);
+    pbCloseGadgetList();
+    drainEvents();
+
+    auto* scrolled = GTK_SCROLLED_WINDOW(detail::gadgetTable().at(10));
+    gtk_adjustment_set_value(gtk_scrolled_window_get_hadjustment(scrolled), 42);
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 10);
+
+    pbCloseWindow(703);
+}
+
+TEST_CASE("Freeing a ScrollAreaGadget recursively frees every gadget nested inside it",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(704, 10, 10, 400, 400, PBString("Test"));
+    pbScrollAreaGadget(10, 10, 10, 200, 150, 500, 500);
+    pbButtonGadget(1, 5, 5, 60, 20, PBString("A"));
+    pbContainerGadget(2, 5, 30, 150, 100); // a nested container, deeper still
+    pbButtonGadget(3, 5, 5, 60, 20, PBString("B"));
+    pbCloseGadgetList(); // closes container 2
+    pbCloseGadgetList(); // closes the ScrollArea
+
+    CHECK(pbFreeGadget(10) == 1);
+    CHECK(pbIsGadget(10) == 0);
+    CHECK(pbIsGadget(1) == 0);
+    CHECK(pbIsGadget(2) == 0);
+    CHECK(pbIsGadget(3) == 0);
+
+    pbCloseWindow(704);
+}
+
+TEST_CASE("OpenGadgetList reopens a ScrollAreaGadget so more gadgets can be added to it "
+          "dynamically, reusing Container's own existing mechanism unchanged",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(705, 10, 10, 400, 400, PBString("Test"));
+    pbScrollAreaGadget(10, 10, 10, 200, 150, 500, 500);
+    pbCloseGadgetList();
+
+    CHECK(pbOpenGadgetList(10) == 1);
+    CHECK(pbButtonGadget(1, 5, 5, 60, 20, PBString("Added")) == 1);
+    CHECK(pbCloseGadgetList() == 1);
+
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(1)) == detail::containerFixedTable().at(10));
+
+    pbCloseWindow(705);
+}

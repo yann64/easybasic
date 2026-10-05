@@ -454,6 +454,18 @@ void Sema::registerGuiLibBuiltins() {
         {"getgadgetattribute", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"setgadgetattribute", TypeSuffix::Integer,
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        // M7b's twelfth GUI slice: ScrollAreaGadget - back to the
+        // gadget-list nesting family (ContainerGadget/PanelGadget's own
+        // ninth/tenth slices), auto-capturing subsequently created
+        // gadgets immediately on creation, like Container (not Panel,
+        // which needs AddGadgetItem first) - oracle-verified directly via
+        // its own real docs. `ScrollStep`/`Options` are both optional
+        // (oracle-verified: a bare seven-argument call defaults to no
+        // scroll step and no flags at all).
+        {"scrollareagadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         7},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -593,7 +605,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "containergadget", "opengadgetlist", "closegadgetlist",
         "panelgadget", "addgadgetitem", "countgadgetitems", "removegadgetitem", "cleargadgetitems",
         "getgadgetitemtext", "setgadgetitemtext",
-        "splittergadget", "getgadgetattribute", "setgadgetattribute",
+        "splittergadget", "getgadgetattribute", "setgadgetattribute", "scrollareagadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -807,6 +819,24 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_splitter_secondminimumsize", 2},
         {"pb_splitter_firstgadget", 3},
         {"pb_splitter_secondgadget", 4},
+        // ScrollAreaGadget (M7b's twelfth GUI slice) - oracle-verified via
+        // a direct `Debug #PB_ScrollArea_Xxx` probe. The border-style flags
+        // share the same shadow-type vocabulary `#PB_Container_*` already
+        // does (Flat/Raised/Single/BorderLess), but different bit values -
+        // not assumed to match Container's own numbering, confirmed
+        // independently. `Center` has no `#PB_Container_*` equivalent.
+        // The `GetGadgetAttribute`/`SetGadgetAttribute` constants are
+        // their own separate 1-5 numbering, like Splitter's own.
+        {"pb_scrollarea_flat", 1},
+        {"pb_scrollarea_raised", 2},
+        {"pb_scrollarea_single", 4},
+        {"pb_scrollarea_borderless", 8},
+        {"pb_scrollarea_center", 16},
+        {"pb_scrollarea_innerwidth", 1},
+        {"pb_scrollarea_innerheight", 2},
+        {"pb_scrollarea_x", 3},
+        {"pb_scrollarea_y", 4},
+        {"pb_scrollarea_scrollstep", 5},
     };
     return table;
 }

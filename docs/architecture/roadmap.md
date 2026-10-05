@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Eleven slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twelve slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -3336,4 +3336,86 @@ already use for their own "no documented return value" case) against the real or
 fatal-error-triggering calls deliberately left out of the golden file for the reason above. 388 tests
 pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean - the ref-counting fix
 above mattering doubly here), including the 381 that predate this slice.
+
+## M7b Implementation Notes (GUI core, twelfth slice: `ScrollAreaGadget`)
+
+**Scope landed**: `ScrollAreaGadget` itself, back in the gadget-list nesting family (`ContainerGadget`'s
+own ninth slice) rather than the eleventh slice's own different shape - plus five new
+`GetGadgetAttribute`/`SetGadgetAttribute` branches (`InnerWidth`/`InnerHeight`/`X`/`Y`/`ScrollStep`),
+extending the two generic, dispatch-based functions `SplitterGadget` introduced. `OpenGadgetList`/
+`CloseGadgetList`/`pruneContainerGadgets`/`destroyWindow` needed *zero* changes at all - confirmed, not
+just hoped for, exactly the "shared, unchanged" payoff the ninth slice's own notes anticipated when it
+first designed `gadgetListStack()`/`containerFixedTable()` generically rather than Container-specific.
+`SetGadgetColor`/`GetGadgetColor` (mentioned in the real docs as usable with `#PB_Gadget_BackColor`) are
+explicitly out of scope - a separate, broad new feature affecting many gadget types, not specific to
+ScrollArea's own identity.
+
+**Confirmed directly, not assumed from Container's own precedent**: unlike `PanelGadget` (needs
+`AddGadgetItem` first), `ScrollAreaGadget` auto-captures subsequently created gadgets immediately on
+creation, the same as `ContainerGadget` - oracle-verified via `ScrollAreaGadget.html`'s own "Remarques":
+"Une fois créé, tous les gadgets suivants seront placés dans ce gadget." `GtkScrolledWindow` wrapping a
+plain `GtkFixed` (sized to `InnerWidth`/`InnerHeight`, exactly like `ContainerGadget`'s own inner one) is
+the natural match - `GTK_POLICY_AUTOMATIC` on both scrollbars already gives the exact documented
+behavior for free ("si [la zone interne a une taille] plus petite [que les dimensions extérieures], les
+barres de défilement seront masquées").
+
+**A real bug caught only by the oracle-comparison run, not by compiling or reasoning about the GTK API
+alone**: `GetGadgetAttribute`/`SetGadgetAttribute`'s own `InnerWidth`/`InnerHeight` cases first read the
+inner `GtkFixed` back via `gtk_bin_get_child(GTK_BIN(scrolled))` - which returned `-1`/`-1` (no size
+request at all) instead of the real `500`/`500` just set at creation. Root cause: GTK3's own
+`gtk_container_add` automatically wraps a non-`GtkScrollable` child (a plain `GtkFixed`, like every other
+gadget-list nesting type's own inner one) in an internal `GtkViewport` - `gtk_bin_get_child` on the
+`GtkScrolledWindow` finds *that* auto-created viewport, not the real inner `GtkFixed` several levels
+further down. Fixed by reusing `containerFixedTable()`'s own already-tracked direct reference (set at
+creation, the same lookup `OpenGadgetList`'s own fallback case already relies on) instead of navigating
+the widget tree at all - simpler *and* correct, not just a workaround.
+
+**Border-style flags share `#PB_Container_*`'s own shadow-type vocabulary (`Flat`/`Raised`/`Single`/
+`BorderLess`) but not its bit values** - confirmed independently via a direct `Debug #PB_ScrollArea_Xxx`
+probe rather than assumed to match (`BorderLess` is `8` here, not `0` as it is for Container) - mapped
+onto `gtk_scrolled_window_set_shadow_type` directly (no `GtkFrame` wrapper needed at all, since
+`GtkScrolledWindow` already has this exact property built in). `#PB_ScrollArea_Center` (auto-centering a
+smaller inner area) is accepted but not acted on - GTK has no direct equivalent to hook into here, the
+same kind of deliberate, narrow gap `#PB_Splitter_Separator`'s own "3D pattern" flag already is.
+
+**A real ambiguity found and honestly left unresolved rather than silently assumed either way**:
+`SetGadgetAttribute`'s own `X`/`Y` (scroll position) appeared to be a no-op against the real oracle in
+this project's own headless test environment - `GetGadgetAttribute` read back `0` immediately after
+setting `50`, even after pumping the window's own event loop first to rule out a realization-timing
+issue. Most likely explanation: `GtkAdjustment`'s own `page-size` (needed to clamp `set_value`'s own
+effective range) genuinely never gets computed without a real, on-screen size allocation this headless
+setup may not fully provide - not confirmed either way, and not practically resolvable without the
+interactive-automation tooling this project's own test methodology deliberately avoids (see every GUI
+slice's own e2e case). Implemented via the standard, semantically correct `gtk_adjustment_set_value`
+regardless, since that's unambiguously the right GTK-level mapping - a real, interactive drag (or a
+`GetGadgetAttribute`-only check, which *does* work reliably and is what this slice's own tests exercise)
+is unaffected either way.
+
+**The scroll-movement event's own `EventType()` value is a documented-to-exist but not independently
+oracle-verified choice**: real PB's own docs confirm an event *is* generated ("Un évènement est généré
+lorsque l'utilisateur déplace les ascenseurs du gadget"), connected here to `GtkAdjustment`'s own
+`"value-changed"` signal (fired for either the horizontal or vertical scrollbar) - but pinning down the
+*exact* `EventType()` value needs simulating a real scrollbar drag, which (like every other GUI slice's
+own e2e case already states explicitly) this project's own test methodology deliberately avoids, even
+though `xdotool` happens to be installed in this environment - consistency with the established
+methodology mattered more here than a one-off exception would have been worth. `0` is used, the same
+"nothing distinctive" default `ButtonGadget`/`CheckBoxGadget`'s own clicks already use - a reasonable
+choice, not a confirmed one, stated as such in the code.
+
+**Testing**: six new `runtime_guilib_test.cpp` cases - the immediate auto-capture behavior (confirmed via
+the child's own real GTK parent), the five `GetGadgetAttribute`/`SetGadgetAttribute` round-trips plus
+their own harmless-failure cases, the border-flag-to-shadow-type mapping (three variants, including the
+true default/no-flags case), a real `"value-changed"` signal emission confirming an event *is* queued (not
+asserting the exact `EventType()` value, per the honest ambiguity above), `FreeGadget`'s own recursive
+cleanup through a nested Container inside the ScrollArea, and `OpenGadgetList` reusing Container's own
+existing mechanism completely unchanged. One new golden e2e case (`tests/e2e/gui_scrollarea`) exercises
+the same nesting/attribute/cleanup sequence end to end through `pbcxx` itself, confirmed line-for-line
+against the real oracle (modulo the already-established `IsGadget`-handle-vs-`1` simplification) - this
+comparison also surfacing, for the first time in this session even though it's a pre-existing,
+already-established project-wide convention, that `FreeGadget`'s own return value (undocumented in real
+PB - "Valeur de retour: Aucune.", confirmed by reading its own doc page directly) is `0` in the oracle but
+a clean `1` here, the same already-established "don't chase undocumented garbage" stance
+`ClearGadgetItems`/`SetGadgetItemText`/`SetGadgetAttribute` etc. all already share. 395 tests pass across
+`linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean), including the 388 that predate
+this slice.
 
