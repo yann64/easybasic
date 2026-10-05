@@ -1705,3 +1705,56 @@ TEST_CASE("Sema rejects a qualified Restore to a DataSection label declared only
     CHECK_FALSE(sema.analyze(*module));
     CHECK(diags.hasErrors());
 }
+
+TEST_CASE("Sema mangles an Interface declared inside a DeclareModule, with qualified and UseModule'd "
+          "pointer-type access both resolving it",
+          "[sema][modules]") {
+    // M7d's third slice. Mirrors the Structure version of this exact test
+    // above - Interface shares the same declaration/resolution machinery
+    // (resolveModuleQualifiedTypeName already checked both tables
+    // together before this slice; only the declaration side needed to
+    // catch up).
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Geo\n  Interface Shape\n    Area.d()\n  EndInterface\nEndDeclareModule\n"
+                         "Module Geo\nEndModule\n"
+                         "Define *p.Geo::Shape\nUseModule Geo\nDefine *q.Shape",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+    CHECK(sema.interfaceInfo("geo::shape") != nullptr);
+    CHECK(sema.interfaceInfo("shape") == nullptr); // never leaks into the plain/top-level namespace
+}
+
+TEST_CASE("Sema rejects a qualified reference to an Interface declared only in Module (private)",
+          "[sema][modules]") {
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule Geo\nEndDeclareModule\n"
+                         "Module Geo\n  Interface Shape\n    Area.d()\n  EndInterface\nEndModule\n"
+                         "Define *p.Geo::Shape",
+                         diags);
+    Sema sema(diags);
+    CHECK_FALSE(sema.analyze(*module));
+    CHECK(diags.hasErrors());
+}
+
+TEST_CASE("Sema resolves a module-scoped @ProcedureName() inside that module's own DataSection, "
+          "the real-world case Interface's own vtable idiom needs",
+          "[sema][modules]") {
+    // Regression test for a real, pre-existing gap this slice closed: the
+    // `@ProcedureName()` AddressOf special case read `call.name` directly
+    // rather than going through resolveModuleQualifiedName, so a module's
+    // own vtable DataSection (`Data.i @ProcName()`) - the one realistic
+    // case that actually needs this - silently fell through to being
+    // treated as an ordinary zero-argument call instead, failing arity
+    // checking against the named procedure's own real parameter list.
+    DiagnosticEngine diags;
+    auto module = parse("DeclareModule M\n  Interface Shape\n    Area.d()\n  EndInterface\n"
+                         "  Structure Impl\n    VTable.i\n  EndStructure\nEndDeclareModule\n"
+                         "Module M\n  Procedure.d DoArea(*self.Impl)\n    ProcedureReturn 1\n  EndProcedure\n"
+                         "  DataSection\n    VT:\n    Data.i @DoArea()\n  EndDataSection\nEndModule",
+                         diags);
+    Sema sema(diags);
+    REQUIRE(sema.analyze(*module));
+    CHECK_FALSE(diags.hasErrors());
+}

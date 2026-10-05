@@ -93,3 +93,21 @@ Debug *shape2\Name()
 Debug *shape2\Area()
 *shape2\Scale(3)
 Debug *shape2\Area()
+
+; Regression case for a real, pre-existing gap (unrelated to Interface
+; itself): `?Label` referenced from *inside* a Procedure's own body, not
+; just plain top-level code like every use above - previously failed to
+; even compile. Checked by reading back a known value through the
+; returned address (PeekQ), not by Debug-printing the raw address itself,
+; since real addresses aren't expected to match between the oracle's own
+; binary and pbcxx's.
+DataSection
+  ExtraData:
+  Data.i 777
+EndDataSection
+
+Procedure.i GetExtraDataAddress()
+  ProcedureReturn ?ExtraData
+EndProcedure
+
+Debug PeekQ(GetExtraDataAddress())

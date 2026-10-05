@@ -84,6 +84,18 @@ private:
     /// plain global static initialization (not a runtime `pbDataAdd*`
     /// call, unlike genDataPool's own pool) is enough.
     void genDataLabelArrays();
+    /// Emits a plain `extern` declaration (name + element count, no values)
+    /// for every addressable label's own array, *before* any Procedure is
+    /// generated - see its own call site's doc comment for why this and
+    /// `genDataLabelArrays`'s own real-definition pass can't be merged into
+    /// a single one running at either position alone.
+    void genDataLabelArrayForwardDecls();
+    /// The recursive worker behind `genDataLabelArrayForwardDecls` - counts,
+    /// per addressable label, how many `.i` items follow it, without
+    /// calling `genExpr` at all (unlike `collectDataLabelArrays`, this
+    /// doesn't need - and must not risk - whatever `genExpr` does for an
+    /// item's own value, only its count).
+    void collectDataLabelSizes(const ast::Block& block, std::vector<std::pair<std::string, std::size_t>>& out);
     /// The recursive worker behind `genDataLabelArrays` - collects, per
     /// addressable label, its own ordered list of already-genExpr'd `.i`
     /// item value expressions into `out` (first-seen order, for

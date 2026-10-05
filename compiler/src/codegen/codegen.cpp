@@ -933,11 +933,104 @@ void Codegen::collectDataLabelArrays(const ast::Block& block,
     }
 }
 
+/// A plain `extern` declaration (name + element count, no values) for every
+/// addressable label's own array - emitted *before* any Procedure, the
+/// opposite ordering constraint from `genDataLabelArrays`'s own real
+/// definition (which must come *after*, so a label's own `@Procedure()`
+/// item can see the real function already declared - see its own doc
+/// comment). A real, pre-existing gap this closes: `?Label` referenced from
+/// *inside* any Procedure's own body (not just plain top-level code, the
+/// only place every example predating this fix ever used it) previously
+/// failed to compile at all - `pb_label_X was not declared in this scope` -
+/// since the array itself didn't exist as a name yet anywhere in the
+/// generated file by the time a Procedure's own body could reference it.
+/// `extern` here (rather than `static`, which `genDataLabelArrays`'s own
+/// definition is accordingly changed to match) is the standard C++ way to
+/// split one global's declaration from its definition - harmless beyond
+/// that in a single-translation-unit program like every one this project
+/// generates, since there is no second TU for "external" linkage to
+/// actually interact with.
+void Codegen::genDataLabelArrayForwardDecls() {
+    std::vector<std::pair<std::string, std::size_t>> labels;
+    collectDataLabelSizes(module_.statements, labels);
+    for (const auto& [name, size] : labels) {
+        out_ += "extern const std::array<std::int64_t, " + std::to_string(size) + "> pb_label_" +
+                sanitizeModuleQualifier(name) + ";\n";
+    }
+}
+
+void Codegen::collectDataLabelSizes(const ast::Block& block, std::vector<std::pair<std::string, std::size_t>>& out) {
+    for (const auto& stmt : block) {
+        switch (stmt->kind) {
+            case ast::StmtKind::DataSection: {
+                const auto& dataSection = static_cast<const ast::DataSectionStmt&>(*stmt);
+                std::string currentLabel;
+                std::size_t* currentCount = nullptr;
+                for (const auto& child : dataSection.body) {
+                    if (child->kind == ast::StmtKind::DataLabel) {
+                        const auto& label = static_cast<const ast::DataLabelStmt&>(*child);
+                        currentLabel = label.name;
+                        currentCount = nullptr;
+                        if (sema_.dataLabelAddressable(currentLabel)) {
+                            out.emplace_back(currentLabel, std::size_t{0});
+                            currentCount = &out.back().second;
+                        }
+                        continue;
+                    }
+                    if (currentCount == nullptr) {
+                        continue;
+                    }
+                    const auto& data = static_cast<const ast::DataStmt&>(*child);
+                    *currentCount += data.values.size();
+                }
+                break;
+            }
+            case ast::StmtKind::If: {
+                const auto& ifStmt = static_cast<const ast::IfStmt&>(*stmt);
+                for (const auto& branch : ifStmt.branches) {
+                    collectDataLabelSizes(branch.body, out);
+                }
+                break;
+            }
+            case ast::StmtKind::Select: {
+                const auto& sel = static_cast<const ast::SelectStmt&>(*stmt);
+                for (const auto& branch : sel.cases) {
+                    collectDataLabelSizes(branch.body, out);
+                }
+                break;
+            }
+            case ast::StmtKind::For:
+                collectDataLabelSizes(static_cast<const ast::ForStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::While:
+                collectDataLabelSizes(static_cast<const ast::WhileStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::Repeat:
+                collectDataLabelSizes(static_cast<const ast::RepeatStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::ForEach:
+                collectDataLabelSizes(static_cast<const ast::ForEachStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::ProcedureDecl:
+                collectDataLabelSizes(static_cast<const ast::ProcedureDeclStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::DeclareModule:
+                collectDataLabelSizes(static_cast<const ast::DeclareModuleStmt&>(*stmt).body, out);
+                break;
+            case ast::StmtKind::Module:
+                collectDataLabelSizes(static_cast<const ast::ModuleStmt&>(*stmt).body, out);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 void Codegen::genDataLabelArrays() {
     std::vector<std::pair<std::string, std::vector<std::string>>> labels;
     collectDataLabelArrays(module_.statements, labels);
     for (const auto& [name, items] : labels) {
-        out_ += "static const std::array<std::int64_t, " + std::to_string(items.size()) + "> pb_label_" +
+        out_ += "const std::array<std::int64_t, " + std::to_string(items.size()) + "> pb_label_" +
                 sanitizeModuleQualifier(name) + " = {";
         for (std::size_t i = 0; i < items.size(); ++i) {
             if (i != 0) {
@@ -1516,6 +1609,10 @@ std::string Codegen::generate() {
     // notes on how Global/Shared pre-populate a procedure's local scope
     // without adding to its locals list) - C++ needs the declaration
     // visible first, unlike PB itself which has no such ordering concern.
+    // A label's own array needs the identical treatment, the other
+    // direction: a Procedure's own body may reference `?Label` - see
+    // genDataLabelArrayForwardDecls's own doc comment.
+    genDataLabelArrayForwardDecls();
     genDeclarePrototypes();
     genProcedures();
     // Must come after genProcedures(): a label's own array element can be

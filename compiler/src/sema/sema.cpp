@@ -1480,6 +1480,15 @@ void Sema::visitStmt(ast::Stmt& stmt) {
         }
         case ast::StmtKind::InterfaceDecl: {
             auto& ifaceDecl = static_cast<ast::InterfaceDeclStmt&>(stmt);
+            // M7d's third slice: an Interface declared inside a Module's own
+            // body belongs to that module's own namespace - the exact same
+            // rule StructureDecl's own case already follows (see its doc
+            // comment); resolveModuleQualifiedTypeName (the reference side)
+            // already checked both tables together, this is just the
+            // declaration side catching up to match.
+            if (!currentModule_.empty()) {
+                ifaceDecl.name = currentModule_ + "::" + ifaceDecl.name;
+            }
             if (interfaces_.contains(ifaceDecl.name) || structures_.contains(ifaceDecl.name)) {
                 diagnostics_.error(ifaceDecl.loc,
                                     "'" + ifaceDecl.spelling + "' is already declared as a Structure or Interface");
@@ -1724,13 +1733,13 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             }
             currentModule_ = decl.name;
             // `Declare` (a public procedure signature), `Global` (a public
-            // variable), `Structure`, `Enumeration`, a `#Constant`, `Dim`,
-            // `NewList`, `NewMap`, and `DataSection` are all supported
-            // inside a DeclareModule section (M7d's second slice) - `Macro`
-            // (a genuinely different layer, expanded by the preprocessor
-            // before this construct even has AST shape) and `Interface`
-            // remain deliberately deferred (see DeclareModuleStmt's own
-            // doc comment). Each allowed statement is visited directly (not
+            // variable), `Structure`, `Interface`, `Enumeration`, a
+            // `#Constant`, `Dim`, `NewList`, `NewMap`, and `DataSection` are
+            // all supported inside a DeclareModule section. `Macro` needs no
+            // case here at all - the preprocessor's own separate pass
+            // already expands it away before this construct even has AST
+            // shape (see DeclareModuleStmt's own doc comment). Each allowed
+            // statement is visited directly (not
             // via visitBlock) so this restriction is enforced here, once,
             // rather than threaded through the general statement
             // dispatcher; the public set itself is always keyed by the
@@ -1756,6 +1765,10 @@ void Sema::visitStmt(ast::Stmt& stmt) {
                         break;
                     case ast::StmtKind::StructureDecl:
                         publicSet.insert(static_cast<ast::StructureDeclStmt&>(*bodyStmt).name);
+                        visitStmt(*bodyStmt);
+                        break;
+                    case ast::StmtKind::InterfaceDecl:
+                        publicSet.insert(static_cast<ast::InterfaceDeclStmt&>(*bodyStmt).name);
                         visitStmt(*bodyStmt);
                         break;
                     case ast::StmtKind::Enumeration:
@@ -1826,20 +1839,19 @@ void Sema::visitStmt(ast::Stmt& stmt) {
             // textual position, exactly like top-level code outside any
             // module (see ModuleStmt's own doc comment). So this is a
             // *blocklist*, not an allowlist like DeclareModule's own body
-            // has: everything not explicitly deferred here (Macros - a
-            // genuinely different layer, expanded by the preprocessor
-            // before Module/DeclareModule constructs even have AST shape -
-            // and Interfaces/nested modules, neither module-scoped by this
-            // slice, so letting them through would silently leak into the
-            // flat top-level tables instead of this module's own namespace)
-            // is visited through the ordinary dispatcher, which is already
-            // module-aware via `currentModule_` for everything this slice
-            // supports (Procedure/Declare/Global/Structure/Enumeration/
-            // constant/Dim/NewList/NewMap/DataSection/plain statements
-            // referencing them).
+            // has: everything not explicitly deferred here (nested modules -
+            // not module-scoped, so letting one through would silently leak
+            // into the flat top-level tables instead of this module's own
+            // namespace; `Macro` needs no case at all here, since the
+            // preprocessor's own separate pass already expands it away
+            // before this construct even has AST shape - see
+            // ModuleStmt's own doc comment) is visited through the ordinary
+            // dispatcher, which is already module-aware via `currentModule_`
+            // for everything this slice supports (Procedure/Declare/Global/
+            // Structure/Interface/Enumeration/constant/Dim/NewList/NewMap/
+            // DataSection/plain statements referencing them).
             for (auto& bodyStmt : mod.body) {
                 switch (bodyStmt->kind) {
-                    case ast::StmtKind::InterfaceDecl:
                     case ast::StmtKind::DeclareModule:
                     case ast::StmtKind::Module:
                         diagnostics_.error(bodyStmt->loc,
@@ -2017,9 +2029,25 @@ void Sema::visitExpr(ast::Expr& expr) {
             // it as a missing-argument error. Recognized here, before the
             // operand is visited at all, exactly like the List/Map bare
             // `name()` special-casing elsewhere in this function.
+            //
+            // M7d's third slice: `call.name` is resolved through
+            // `resolveModuleQualifiedName` *first* - a real, pre-existing
+            // gap this slice closes (flagged but left unfixed by the first
+            // Module slice, since no oracle example exercised it then): an
+            // Interface's vtable DataSection (`Data.i @ProcName()`) is the
+            // one realistic case that actually needs a module-scoped
+            // `@ProcedureName()` to work at all, so it can no longer stay
+            // deferred once Interface itself is module-scoped. Safe to call
+            // here even though a plain (non-`@`) call to the same procedure
+            // resolves it again later - the function is a no-op once a name
+            // already contains "::" (see its own doc comment).
             if (addr.operand->kind == ast::ExprKind::Call) {
                 auto& call = static_cast<ast::CallExpr&>(*addr.operand);
+                resolveModuleQualifiedName(
+                    call.name, [this](const std::string& n) { return procedures_.contains(n); },
+                    [](const std::string&) { return false; }); // no builtin procedure can be @-addressed
                 if (procedureInfo(call.name) != nullptr) {
+                    checkModuleAccess(call.name, addr.loc);
                     if (!call.args.empty()) {
                         diagnostics_.error(addr.loc,
                                             "'@" + call.spelling + "()' takes no arguments - it names the "

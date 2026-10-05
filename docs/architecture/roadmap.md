@@ -34,7 +34,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
 | **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Six slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar` - see M7b notes); further gadget types/`Requester` family/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
-| **M7d** | `Module`/`DeclareModule`/`EndModule` | Two slices done (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection - see M7d notes); `Macro`/`Interface` inside a Module deliberately deferred |
+| **M7d** | `Module`/`DeclareModule`/`EndModule` | Three slices done (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface - see M7d notes); unqualified `Macro` inside a Module already works, qualified `Module::Macro()` invocation from outside remains deliberately deferred (a separate `MacroExpander` subsystem effort, not Sema's own namespacing) |
 
 ## M0 Implementation Notes
 
@@ -2700,4 +2700,105 @@ extended to 18 `[modules]` tests total. One new differential e2e test
 (`tests/e2e_diff/modules_extended`), combining all six kinds into one program, diffs byte-for-byte
 against the real oracle. 309 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize`
 (ASan/UBSan/LSan clean), including the 300 that predate this slice.
+
+## M7d Implementation Notes (`Module`/`DeclareModule`/`EndModule`, third slice: `Interface`)
+
+**Scope landed**: `Interface`/`EndInterface` declared inside a `DeclareModule`/`Module`, the one
+declaration kind the second slice left deliberately deferred. `Macro` needed no corresponding slice at
+all - see its own section below, which explains why. Oracle-verified end to end with a polymorphic
+two-"class" (Circle/Square) dispatch example, the module-scoped counterpart to M7c's own non-module
+one - see `tests/e2e_diff/modules_interface`, which diffs byte-for-byte against the real oracle.
+
+**The smallest possible extension of this slice's own established pattern - because the reference
+side had already, silently, been done**: `resolveModuleQualifiedTypeName` (the Structure/Interface
+type-name resolver used by every `Define`/`Dim`/field/parameter type reference) already checked
+`interfaces_.contains(n)` alongside `structures_.contains(n)` from the moment it was first written in
+the *second* slice, purely because `InterfaceInfo` and `StructureInfo` happened to share one lookup
+function from the start. Only the *declaration* side (`InterfaceDeclStmt`'s own Sema case) was missing
+the one-line mangle-in-place (`ifaceDecl.name = currentModule_ + "::" + ifaceDecl.name;`) every other
+kind already has - copied verbatim from `StructureDeclStmt`'s own case, plus removing `InterfaceDecl`
+from `Module`'s own explicit reject-list and adding it to `DeclareModule`'s own allowlist (both oracle-
+verified placements: legal in either section, private unless promised in `DeclareModule`, confirmed
+directly via the usual "Module item 'X' is not declared as public" rejection).
+
+**A real, pre-existing gap this slice had to close to be practically usable at all, not an optional
+nicety**: `@ProcedureName()` (the procedure-address special case in `visitExpr`, needed for every
+Interface vtable's own `DataSection`) read `call.name` directly rather than resolving it through
+`resolveModuleQualifiedName` first - a gap the *first* M7d slice's own notes already flagged but left
+unfixed, since no oracle example exercised it then. A module's own vtable absolutely needs it: `Data.i
+@ProcName()` inside a module's own `DataSection`, naming a procedure in the *same* module, is exactly
+the shape every realistic Interface-in-Module example takes. Fixed by resolving `call.name` the same
+way an ordinary call already does, before checking `procedureInfo`, and adding the matching
+`checkModuleAccess` call - safe to call `resolveModuleQualifiedName` here even though a plain call to
+the same procedure elsewhere resolves it again later, since the function is a no-op once a name already
+contains `"::"`.
+
+**A second, deeper pre-existing gap, discovered only by trying to write an oracle-faithful vtable-
+wiring idiom for a module and finding no way to do it that didn't hit a wall**: oracle-verified directly
+that real PB's own `?Label` has *no* cross-module access of any kind - not `?Module::Label` (a
+"Garbage at the end of the line" parse error, surprisingly, since this project's own parser already
+*accepts* that syntax, added speculatively in the second slice "as a reasonable, low-risk extrapolation"
+from `Restore Module::Label`'s identical shape - now oracle-confirmed *wrong*; left in the parser as
+dead-but-harmless syntax rather than torn out, since rejecting it with a *worse*, hand-rolled error
+would be no improvement over the real compiler's own generic one), nor `UseModule` + a bare `?Label`
+("Label not found"). The *only* way to wire a module's own vtable field is code textually inside the
+same module - which meant every realistic example needed `?Label` referenced from *inside* a
+Procedure's own body (a module's own "Init" procedure), not just top-level code the way every prior
+`?Label` example (M7c's own included) exclusively used. That combination had never been exercised and
+didn't work at all: `pb_label_X was not declared in this scope`, a genuine, general Codegen bug
+predating this slice entirely, with nothing module-specific about it - `genDataLabelArrays()` was
+deliberately emitted *after* `genProcedures()` (so a label's own `Data.i @Procedure()` item could
+reference an already-declared function), which is exactly backwards for a Procedure's own body wanting
+to reference the label array itself. Fixed with a standard C++ forward-declare/define split: a new
+`genDataLabelArrayForwardDecls()` pass emits a plain `extern const std::array<std::int64_t, N>
+pb_label_X;` for every addressable label *before* any Procedure is generated (computed by a new,
+genExpr-free `collectDataLabelSizes` - deliberately not reusing `collectDataLabelArrays` a second time
+to get sizes, to avoid relying on `genExpr` having no stateful side effects when called twice on the
+same AST), with `genDataLabelArrays()`'s own existing pass (now dropping `static`, to match the
+`extern`-established external linkage) still providing the real definition afterward. Verified both
+with a standalone, non-module `?Label`-inside-a-Procedure regression (extending
+`tests/e2e_diff/interfaces`, which also confirms the address genuinely points at the right data via
+`PeekQ`, not just that it compiles) and the module-scoped vtable-wiring case `modules_interface` itself
+needs.
+
+**Two more narrow, unrelated gaps found while designing a safe, non-dangling oracle probe, deliberately
+left alone rather than fixed as drive-by scope creep**: `Declare` (unlike `Procedure`) doesn't parse a
+pointer-typed parameter at all, and `*ptr.Type = expression` (implicit pointer declaration via a bare
+assignment, as opposed to `Define *ptr.Type = expression`) isn't recognized as a declarator - both
+confirmed to fail identically with zero module involvement, so neither is specific to Interface or
+Modules. Worked around in every test by using an `Integer`-typed address parameter instead of a pointer
+one, and `Define` instead of a bare assignment - both already-idiomatic, oracle-equivalent alternatives
+that need no new feature to use.
+
+**`Macro` needed no implementation work in this slice at all, confirmed by direct testing rather than
+left as an assumption**: real PB's own preprocessor-level `Macro` scoping turned out to be genuinely
+module-aware (oracle-verified: a `Macro` declared inside `DeclareModule`'s own body is *not* visible
+unqualified outside the module - "Triple() is not a function, array, list, map or macro" - but *is*
+reachable via `Module::MacroName(args)` qualified-invocation syntax, and private-unless-promised the
+same way every other member kind is) - a discovery that could have meant a substantial new subsystem
+(this project's own `MacroExpander` is a completely separate token-stream pass with zero AST/Module
+awareness, unlike Sema's own unified mangling approach for everything else). Directly tested before
+assuming either outcome: a `Macro` defined inside a `Module`'s own body and invoked *unqualified* from
+inside a `Procedure` in that same module already works correctly today, oracle-byte-matched, for the
+simple reason that macro expansion is purely textual and happens before `Module`/`Procedure` boundaries
+have any meaning at all - the invocation site and the macro definition are both inside the same textual
+region, so the preprocessor's own simple, context-free substitution already does the right thing by
+coincidence, with nothing module-specific required. The genuinely unsupported piece - qualified
+`Module::MacroName(args)` invocation from *outside* the module, and enforcing private-macro rejection -
+would require teaching `MacroExpander` real `DeclareModule`/`Module`/`EndModule`/`EndDeclareModule`
+boundary-tracking and a visibility model of its own, a genuinely separate, substantial undertaking
+unrelated to anything Sema's own namespace-mangling machinery already does - deliberately left
+unimplemented rather than rushed, the same honest-gap treatment this project has given every other
+deferred piece, with the one concrete data point (confirmed, not assumed) that the common, realistic
+case - a macro used only inside its own module - already just works.
+
+**Testing**: 3 new Sema unit tests (namespace mangling with qualified/`UseModule`'d pointer-type access,
+the private-Interface rejection test, and a regression test for the `@ProcedureName()` fix pinned
+specifically to the vtable-DataSection shape that needs it) extended the existing suite to 21
+`[modules]` tests total. One new differential e2e test (`tests/e2e_diff/modules_interface`, a
+polymorphic Circle/Square dispatch through a module-scoped Interface, both qualified and `UseModule`'d)
+diffs byte-for-byte against the real oracle; `tests/e2e_diff/interfaces` gained its own small, non-
+module addition for the general `?Label`-inside-a-Procedure fix. 334 tests pass across
+`linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean), including the 331 that predate
+this slice.
 
