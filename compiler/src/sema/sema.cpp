@@ -413,6 +413,27 @@ void Sema::registerGuiLibBuiltins() {
          5},
         {"opengadgetlist", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
         {"closegadgetlist", TypeSuffix::Integer, {}, 0},
+        // M7b's tenth GUI slice: PanelGadget - a tabbed box, the second of
+        // the "gadget-list nesting" family. No Flags parameter at all,
+        // oracle-verified directly against PanelGadget.html's own real
+        // syntax (unlike ContainerGadget's own). AddGadgetItem's own
+        // ImageID/Options are both optional (oracle-verified: Options is
+        // Tree/MDI-specific, accepted but ignored for Panel); Get/
+        // SetGadgetItemText's own Column is optional too, ignored for
+        // Panel the same way (ListIcon/ExplorerList-specific).
+        {"panelgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         5},
+        {"addgadgetitem", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer},
+         3},
+        {"countgadgetitems", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"removegadgetitem", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"cleargadgetitems", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"getgadgetitemtext", TypeSuffix::String,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"setgadgetitemtext", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String, TypeSuffix::Integer}, 3},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -550,6 +571,8 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "isgadget",      "freegadget",  "resizegadget",     "hidegadget",     "disablegadget",
         "setgadgettext", "getgadgettext", "setgadgetstate", "getgadgetstate", "messagerequester",
         "containergadget", "opengadgetlist", "closegadgetlist",
+        "panelgadget", "addgadgetitem", "countgadgetitems", "removegadgetitem", "cleargadgetitems",
+        "getgadgetitemtext", "setgadgetitemtext",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",

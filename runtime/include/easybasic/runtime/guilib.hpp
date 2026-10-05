@@ -366,6 +366,18 @@ inline void onGadgetClicked(GtkWidget* widget, gpointer) { queueGadgetEvent(widg
 /// `#PB_Event_Gadget` with `#PB_EventType_Change` (`768`).
 inline void onGadgetChanged(GtkWidget* widget, gpointer) { queueGadgetEvent(widget, 768); }
 
+/// `GtkNotebook::switch-page` (M7b's tenth GUI slice: `PanelGadget`) -
+/// oracle-verified a real tab switch reports `#PB_EventType_Change`
+/// (`768`) as `EventType()`, the same value `StringGadget`'s own edits
+/// use. `switch-page`'s own signal shape (`notebook, page, page_num,
+/// data`) is GTK-specific to `GtkNotebook`, unlike every other gadget
+/// signal this header connects, which is why this isn't just another
+/// call to `onGadgetChanged` directly - GTK's signal marshaling requires
+/// the handler's own parameter list to match.
+inline void onPanelSwitchPage(GtkNotebook* notebook, GtkWidget*, guint, gpointer) {
+    queueGadgetEvent(GTK_WIDGET(notebook), 768);
+}
+
 /// Queues a `#PB_Event_Menu` for a leaf `MenuItem()`'s own `"activate"`
 /// signal, reading its element/window IDs back from `g_object_set_data`
 /// (set in `pbMenuItem`) - the menu equivalent of `queueGadgetEvent`.
@@ -540,6 +552,82 @@ inline void pruneContainerGadgets(std::int64_t containerId) {
             ++it;
         }
     }
+}
+
+/// `pbRemoveGadgetItem`/`pbClearGadgetItems`'s own recursive half (M7b's
+/// tenth GUI slice: `PanelGadget`) - a sibling to `pruneContainerGadgets`
+/// above, needed because that one prunes by a *whole gadget's* own
+/// `gadgetContainerIdKey()` (every tab of a Panel shares the same one,
+/// the Panel's own `#Gadget` ID - correct for freeing the *entire* Panel,
+/// wrong for removing just *one* of its tabs). This instead walks
+/// `gadgetTable()` once and keeps whatever GTK's own `gtk_widget_is_
+/// ancestor` already knows how to answer - is this gadget's own widget a
+/// descendant of `root` (one tab's own inner `GtkFixed`) - which finds
+/// every nested gadget at any depth, including a container/another Panel
+/// nested inside this tab, without needing its own recursion at all.
+inline void pruneGadgetsUnderWidget(GtkWidget* root) {
+    for (auto it = gadgetTable().begin(); it != gadgetTable().end();) {
+        if (gtk_widget_is_ancestor(it->second, root) != 0) {
+            containerFixedTable().erase(it->first);
+            it = gadgetTable().erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+/// `AddGadgetItem`'s own tab-label widget (M7b's tenth GUI slice:
+/// `PanelGadget`) - a plain `GtkLabel` with no `ImageID`, otherwise a
+/// `GtkBox` pairing a 16x16 icon with one (oracle-verified: "Les
+/// dimensions des images sont de 16x16 pixels", the exact wording
+/// `attachMenuItemImage`'s own doc comment already cites for `MenuItem`'s
+/// identical `ImageID` convention - not duplicated here since a tab label
+/// isn't a `GtkBin` being retrofitted, it's built fresh for a brand new
+/// page, so swapping a single child in place doesn't apply).
+inline GtkWidget* buildTabLabel(const std::string& text, std::int64_t imageId) {
+    GtkWidget* label = gtk_label_new(text.c_str());
+    if (imageId == 0) {
+        return label;
+    }
+    auto* pixbuf = reinterpret_cast<GdkPixbuf*>(imageId);
+    GdkPixbuf* scaled = gdk_pixbuf_scale_simple(pixbuf, 16, 16, GDK_INTERP_BILINEAR);
+    if (scaled == nullptr) {
+        return label;
+    }
+    GtkWidget* image = gtk_image_new_from_pixbuf(scaled);
+    g_object_unref(scaled);
+    GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_box_pack_start(GTK_BOX(box), image, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
+    gtk_widget_show(image);
+    gtk_widget_show(label);
+    return box;
+}
+
+/// Finds the real `GtkLabel` inside a tab's own label widget, whether
+/// it's the widget itself (no `ImageID`) or nested inside `buildTabLabel`'s
+/// own `GtkBox` - the `PanelGadget` equivalent of `menuItemLabel` below,
+/// shared by `pbGetGadgetItemText`/`pbSetGadgetItemText`.
+inline GtkWidget* findLabelInTabWidget(GtkWidget* tabLabelWidget) {
+    if (tabLabelWidget == nullptr) {
+        return nullptr;
+    }
+    if (GTK_IS_LABEL(tabLabelWidget) != 0) {
+        return tabLabelWidget;
+    }
+    if (GTK_IS_CONTAINER(tabLabelWidget) != 0) {
+        GList* children = gtk_container_get_children(GTK_CONTAINER(tabLabelWidget));
+        GtkWidget* label = nullptr;
+        for (GList* l = children; l != nullptr; l = l->next) {
+            if (GTK_IS_LABEL(l->data) != 0) {
+                label = GTK_WIDGET(l->data);
+                break;
+            }
+        }
+        g_list_free(children);
+        return label;
+    }
+    return nullptr;
 }
 
 /// Finds the real `GtkLabel` for a menu item's own text, whether it's
@@ -980,21 +1068,207 @@ inline std::int64_t pbContainerGadget(std::int64_t gadgetId, std::int64_t x, std
     return 1;
 }
 
+/// M7b's tenth GUI slice: `PanelGadget`, a tabbed box - `GtkNotebook` is
+/// the natural fit. Unlike `ContainerGadget`, creating one does *not*
+/// push anything onto `gadgetListStack()` by itself - oracle-verified
+/// directly (`PanelGadget.html`'s own "Remarques"): a freshly created
+/// Panel's own item list is empty, and at least one tab must exist
+/// (via `AddGadgetItem`, the only thing that actually pushes a frame)
+/// before any gadget can be placed into it at all. `Flags` doesn't exist
+/// for this gadget at all in real PB's own current docs (unlike
+/// `ContainerGadget`'s own) - confirmed by this project's own methodology
+/// (read the real docs first), not merely absent from the signature by
+/// omission.
+inline std::int64_t pbPanelGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                   std::int64_t height) {
+    detail::ensureGtkInit();
+    GtkWidget* notebook = gtk_notebook_new();
+    g_signal_connect(notebook, "switch-page", G_CALLBACK(detail::onPanelSwitchPage), nullptr);
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, notebook) ? 1 : 0;
+}
+
+/// `AddGadgetItem(#Gadget, Position, Text$ [, ImageID [, Options]])` -
+/// scoped to `PanelGadget` only for now (the one gadget type this project
+/// actually has that supports it; real PB's own docs also list
+/// `ComboBoxGadget`/`EditorGadget`/`ListViewGadget`/`ListIconGadget`/
+/// `MDIGadget`/`TreeGadget`, none implemented yet - dispatching on the
+/// gadget's own real GTK widget type, same as `pbGetGadgetText`, so
+/// adding any of those later is a new branch here, not a rewrite).
+/// `Options` is `TreeGadget`/`MDIGadget`-specific (sub-level / window
+/// flags respectively) - accepted but ignored for Panel, oracle-verified
+/// via `AddGadgetItem.html`'s own remarks. `Position`'s `-1` ("append")/
+/// non-negative ("insert at this index") split already matches
+/// `gtk_notebook_insert_page`'s own convention exactly, needing no
+/// translation.
+///
+/// **The "replace, not push" nesting rule** - oracle-verified directly,
+/// matching the exact real `PanelGadget.html` example sequence (two
+/// `AddGadgetItem` calls on the *same* Panel, no `CloseGadgetList`
+/// between them, then exactly *one* `CloseGadgetList()` at the end,
+/// confirmed to return all the way back to window level - a second,
+/// immediately following `CloseGadgetList()` then correctly hits the
+/// real "nothing open" fatal error): a second `AddGadgetItem` call
+/// targeting the Panel that's *already* the current top of
+/// `gadgetListStack()` (because an earlier `AddGadgetItem` on it put it
+/// there) retargets that same frame to the new tab instead of pushing an
+/// additional one - the same design the Qt6 sibling project's own
+/// `docs/42-gadget-container-nesting.md` reached independently for the
+/// identical reason, confirmed here too rather than assumed from that
+/// precedent alone. A *different* Panel (including one nested inside the
+/// first, as the real `PanelGadget.html` example's own "Sous-onglet"
+/// case exercises) still pushes a genuinely new frame, since its own
+/// `containerId` won't match whatever's currently on top.
+inline std::int64_t pbAddGadgetItem(std::int64_t gadgetId, std::int64_t position, const PBString& text,
+                                     std::int64_t imageId = 0, std::int64_t /*options*/ = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+        return 0;
+    }
+    auto* notebook = GTK_NOTEBOOK(it->second);
+    GtkWidget* page = gtk_fixed_new();
+    GtkWidget* label = detail::buildTabLabel(text.bytes(), imageId);
+    int insertAt = position < 0 ? -1 : static_cast<int>(position);
+    gtk_notebook_insert_page(notebook, page, label, insertAt);
+    gtk_widget_show(page);
+    gtk_widget_show(label);
+
+    if (!detail::gadgetListStack().empty() && detail::gadgetListStack().back().containerId == gadgetId) {
+        detail::gadgetListStack().back().fixed = page;
+    } else {
+        detail::gadgetListStack().push_back({gadgetId, page});
+    }
+    return 1;
+}
+
+inline std::int64_t pbCountGadgetItems(std::int64_t gadgetId) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+        return 0;
+    }
+    return gtk_notebook_get_n_pages(GTK_NOTEBOOK(it->second));
+}
+
+/// Oracle-verified (both this and `ClearGadgetItems` below): removing a
+/// tab also frees every gadget that was nested inside it, at any depth -
+/// via `pruneGadgetsUnderWidget`, *before* `gtk_notebook_remove_page`
+/// destroys the page's own widget tree GTK-side, the same ordering
+/// `pbFreeGadget`'s own `pruneContainerGadgets` call already uses and for
+/// the same reason.
+inline std::int64_t pbRemoveGadgetItem(std::int64_t gadgetId, std::int64_t position) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+        return 0;
+    }
+    auto* notebook = GTK_NOTEBOOK(it->second);
+    GtkWidget* page = gtk_notebook_get_nth_page(notebook, static_cast<int>(position));
+    if (page == nullptr) {
+        return 0;
+    }
+    detail::pruneGadgetsUnderWidget(page);
+    gtk_notebook_remove_page(notebook, static_cast<int>(position));
+    return 1;
+}
+
+inline std::int64_t pbClearGadgetItems(std::int64_t gadgetId) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+        return 0;
+    }
+    auto* notebook = GTK_NOTEBOOK(it->second);
+    for (int n = gtk_notebook_get_n_pages(notebook) - 1; n >= 0; --n) {
+        GtkWidget* page = gtk_notebook_get_nth_page(notebook, n);
+        if (page != nullptr) {
+            detail::pruneGadgetsUnderWidget(page);
+        }
+        gtk_notebook_remove_page(notebook, n);
+    }
+    return 1;
+}
+
+/// `Column` is `ListIconGadget`/`ExplorerListGadget`-specific - accepted
+/// but ignored for `PanelGadget`, oracle-verified via each function's own
+/// remarks ("'Colonne' est ignorée" for Panel specifically).
+inline PBString pbGetGadgetItemText(std::int64_t gadgetId, std::int64_t element, std::int64_t /*column*/ = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+        return PBString();
+    }
+    auto* notebook = GTK_NOTEBOOK(it->second);
+    GtkWidget* page = gtk_notebook_get_nth_page(notebook, static_cast<int>(element));
+    if (page == nullptr) {
+        return PBString();
+    }
+    GtkWidget* label = detail::findLabelInTabWidget(gtk_notebook_get_tab_label(notebook, page));
+    if (label == nullptr) {
+        return PBString();
+    }
+    const char* text = gtk_label_get_text(GTK_LABEL(label));
+    return PBString(text != nullptr ? text : "");
+}
+
+inline std::int64_t pbSetGadgetItemText(std::int64_t gadgetId, std::int64_t element, const PBString& text,
+                                         std::int64_t /*column*/ = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end() || GTK_IS_NOTEBOOK(it->second) == 0) {
+        return 0;
+    }
+    auto* notebook = GTK_NOTEBOOK(it->second);
+    GtkWidget* page = gtk_notebook_get_nth_page(notebook, static_cast<int>(element));
+    if (page == nullptr) {
+        return 0;
+    }
+    GtkWidget* label = detail::findLabelInTabWidget(gtk_notebook_get_tab_label(notebook, page));
+    if (label == nullptr) {
+        return 0;
+    }
+    gtk_label_set_text(GTK_LABEL(label), text.bytes().c_str());
+    return 1;
+}
+
 /// `OpenGadgetList(#Gadget [, Element])` - reopens a previously-created
 /// container as the current gadget-list target, so more gadgets can be
 /// added to it dynamically after its own matching `CloseGadgetList()`.
-/// `Element` is `PanelGadget`-specific (selects which tab to add to) -
-/// accepted but ignored here, oracle-verified a bare one-argument call
-/// against a plain `ContainerGadget` needs nothing else. Returns `0`
-/// (and pushes nothing) for a `#Gadget` that isn't a currently live
-/// container - this project's own established "not worth modeling every
-/// misuse precisely" stance (see `placeGadget`'s own doc comment).
-inline std::int64_t pbOpenGadgetList(std::int64_t gadgetId, std::int64_t /*element*/ = 0) {
-    auto it = detail::containerFixedTable().find(gadgetId);
-    if (it == detail::containerFixedTable().end()) {
+/// `Element` is `PanelGadget`-specific (selects which existing tab to add
+/// to) - accepted but ignored for a plain `ContainerGadget`, oracle-
+/// verified a bare one-argument call against one needs nothing else.
+/// Returns `0` (and pushes nothing) for a `#Gadget` that isn't a
+/// currently live container/panel - this project's own established "not
+/// worth modeling every misuse precisely" stance (see `placeGadget`'s own
+/// doc comment).
+///
+/// M7b's tenth GUI slice (`PanelGadget`) extends this to dispatch on the
+/// gadget's own real GTK widget type, the same pattern `pbGetGadgetText`
+/// already uses: a `GtkNotebook` reopens `Element`'s own existing tab
+/// page (oracle-verified: `Element` genuinely addresses an *existing* tab
+/// here - `gtk_notebook_get_nth_page` returns `nullptr`, a harmless
+/// failure, for one that doesn't exist), everything else falls back to
+/// `containerFixedTable()` exactly as before. Real PB's own docs suggest
+/// omitting `Element` entirely dynamically adds a *new* tab for a Panel -
+/// oracle-tested directly and found to misbehave on this platform (real,
+/// unprompted `Gtk (CRITICAL): gtk_layout_put: assertion 'GTK_IS_LAYOUT
+/// (layout)' failed`/`gtk_widget_realize` warnings from the oracle itself,
+/// with no new tab actually created) - not replicated; omitting `Element`
+/// here always means the same as passing `0` (reopening the first tab),
+/// a safer, well-defined choice `AddGadgetItem` remains the correct way
+/// to add a genuinely new tab dynamically either way.
+inline std::int64_t pbOpenGadgetList(std::int64_t gadgetId, std::int64_t element = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
         return 0;
     }
-    detail::gadgetListStack().push_back({gadgetId, it->second});
+    if (GTK_IS_NOTEBOOK(it->second) != 0) {
+        GtkWidget* page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(it->second), static_cast<int>(element));
+        if (page == nullptr) {
+            return 0;
+        }
+        detail::gadgetListStack().push_back({gadgetId, page});
+        return 1;
+    }
+    auto containerIt = detail::containerFixedTable().find(gadgetId);
+    if (containerIt == detail::containerFixedTable().end()) {
+        return 0;
+    }
+    detail::gadgetListStack().push_back({gadgetId, containerIt->second});
     return 1;
 }
 
@@ -1132,28 +1406,49 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
     return 1;
 }
 
-/// Only `CheckBoxGadget` (a `GtkToggleButton`) has a meaningful checked
-/// state - every other gadget type harmlessly returns/ignores `0`, the same
-/// kind of narrow, documented simplification as `GetGadgetState`'s own
-/// untested-by-the-oracle behavior for non-stateful gadgets.
+/// `CheckBoxGadget` (a `GtkToggleButton`) has a meaningful checked state;
+/// `PanelGadget` (M7b's tenth GUI slice, a `GtkNotebook`) reports its own
+/// currently-displayed tab index instead, oracle-verified via
+/// `PanelGadget.html`'s own remarks ("Renvoie le numéro de l'onglet
+/// actuellement affiché") - every other gadget type harmlessly returns/
+/// ignores `0`, the same kind of narrow, documented simplification as
+/// `GetGadgetState`'s own untested-by-the-oracle behavior for every other
+/// non-stateful gadget.
 inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_TOGGLE_BUTTON(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (GTK_IS_NOTEBOOK(it->second) != 0) {
+        return gtk_notebook_get_current_page(GTK_NOTEBOOK(it->second));
+    }
+    if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {
         return 0;
     }
     return gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(it->second)) != 0 ? 1 : 0;
 }
 
 /// Oracle-verified: `SetGadgetState` does *not* queue a spurious
-/// `#PB_Event_Gadget` the way a real user click/toggle does - confirmed
-/// directly (a `SetGadgetState` immediately followed by a drained event
-/// poll loop reports zero gadget events). `gtk_toggle_button_set_active`
-/// would otherwise fire the same `"toggled"` signal `pbCheckBoxGadget`
-/// connects for real clicks, so the handler is blocked around this one
-/// programmatic change specifically.
+/// `#PB_Event_Gadget` the way a real user click/toggle (or, for
+/// `PanelGadget`, tab click) does - confirmed directly both ways (a
+/// `SetGadgetState` immediately followed by a drained event poll loop
+/// reports zero gadget events either way). `gtk_toggle_button_set_active`/
+/// `gtk_notebook_set_current_page` would otherwise fire the same
+/// `"toggled"`/`"switch-page"` signal a real click does, so the handler
+/// is blocked around this one programmatic change specifically, same
+/// idea either way.
 inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) {
     auto it = detail::gadgetTable().find(gadgetId);
-    if (it == detail::gadgetTable().end() || GTK_IS_TOGGLE_BUTTON(it->second) == 0) {
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (GTK_IS_NOTEBOOK(it->second) != 0) {
+        g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
+        gtk_notebook_set_current_page(GTK_NOTEBOOK(it->second), static_cast<int>(state));
+        g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
+        return 1;
+    }
+    if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {
         return 0;
     }
     g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onGadgetClicked), nullptr);

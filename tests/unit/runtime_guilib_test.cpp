@@ -1140,3 +1140,290 @@ TEST_CASE("CloseGadgetList with nothing open is a harmless no-op", "[runtime][gu
     CHECK(pbIsGadget(1) == 1);
     pbCloseWindow(403);
 }
+
+TEST_CASE("PanelGadget starts with no tabs, and AddGadgetItem captures subsequently created gadgets",
+          "[runtime][guilib]") {
+    // Oracle-verified (PanelGadget.html's own "Remarques"): unlike
+    // ContainerGadget, a freshly created Panel does *not* become the
+    // current gadget-list target by itself - CountGadgetItems is 0, and
+    // only AddGadgetItem (creating the first real tab) does.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(500, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbPanelGadget(1, 10, 10, 250, 250) == 1);
+    CHECK(pbCountGadgetItems(1) == 0);
+
+    CHECK(pbAddGadgetItem(1, -1, PBString("Tab1")) == 1);
+    CHECK(pbCountGadgetItems(1) == 1);
+    CHECK(pbButtonGadget(2, 5, 5, 60, 20, PBString("InTab1")) == 1);
+
+    GtkWidget* button = detail::gadgetTable().at(2);
+    auto* notebook = GTK_NOTEBOOK(detail::gadgetTable().at(1));
+    CHECK(gtk_widget_get_parent(button) == gtk_notebook_get_nth_page(notebook, 0));
+
+    pbCloseGadgetList();
+    pbCloseWindow(500);
+}
+
+TEST_CASE("A second AddGadgetItem on the same Panel replaces, not pushes - one CloseGadgetList "
+          "fully exits it",
+          "[runtime][guilib]") {
+    // Oracle-verified via the real PanelGadget.html example's own exact
+    // sequence: two AddGadgetItem calls on the same Panel with no
+    // CloseGadgetList between them, then exactly one CloseGadgetList -
+    // confirmed to return all the way to window level (a second,
+    // immediately following CloseGadgetList correctly hits the real
+    // "nothing open" case, oracle-verified separately).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(501, 10, 10, 300, 300, PBString("Test"));
+
+    pbPanelGadget(1, 10, 10, 250, 250);
+    pbAddGadgetItem(1, -1, PBString("Tab1"));
+    pbButtonGadget(2, 5, 5, 60, 20, PBString("InTab1"));
+    pbAddGadgetItem(1, -1, PBString("Tab2")); // same Panel, no CloseGadgetList yet
+    pbButtonGadget(3, 5, 5, 60, 20, PBString("InTab2"));
+    CHECK(pbCountGadgetItems(1) == 2);
+
+    CHECK(pbCloseGadgetList() == 1); // should fully exit the Panel
+    CHECK(pbButtonGadget(4, 5, 260, 60, 20, PBString("WindowLevel")) == 1);
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(4)) == detail::windowFixedTable().at(501));
+    CHECK(pbCloseGadgetList() == 0); // nothing left open - a harmless no-op here
+
+    pbCloseWindow(501);
+}
+
+TEST_CASE("A Panel nested inside another Panel's own tab pushes a genuinely new frame",
+          "[runtime][guilib]") {
+    // Replicates the real PanelGadget.html example's own "Sous-onglet"
+    // (sub-tab) structure: a second, different Panel inside the first
+    // one's own tab still needs its own CloseGadgetList, distinct from
+    // the replace-not-push behavior above (which only applies to the
+    // *same* Panel).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(502, 10, 10, 300, 300, PBString("Test"));
+
+    pbPanelGadget(1, 8, 8, 280, 280);
+    pbAddGadgetItem(1, -1, PBString("Outer"));
+    pbPanelGadget(2, 5, 5, 260, 200);
+    pbAddGadgetItem(2, -1, PBString("Inner1"));
+    pbButtonGadget(3, 5, 5, 60, 20, PBString("Deep"));
+    CHECK(pbCloseGadgetList() == 1); // closes inner Panel 2
+    pbButtonGadget(4, 5, 210, 60, 20, PBString("OuterLevel"));
+    CHECK(pbCloseGadgetList() == 1); // closes outer Panel 1
+    pbButtonGadget(5, 5, 290, 60, 20, PBString("WindowLevel"));
+
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(3)) ==
+          gtk_notebook_get_nth_page(GTK_NOTEBOOK(detail::gadgetTable().at(2)), 0));
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(4)) ==
+          gtk_notebook_get_nth_page(GTK_NOTEBOOK(detail::gadgetTable().at(1)), 0));
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(5)) == detail::windowFixedTable().at(502));
+
+    pbCloseWindow(502);
+}
+
+TEST_CASE("GetGadgetState/SetGadgetState report and select a Panel's own active tab, without "
+          "firing a spurious Change event",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(503, 10, 10, 300, 300, PBString("Test"));
+    pbPanelGadget(1, 10, 10, 250, 250);
+    pbAddGadgetItem(1, -1, PBString("Tab1"));
+    pbAddGadgetItem(1, -1, PBString("Tab2"));
+    pbCloseGadgetList();
+
+    CHECK(pbGetGadgetState(1) == 0); // the first tab stays active - adding more doesn't steal it
+
+    pbSetGadgetState(1, 1);
+    CHECK(pbGetGadgetState(1) == 1);
+
+    drainEvents();
+    CHECK(pbWindowEvent() == 0); // SetGadgetState queues nothing
+
+    pbCloseWindow(503);
+}
+
+TEST_CASE("A real tab switch (not SetGadgetState) queues #PB_Event_Gadget with #PB_EventType_Change",
+          "[runtime][guilib]") {
+    // gtk_notebook_set_current_page, called directly (bypassing
+    // pbSetGadgetState's own signal-blocking), is the GtkNotebook
+    // equivalent of gtk_button_clicked in the plain-gadget tests - it
+    // fires the exact same "switch-page" signal a real tab click does.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(504, 10, 10, 300, 300, PBString("Test"));
+    pbPanelGadget(1, 10, 10, 250, 250);
+    pbAddGadgetItem(1, -1, PBString("Tab1"));
+    pbAddGadgetItem(1, -1, PBString("Tab2"));
+    pbCloseGadgetList();
+    drainEvents();
+
+    gtk_notebook_set_current_page(GTK_NOTEBOOK(detail::gadgetTable().at(1)), 1);
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 1);
+    CHECK(pbEventType() == 768); // #PB_EventType_Change
+
+    pbCloseWindow(504);
+}
+
+TEST_CASE("CountGadgetItems/GetGadgetItemText/SetGadgetItemText round-trip a Panel's own tabs",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(505, 10, 10, 300, 300, PBString("Test"));
+    pbPanelGadget(1, 10, 10, 250, 250);
+    pbAddGadgetItem(1, -1, PBString("Tab1"));
+    pbAddGadgetItem(1, -1, PBString("Tab2"));
+    pbCloseGadgetList();
+
+    CHECK(pbCountGadgetItems(1) == 2);
+    CHECK(pbGetGadgetItemText(1, 0).bytes() == "Tab1");
+    CHECK(pbGetGadgetItemText(1, 1).bytes() == "Tab2");
+    CHECK(pbGetGadgetItemText(1, 99).bytes().empty()); // out of range - harmless failure
+
+    CHECK(pbSetGadgetItemText(1, 1, PBString("Renamed")) == 1);
+    CHECK(pbGetGadgetItemText(1, 1).bytes() == "Renamed");
+    CHECK(pbSetGadgetItemText(1, 99, PBString("Nope")) == 0); // out of range
+
+    pbCloseWindow(505);
+}
+
+TEST_CASE("RemoveGadgetItem frees every gadget nested in that tab and re-indexes the rest",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(506, 10, 10, 300, 300, PBString("Test"));
+    pbPanelGadget(1, 10, 10, 250, 250);
+    pbAddGadgetItem(1, -1, PBString("Tab1"));
+    pbButtonGadget(10, 5, 5, 60, 20, PBString("A"));
+    pbAddGadgetItem(1, -1, PBString("Tab2"));
+    pbButtonGadget(11, 5, 5, 60, 20, PBString("B"));
+    pbCloseGadgetList();
+
+    CHECK(pbRemoveGadgetItem(1, 0) == 1);
+    CHECK(pbCountGadgetItems(1) == 1);
+    CHECK(pbIsGadget(10) == 0); // freed along with its own tab
+    CHECK(pbIsGadget(11) == 1); // the surviving tab's own gadget, unaffected
+    CHECK(pbGetGadgetItemText(1, 0).bytes() == "Tab2"); // shifted down to index 0
+
+    CHECK(pbRemoveGadgetItem(1, 99) == 0); // out of range - harmless failure
+
+    pbCloseWindow(506);
+}
+
+TEST_CASE("ClearGadgetItems frees every gadget nested in every tab", "[runtime][guilib]") {
+    // Oracle-verified in isolation (no prior RemoveGadgetItem call on the
+    // same Panel): ClearGadgetItems does recursively free every nested
+    // gadget. A real, reproducible, and narrower oracle quirk - the exact
+    // same sequence *after* an earlier RemoveGadgetItem call on the same
+    // Panel instead leaves the survivor's own nested gadget alive
+    // (IsGadget still true) despite CountGadgetItems correctly reporting
+    // 0 - is deliberately *not* replicated here: this project always
+    // frees recursively, the more internally consistent behavior (and
+    // the same one RemoveGadgetItem itself always has), not that one
+    // narrow, anomalous combination.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(507, 10, 10, 300, 300, PBString("Test"));
+    pbPanelGadget(1, 10, 10, 250, 250);
+    pbAddGadgetItem(1, -1, PBString("Tab1"));
+    pbButtonGadget(10, 5, 5, 60, 20, PBString("A"));
+    pbAddGadgetItem(1, -1, PBString("Tab2"));
+    pbButtonGadget(11, 5, 5, 60, 20, PBString("B"));
+    pbCloseGadgetList();
+
+    CHECK(pbClearGadgetItems(1) == 1);
+    CHECK(pbCountGadgetItems(1) == 0);
+    CHECK(pbIsGadget(10) == 0);
+    CHECK(pbIsGadget(11) == 0);
+
+    pbCloseWindow(507);
+}
+
+TEST_CASE("OpenGadgetList reopens an existing Panel tab by its own Element index",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(508, 10, 10, 300, 300, PBString("Test"));
+    pbPanelGadget(1, 10, 10, 250, 250);
+    pbAddGadgetItem(1, -1, PBString("Tab1"));
+    pbAddGadgetItem(1, -1, PBString("Tab2"));
+    pbCloseGadgetList();
+
+    CHECK(pbOpenGadgetList(1, 0) == 1); // reopen tab 0, not the last-created tab 1
+    CHECK(pbButtonGadget(10, 5, 5, 60, 20, PBString("AddedToTab0")) == 1);
+    CHECK(pbCloseGadgetList() == 1);
+
+    CHECK(gtk_widget_get_parent(detail::gadgetTable().at(10)) ==
+          gtk_notebook_get_nth_page(GTK_NOTEBOOK(detail::gadgetTable().at(1)), 0));
+    CHECK(pbCountGadgetItems(1) == 2); // reopening doesn't create a new tab
+
+    // An out-of-range Element, or a #Gadget that isn't a live Panel/
+    // Container, is a harmless failure.
+    CHECK(pbOpenGadgetList(1, 99) == 0);
+    CHECK(pbOpenGadgetList(9999) == 0);
+
+    pbCloseWindow(508);
+}
+
+TEST_CASE("AddGadgetItem's own ImageID attaches an icon beside the tab's own label, without "
+          "breaking GetGadgetItemText/SetGadgetItemText",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(509, 10, 10, 300, 300, PBString("Test"));
+    pbCreateImage(1, 16, 16);
+    std::int64_t imageId = pbImageID(1);
+
+    pbPanelGadget(2, 10, 10, 250, 250);
+    CHECK(pbAddGadgetItem(2, -1, PBString("WithIcon"), imageId) == 1);
+    pbCloseGadgetList();
+
+    CHECK(pbGetGadgetItemText(2, 0).bytes() == "WithIcon");
+    CHECK(pbSetGadgetItemText(2, 0, PBString("Renamed")) == 1);
+    CHECK(pbGetGadgetItemText(2, 0).bytes() == "Renamed");
+
+    auto* notebook = GTK_NOTEBOOK(detail::gadgetTable().at(2));
+    GtkWidget* tabLabel = gtk_notebook_get_tab_label(notebook, gtk_notebook_get_nth_page(notebook, 0));
+    REQUIRE(tabLabel != nullptr);
+    CHECK(GTK_IS_BOX(tabLabel) != 0); // image + label, not a bare GtkLabel
+
+    pbFreeImage(1);
+    pbCloseWindow(509);
+}
+
+TEST_CASE("Freeing a Panel recursively frees every gadget nested in every tab, the same as a "
+          "Container",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(510, 10, 10, 300, 300, PBString("Test"));
+    pbPanelGadget(1, 10, 10, 250, 250);
+    pbAddGadgetItem(1, -1, PBString("Tab1"));
+    pbButtonGadget(10, 5, 5, 60, 20, PBString("A"));
+    pbAddGadgetItem(1, -1, PBString("Tab2"));
+    pbButtonGadget(11, 5, 5, 60, 20, PBString("B"));
+    pbCloseGadgetList();
+
+    CHECK(pbFreeGadget(1) == 1);
+    CHECK(pbIsGadget(1) == 0);
+    CHECK(pbIsGadget(10) == 0);
+    CHECK(pbIsGadget(11) == 0);
+
+    pbCloseWindow(510);
+}

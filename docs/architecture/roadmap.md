@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Nine slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Ten slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -3125,4 +3125,110 @@ own pre-existing, deliberate `IsGadget`-returns-a-clean-`1`-not-a-real-handle si
 a dedicated oracle probe program before being pinned as the golden `expected.stdout`. 369 tests pass
 across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean), including the 363
 that predate this slice.
+
+## M7b Implementation Notes (GUI core, tenth slice: `PanelGadget`)
+
+**Scope landed**: `PanelGadget` itself, `AddGadgetItem`/`RemoveGadgetItem`/`ClearGadgetItems`/
+`CountGadgetItems`/`GetGadgetItemText`/`SetGadgetItemText` (all five "universal item" functions real
+PB's own docs list as shared across many gadget types - `ComboBoxGadget`/`EditorGadget`/`ListViewGadget`/
+`ListIconGadget`/`MDIGadget`/`TreeGadget`, none implemented yet - dispatched on the gadget's own real
+GTK widget type, the same pattern `pbGetGadgetText` already uses, so adding any of those later is a new
+branch, not a rewrite), and extending `GetGadgetState`/`SetGadgetState`/`OpenGadgetList` - all three
+already existing, generic, dispatch-based functions - with a `GtkNotebook` branch alongside their
+existing ones. `#PB_Panel_ItemWidth`/`ItemHeight`/`TabHeight` (the only `PanelGadget`-specific
+`GetGadgetAttribute` constants real PB's own docs list) are explicitly out of scope: oracle-verified
+directly from those docs themselves - "(non pris en charge sur Linux GTK)" - not supported on this
+project's own target platform in real PB either, so there's nothing to implement.
+
+**`GtkNotebook` is the natural fit, continuing M7b's ninth slice's own "gadget-list nesting" thread**:
+each tab's own content area is a plain `GtkFixed` (exactly like `ContainerGadget`'s own inner one),
+registered as a `gtk_notebook_insert_page`/`append_page` "child" widget - `gtk_notebook_get_nth_page`
+retrieves it back directly, with no separate per-tab bookkeeping table needed at all. `Position`'s own
+`-1`-means-append convention (oracle-verified via `AddGadgetItem.html`) already matches
+`gtk_notebook_insert_page`'s own identically, needing no translation.
+
+**A real, oracle-verified design rule neither assumed from `ContainerGadget`'s own precedent nor from
+the Qt6 sibling project's prior notes alone, confirmed directly against real PB's own flagship
+`PanelGadget.html` example**: unlike `ContainerGadget`, creating a `PanelGadget` does *not* push
+anything onto `gadgetListStack()` by itself - oracle-verified directly (`PanelGadget.html`'s own
+"Remarques": a freshly created Panel's own item list is empty, and `CountGadgetItems` confirms `0`
+immediately after creation) - only `AddGadgetItem`, which creates the Panel's first real tab, actually
+pushes a frame.
+
+**The "replace, not push" nesting rule, confirmed directly rather than assumed from the Qt6 sibling
+project's own prior finding for the identical case**: a second `AddGadgetItem` call targeting the *same*
+Panel that's already the current top of `gadgetListStack()` (because an earlier `AddGadgetItem` on it
+put it there) *retargets* that frame to the new tab instead of pushing an additional one - confirmed by
+replicating the real `PanelGadget.html` example's own exact call sequence (two `AddGadgetItem` calls on
+the same Panel, no `CloseGadgetList` between them, then exactly *one* `CloseGadgetList()`) and verifying
+it returns all the way back to window level - a second, immediately following `CloseGadgetList()` then
+correctly hits the real "nothing open" fatal error (M7b's ninth slice's own, not replicated verbatim -
+see that slice's notes), proving only *one* frame was ever on the stack for the Panel despite two
+`AddGadgetItem` calls. A *different* Panel - including one nested inside the first, the real example's
+own "Sous-onglet" (sub-tab) structure - still pushes a genuinely new frame, since its own `containerId`
+won't match whatever's currently on top; this is derived directly from the frame's own existing
+`containerId` field (no separate "implicit owner" tracking variable needed, unlike the Qt6 sibling
+project's own equivalent design, which tracks it as a second piece of state alongside its stack).
+
+**A real, reproducible oracle quirk found and deliberately *not* replicated**: `ClearGadgetItems`,
+called on a Panel that has previously had `RemoveGadgetItem` called on it (even once, on an unrelated
+earlier tab), leaves whatever gadgets were nested in its *remaining* tabs still alive (`IsGadget` true)
+despite `CountGadgetItems` correctly reporting `0` - confirmed reproducible in isolation (a minimal two-
+tab, remove-one-then-clear sequence) - but *not* reproducible in a fuller, more structurally varied
+sequence (this slice's own golden e2e case's exact sequence, confirmed by running it against the real
+oracle directly before pinning the golden file), meaning the quirk is narrower and more fragile than "any
+Panel ever touched by RemoveGadgetItem" - not a well-defined feature worth chasing further or modeling
+precisely. This project's own `pbClearGadgetItems` always frees recursively, the same, more internally
+consistent behavior `RemoveGadgetItem` itself already always has (and what plain `ClearGadgetItems`
+itself does too, confirmed directly, when *no* prior `RemoveGadgetItem` call is in the picture at all) -
+a deliberate choice, not an oversight, in the same spirit as M7b's ninth slice's own `CloseGadgetList`-
+on-an-empty-stack simplification.
+
+**Recursive-free reuses M7b's ninth slice's own `pruneContainerGadgets` where it already fits
+(`FreeGadget` on an entire Panel - every tab shares the same Panel `#Gadget` ID as its own
+`gadgetContainerIdKey()`, so freeing the whole gadget already finds and frees every nested gadget across
+every tab, unchanged, for free) but needed a genuinely new sibling, `pruneGadgetsUnderWidget`, for
+`RemoveGadgetItem`/`ClearGadgetItems`'s own narrower "just this one tab" case**: `gadgetContainerIdKey()`
+can't distinguish *which* tab of the *same* Panel a gadget belongs to (every tab shares the same key, by
+design, since freeing the whole Panel should treat them all alike) - rather than inventing a second,
+per-tab id to track, `pruneGadgetsUnderWidget` instead asks GTK's own `gtk_widget_is_ancestor` directly:
+is this tracked gadget's own widget a descendant of the one tab's own `GtkFixed` being removed - which
+finds every nested gadget at any depth (including a container, or another Panel, nested inside that one
+tab) in a single pass, with no recursion of its own needed at all.
+
+**`#PB_EventType_Change` (`768`, already registered by `StringGadget`'s own edits) fires on a real tab
+switch** - a dedicated `onPanelSwitchPage` signal handler, connected to `GtkNotebook`'s own
+`"switch-page"` (a GTK-specific four-argument signal shape, unlike every other gadget signal this header
+connects, so it couldn't just reuse `onGadgetChanged` directly). Oracle-verified `SetGadgetState` does
+*not* fire this (a `SetGadgetState` immediately followed by a drained event-poll loop reports zero gadget
+events) - the exact same false-event risk `CheckBoxGadget`'s own `SetGadgetState` case already has, fixed
+the identical way (blocking the handler around the one programmatic `gtk_notebook_set_current_page`
+call).
+
+**`AddGadgetItem`'s own optional `ImageID`** reuses `attachMenuItemImage`'s own oracle-verified 16x16
+scaling convention, but as a *new* helper (`buildTabLabel`) rather than a direct reuse - a tab label is
+built fresh for a brand new page, so "swap an existing `GtkBin`'s child" (what `attachMenuItemImage`
+does for a menu item) doesn't apply; a matching `findLabelInTabWidget` (the `PanelGadget` sibling of the
+pre-existing `menuItemLabel`) lets `GetGadgetItemText`/`SetGadgetItemText` find the real label either
+way, with or without an icon attached.
+
+**Testing**: eleven new `runtime_guilib_test.cpp` cases - creation + auto-capture, the replace-not-push
+behavior (including a dedicated nested-Panel-inside-a-tab case replicating the real example's own
+"Sous-onglet" structure), `GetGadgetState`/`SetGadgetState` (including confirming no spurious event),
+a real tab switch's own `#PB_EventType_Change` (driving `gtk_notebook_set_current_page` directly, the
+`GtkNotebook` equivalent of `gtk_button_clicked` in this project's own existing click tests),
+`CountGadgetItems`/`GetGadgetItemText`/`SetGadgetItemText`, `RemoveGadgetItem`'s own recursive free +
+re-indexing, `ClearGadgetItems`'s own recursive free (the consistent behavior, not the oracle's own
+narrow quirk), `OpenGadgetList` reopening an existing tab by `Element`, `AddGadgetItem`'s own `ImageID`,
+and `FreeGadget` freeing an entire Panel recursively. One new golden e2e case (`tests/e2e/gui_panel`)
+exercises the same nesting/replace/item-management sequence end to end through `pbcxx` itself, confirmed
+pattern-for-pattern (not byte-for-byte, due to the same pre-existing `IsGadget`-handle-vs-`1`
+simplification M7b's ninth slice's own golden case already accounts for) against the real oracle before
+being pinned - including confirming the `ClearGadgetItems` quirk genuinely doesn't reproduce in this
+fuller sequence, matching this project's own chosen, consistent behavior exactly. 381 tests pass across
+`linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean), including the 369 that predate
+this slice - one genuine test bug caught and fixed along the way (a missing `CloseGadgetList()` before
+`CloseWindow()` in this slice's own first unit test, left a stale `gadgetListStack()` frame that corrupted
+the *next* test's own gadget placement - a real, if narrow, instance of the already-documented
+mismatched-Open/Close-pairs gap, triggered by this slice's own test code rather than by a real PB program).
 
