@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Fourteen slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Fifteen slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -3646,4 +3646,81 @@ surfaced both the collapsed-ancestor selection bug and the `SetGadgetText` behav
 neither of which the narrower, hand-picked oracle probes written before implementing had caught on their
 own. 414 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean),
 including the 403 that predate this slice.
+
+## M7b Implementation Notes (GUI core, fifteenth slice: `OptionGadget`/`ProgressBarGadget`)
+
+**Scope landed**: `OptionGadget`/`ProgressBarGadget` themselves. Neither needed any genuinely new,
+generic item/attribute function - `OptionGadget` is a `GtkRadioButton`, and `GtkButton`/`GtkToggleButton`'s
+own already-generic `GetGadgetText`/`SetGadgetText`/`GetGadgetState` dispatch (in place since
+`CheckBoxGadget`'s own second GUI slice) covers it for free; `GetGadgetAttribute`/`SetGadgetAttribute`
+(already generic since `SplitterGadget`'s own eleventh slice) just gained a `GtkProgressBar` branch for
+`#PB_ProgressBar_Minimum`/`Maximum`. `GetGadgetColor`/`SetGadgetColor` (documented for `ProgressBarGadget`'s
+own front/back color) are out of scope - the same broad, many-gadget-type feature already deferred for
+`ScrollAreaGadget`'s own twelfth slice.
+
+**`OptionGadget`'s own radio-button grouping, oracle-verified directly against its own real remarks**
+("Au premier appel de cette fonction, un groupe de cases à options est créé, et tous les appels suivants
+ajouteront une nouvelle case à options au groupe. Pour terminer le groupe, il suffit d'appeler un autre
+type de gadget."): a single global `optionGroupAnchor()` tracks the last `OptionGadget` successfully
+placed, reset back to `nullptr` inside `placeGadget` itself whenever the widget it just placed *isn't*
+a `GtkRadioButton` - the literal "calling another gadget type ends the group" rule implemented at the
+one shared choke point every gadget-creation function already funnels through, needing zero special-
+casing in any other creation function. Confirmed with a dedicated probe: three consecutive `OptionGadget`
+calls land in one group (selecting one deselects the other two automatically, `GtkRadioButton`'s own
+grouping needing no extra code); a `TextGadget` call in between starts a second, fully independent group
+(selecting within it leaves the first group's own selection untouched). Scoped to a single global rather
+than per-window - real PB programs grouping radio buttons across two different top-level windows at once
+would be a bizarre thing to rely on, and this isn't independently oracle-verified for that specific
+cross-window case.
+
+**Two real, oracle-caught behavioral differences from `CheckBoxGadget`'s own plain on/off toggle, neither
+assumed from GTK's own default behavior**: first, the very first button in a fresh group starts out
+*selected* (a radio group genuinely can't have "nothing selected" as a valid real-PB state) - set
+explicitly in `pbOptionGadget` (signal-blocked, avoiding a spurious creation-time event, the same
+established reason every other stateful gadget's own creation function already blocks one) rather than
+assumed from whatever GTK's own unmanipulated default happens to be. Second, `SetGadgetState(id, 0)` on
+an *already-selected* radio button is a complete no-op (confirmed directly: the button stays selected) -
+unlike a checkbox, a radio button can't be deselected by telling it directly to turn off, only by
+selecting a *different* member of its own group - handled by a dedicated `GTK_IS_RADIO_BUTTON(...) &&
+state == 0` short-circuit ahead of the generic `GTK_IS_TOGGLE_BUTTON` fallback `SetGadgetState` already
+has, rather than letting that fallback's own unconditional `gtk_toggle_button_set_active` run (which
+would have left the whole group with nothing selected at all, disagreeing with the oracle).
+
+**A real GTK wrinkle surfaced only while writing the real-signal-firing event test, not by the narrower
+oracle probing done beforehand**: activating one radio button in a group also deactivates whichever
+sibling was previously active, and *both* widgets' own `"toggled"` signal genuinely fires - so a single
+user click on an `OptionGadget` queues **two** `#PB_Event_Gadget` events (the outgoing button's own
+first, then the incoming one's), not just one the way a standalone `CheckBoxGadget`'s own toggle does.
+Not independently oracle-verified that real PB's own native-OS radio buttons produce exactly the same
+two-event sequence (this project's own methodology deliberately avoids simulated clicks against the real
+oracle), but a reasonable inference since PureBasic's own Linux backend is GTK-based too - noted here as
+an accepted, plausible-but-unverified assumption rather than a silently absorbed surprise.
+
+**`ProgressBarGadget`'s own `[Minimum, Maximum]` integer range, mapped onto `GtkProgressBar`'s own
+`[0.0, 1.0]` fraction via three `g_object_data` tags** (`Minimum`/`Maximum`/`Value` - `GtkProgressBar`
+has no inherent idea of an integer range at all), `progressBarUpdateFraction` recomputing the fraction
+from all three whenever any one of them changes. `SetGadgetState`'s own clamping behavior, oracle-
+verified directly rather than assumed: a value outside `[Minimum, Maximum]` is clamped into range (not
+left unclamped or silently ignored), *except* for the literal `#PB_ProgressBar_Unknown` sentinel (`-1`),
+stored and read back verbatim instead - mapped onto a flat `0.0` fraction visually (GTK has no built-in
+true "indeterminate" bar the way a real OS widget might; an animated pulse would need its own timer, out
+of scope for what a static fraction read-back can verify anyway). Changing `Minimum`/`Maximum` via
+`SetGadgetAttribute` does *not* retroactively re-clamp an already-set value into the new range - also
+oracle-verified directly (raising `Maximum` left an existing, already-in-range value unchanged) - not
+independently re-verified for the narrower case of *shrinking* a range out from under an existing value,
+since real PB's own docs don't describe that case either. `#PB_ProgressBar_Vertical` maps directly onto
+`GtkOrientable`'s own orientation; `#PB_ProgressBar_Smooth` (oracle-verified value `0`) is registered for
+name-compiling completeness but can't be a meaningful bit flag at all (`flags & 0` is always `0`),
+matching real PB's own documented "n'a aucun effet" note for it on several platforms anyway.
+
+**Testing**: seven new `runtime_guilib_test.cpp` cases - the full grouping/default-selection/mutual-
+exclusivity round-trip, a second group starting cleanly after a different gadget type breaks the first,
+the radio-can't-self-deselect no-op, the real two-event toggle sequence (driving the real GTK signal
+directly), `ProgressBarGadget`'s own value/clamping/`Unknown`-sentinel round-trip, `Minimum`/`Maximum`
+round-tripping through `GetGadgetAttribute`/`SetGadgetAttribute` without retroactive re-clamping, and a
+harmless failure for `ProgressBarGadget`-only attributes on an unrelated gadget type. One new golden e2e
+case (`tests/e2e/gui_option_progressbar`) exercises the same sequence end to end through `pbcxx` itself,
+confirmed line-for-line against the real oracle (modulo the established native-creation-handle
+divergence) before being pinned. 422 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize`
+(ASan/UBSan/LSan clean), including the 414 that predate this slice.
 

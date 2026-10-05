@@ -2226,3 +2226,163 @@ TEST_CASE("ListIcon/Tree-only functions are a harmless failure on an unrelated g
 
     pbCloseWindow(909);
 }
+
+TEST_CASE("OptionGadget groups consecutive calls into one mutually-exclusive radio group, the first "
+          "defaulting to selected",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(910, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbOptionGadget(0, 10, 10, 100, 20, PBString("Option 1")) == 1);
+    CHECK(pbOptionGadget(1, 10, 40, 100, 20, PBString("Option 2")) == 1);
+    CHECK(pbOptionGadget(2, 10, 70, 100, 20, PBString("Option 3")) == 1);
+
+    // Oracle-verified: the first option in a fresh group starts selected.
+    CHECK(pbGetGadgetState(0) == 1);
+    CHECK(pbGetGadgetState(1) == 0);
+    CHECK(pbGetGadgetState(2) == 0);
+
+    CHECK(pbSetGadgetState(1, 1) == 1);
+    CHECK(pbGetGadgetState(0) == 0); // automatically deselected
+    CHECK(pbGetGadgetState(1) == 1);
+    CHECK(pbGetGadgetState(2) == 0);
+    CHECK(pbGetGadgetText(1).bytes() == "Option 2");
+
+    pbCloseWindow(910);
+}
+
+TEST_CASE("A different gadget type between OptionGadget calls starts a brand new, independent radio group",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(911, 10, 10, 300, 300, PBString("Test"));
+
+    pbOptionGadget(0, 10, 10, 100, 20, PBString("Option 1"));
+    pbOptionGadget(1, 10, 40, 100, 20, PBString("Option 2"));
+    pbSetGadgetState(1, 1);
+
+    pbTextGadget(10, 10, 100, 100, 20, PBString("sep")); // breaks the group
+
+    CHECK(pbOptionGadget(2, 10, 130, 100, 20, PBString("Option A")) == 1);
+    CHECK(pbOptionGadget(3, 10, 160, 100, 20, PBString("Option B")) == 1);
+    CHECK(pbGetGadgetState(2) == 1); // first-in-new-group defaults selected
+    CHECK(pbGetGadgetState(3) == 0);
+
+    CHECK(pbSetGadgetState(3, 1) == 1);
+    CHECK(pbGetGadgetState(2) == 0);
+    CHECK(pbGetGadgetState(3) == 1);
+    CHECK(pbGetGadgetState(1) == 1); // first group's own state is untouched
+
+    pbCloseWindow(911);
+}
+
+TEST_CASE("OptionGadget's own SetGadgetState(id, 0) is a no-op - a radio button can't be deselected directly",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: unlike CheckBoxGadget's own plain on/off
+    // toggle, an already-selected radio button stays selected when told
+    // to deselect itself - only selecting a *different* group member
+    // actually changes anything.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(912, 10, 10, 300, 300, PBString("Test"));
+    pbOptionGadget(0, 10, 10, 100, 20, PBString("Option 1"));
+    pbOptionGadget(1, 10, 40, 100, 20, PBString("Option 2"));
+    pbSetGadgetState(1, 1);
+
+    CHECK(pbSetGadgetState(1, 0) == 1);
+    CHECK(pbGetGadgetState(1) == 1); // unchanged
+
+    pbCloseWindow(912);
+}
+
+TEST_CASE("A real OptionGadget toggle queues #PB_Event_Gadget with #PB_EventType_LeftClick",
+          "[runtime][guilib]") {
+    // Activating one radio button in a group also deactivates whichever
+    // sibling was previously active - both widgets' own "toggled" signal
+    // genuinely fires, so this queues *two* #PB_Event_Gadget events (the
+    // outgoing one first, then the incoming one), not just one the way a
+    // standalone CheckBoxGadget's own toggle does.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(913, 10, 10, 300, 300, PBString("Test"));
+    pbOptionGadget(0, 10, 10, 100, 20, PBString("Option 1")); // defaults selected
+    pbOptionGadget(1, 10, 40, 100, 20, PBString("Option 2"));
+    drainEvents();
+
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(detail::gadgetTable().at(1)), TRUE);
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 0); // Option 1 losing selection
+    CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 1); // Option 2 gaining selection
+    CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
+
+    pbCloseWindow(913);
+}
+
+TEST_CASE("ProgressBarGadget round-trips its own value, clamped to [Minimum, Maximum], plus the "
+          "#PB_ProgressBar_Unknown sentinel",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(914, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbProgressBarGadget(0, 10, 10, 250, 30, 0, 200) == 1);
+    CHECK(pbGetGadgetState(0) == 0);
+
+    CHECK(pbSetGadgetState(0, 50) == 1);
+    CHECK(pbGetGadgetState(0) == 50);
+
+    CHECK(pbSetGadgetState(0, 1000) == 1); // clamped to Maximum
+    CHECK(pbGetGadgetState(0) == 200);
+    CHECK(pbSetGadgetState(0, -50) == 1); // clamped to Minimum
+    CHECK(pbGetGadgetState(0) == 0);
+
+    CHECK(pbSetGadgetState(0, -1) == 1); // #PB_ProgressBar_Unknown
+    CHECK(pbGetGadgetState(0) == -1);
+
+    pbCloseWindow(914);
+}
+
+TEST_CASE("GetGadgetAttribute/SetGadgetAttribute round-trip a ProgressBar's own Minimum/Maximum without "
+          "retroactively re-clamping the current value",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(915, 10, 10, 300, 300, PBString("Test"));
+    pbProgressBarGadget(0, 10, 10, 250, 30, 0, 200);
+    pbSetGadgetState(0, 50);
+
+    CHECK(pbGetGadgetAttribute(0, 1) == 0); // #PB_ProgressBar_Minimum
+    CHECK(pbGetGadgetAttribute(0, 2) == 200); // #PB_ProgressBar_Maximum
+
+    CHECK(pbSetGadgetAttribute(0, 2, 400) == 1);
+    CHECK(pbGetGadgetAttribute(0, 2) == 400);
+    CHECK(pbGetGadgetState(0) == 50); // untouched
+
+    pbCloseWindow(915);
+}
+
+TEST_CASE("ProgressBar's own Minimum/Maximum attribute, and SetGadgetState's own radio-no-op rule, are a "
+          "harmless no-op/failure on an unrelated gadget type",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(916, 10, 10, 300, 300, PBString("Test"));
+    pbButtonGadget(1, 10, 10, 60, 20, PBString("B"));
+
+    CHECK(pbGetGadgetAttribute(1, 1) == 0);
+    CHECK(pbSetGadgetAttribute(1, 1, 1) == 0);
+
+    pbCloseWindow(916);
+}

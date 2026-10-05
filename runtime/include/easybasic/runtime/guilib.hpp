@@ -670,6 +670,25 @@ inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
     gtk_widget_destroy(window);
 }
 
+/// M7b's fifteenth GUI slice: `OptionGadget`'s own radio-button grouping -
+/// oracle-verified directly ("Au premier appel de cette fonction, un
+/// groupe de cases à options est créé, et tous les appels suivants
+/// ajouteront une nouvelle case à options au groupe. Pour terminer le
+/// groupe, il suffit d'appeler un autre type de gadget."): the *last*
+/// `OptionGadget` successfully placed, so long as nothing else has been
+/// placed since - `placeGadget`'s own end clears this back to `nullptr`
+/// whenever the widget it just placed *isn't* a `GtkRadioButton`, the
+/// literal "calling another gadget type ends the group" rule, needing no
+/// special-casing in any other gadget's own creation function at all. A
+/// single global rather than scoped per-window - real PB programs
+/// grouping radio buttons across two different top-level windows at once
+/// would be a bizarre thing to rely on, and this isn't independently
+/// oracle-verified for that specific cross-window case.
+inline GtkWidget*& optionGroupAnchor() {
+    static GtkWidget* anchor = nullptr;
+    return anchor;
+}
+
 /// Shared by every gadget-creation function: places `widget` into the
 /// *current* `GtkFixed` - `windowId`'s own top-level one, unless
 /// `gadgetListStack()` is non-empty, in which case its own top frame's
@@ -715,6 +734,7 @@ inline bool placeGadget(std::int64_t windowId, std::int64_t gadgetId, std::int64
     gtk_widget_set_size_request(widget, static_cast<int>(width), static_cast<int>(height));
     gtk_widget_show(widget);
     gadgetTable()[gadgetId] = widget;
+    optionGroupAnchor() = GTK_IS_RADIO_BUTTON(widget) != 0 ? widget : nullptr;
     return true;
 }
 
@@ -1304,6 +1324,42 @@ inline std::vector<GtkFileFilter*> applyFileFilters(GtkFileChooser* chooser, con
     return filters;
 }
 
+/// M7b's fifteenth GUI slice: `ProgressBarGadget` - a `GtkProgressBar`,
+/// whose own `gtk_progress_bar_set_fraction` only ever takes a `[0.0,
+/// 1.0]` double, with no inherent idea of a PB-style `[Minimum, Maximum]`
+/// integer range at all. The real range/current-value state lives in
+/// three `g_object_data` tags instead (`Minimum`/`Maximum`/`Value`),
+/// `progressBarUpdateFraction` mapping them onto the widget's own
+/// fraction whenever any of the three changes. Oracle-verified directly:
+/// `SetGadgetState` clamps to `[Minimum, Maximum]`, *except* for the
+/// literal sentinel `#PB_ProgressBar_Unknown` (`-1`), which is stored
+/// and read back verbatim instead of being clamped into range - mapped
+/// onto a flat `0.0` fraction here (GTK has no built-in true
+/// "indeterminate" bar the way a real OS widget might; an animated pulse
+/// would need its own timer, out of scope for what a static fraction
+/// read-back can verify anyway). Changing `Minimum`/`Maximum` via
+/// `SetGadgetAttribute` does *not* retroactively re-clamp an existing
+/// value into the new range - oracle-verified directly (raising
+/// `Maximum` left an existing, already-in-range value unchanged) - not
+/// independently re-verified for the narrower case of *shrinking* a
+/// range out from under an existing value, since real PB's own docs
+/// don't describe that case either.
+inline const char* progressBarMinKey() { return "pbcxx-progressbar-min"; }
+inline const char* progressBarMaxKey() { return "pbcxx-progressbar-max"; }
+inline const char* progressBarValueKey() { return "pbcxx-progressbar-value"; }
+
+inline void progressBarUpdateFraction(GtkWidget* widget) {
+    auto value = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(widget), progressBarValueKey())));
+    auto minimum = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(widget), progressBarMinKey())));
+    auto maximum = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(widget), progressBarMaxKey())));
+    if (value == -1 || maximum <= minimum) {
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(widget), 0.0);
+        return;
+    }
+    double fraction = static_cast<double>(value - minimum) / static_cast<double>(maximum - minimum);
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(widget), fraction);
+}
+
 } // namespace detail
 
 /// Oracle-verified: `OpenWindow`'s own return value is some nonzero,
@@ -1514,6 +1570,60 @@ inline std::int64_t pbCheckBoxGadget(std::int64_t gadgetId, std::int64_t x, std:
     detail::ensureGtkInit();
     GtkWidget* widget = gtk_check_button_new_with_label(text.bytes().c_str());
     g_signal_connect(widget, "toggled", G_CALLBACK(detail::onGadgetClicked), nullptr);
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
+/// M7b's fifteenth GUI slice: `OptionGadget` - a `GtkRadioButton`, joined
+/// to `optionGroupAnchor()`'s own group when non-null (see its own doc
+/// comment for the full grouping rule), otherwise starting a fresh one.
+/// `GtkButton`/`GtkToggleButton`'s own generic `GetGadgetText`/
+/// `SetGadgetText`/`GetGadgetState`/`SetGadgetState` dispatch (already in
+/// place since `CheckBoxGadget`'s own second GUI slice) covers a
+/// `GtkRadioButton` for free, no new branch needed there at all - this is
+/// purely the creation function plus the grouping mechanism.
+/// Oracle-verified directly: the *first* button in a new group starts out
+/// selected (`#PB_ProgressBar`-style "no selection" isn't a valid radio-
+/// group state), set here explicitly (signal-blocked, the same reason
+/// every other stateful gadget's own creation function avoids a spurious
+/// creation-time event) rather than assumed from whatever GTK's own
+/// default happens to be.
+inline std::int64_t pbOptionGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                    std::int64_t height, const PBString& text) {
+    detail::ensureGtkInit();
+    GtkWidget* anchor = detail::optionGroupAnchor();
+    GtkWidget* widget = anchor != nullptr
+                             ? gtk_radio_button_new_with_label_from_widget(GTK_RADIO_BUTTON(anchor), text.bytes().c_str())
+                             : gtk_radio_button_new_with_label(nullptr, text.bytes().c_str());
+    g_signal_connect(widget, "toggled", G_CALLBACK(detail::onGadgetClicked), nullptr);
+    bool placed = detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget);
+    if (placed && anchor == nullptr) {
+        g_signal_handlers_block_by_func(widget, reinterpret_cast<gpointer>(detail::onGadgetClicked), nullptr);
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget), TRUE);
+        g_signal_handlers_unblock_by_func(widget, reinterpret_cast<gpointer>(detail::onGadgetClicked), nullptr);
+    }
+    return placed ? 1 : 0;
+}
+
+/// `#PB_ProgressBar_Vertical` maps directly onto `GtkOrientable`'s own
+/// orientation; `#PB_ProgressBar_Smooth` (oracle-verified value `0`) is
+/// registered for name-compiling completeness but can't be a meaningful
+/// bit flag at all (`flags & 0` is always `0`) - matching real PB's own
+/// documented "n'a aucun effet" note for it on several platforms anyway.
+/// `GetGadgetColor`/`SetGadgetColor` support is out of scope here, the
+/// same broad, many-gadget-type feature already deferred for
+/// `ScrollAreaGadget`'s own twelfth slice.
+inline std::int64_t pbProgressBarGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                         std::int64_t height, std::int64_t minimum, std::int64_t maximum,
+                                         std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* widget = gtk_progress_bar_new();
+    if ((flags & 1) != 0) { // #PB_ProgressBar_Vertical
+        gtk_orientable_set_orientation(GTK_ORIENTABLE(widget), GTK_ORIENTATION_VERTICAL);
+    }
+    g_object_set_data(G_OBJECT(widget), detail::progressBarMinKey(), reinterpret_cast<gpointer>(minimum));
+    g_object_set_data(G_OBJECT(widget), detail::progressBarMaxKey(), reinterpret_cast<gpointer>(maximum));
+    g_object_set_data(G_OBJECT(widget), detail::progressBarValueKey(), reinterpret_cast<gpointer>(minimum));
+    detail::progressBarUpdateFraction(widget);
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
@@ -2774,6 +2884,21 @@ inline std::int64_t pbGetGadgetAttribute(std::int64_t gadgetId, std::int64_t att
                 return 0;
         }
     }
+    // M7b's fifteenth GUI slice: `ProgressBarGadget` - both get-only
+    // here (`SetGadgetAttribute`'s own matching branch below is the
+    // setter half).
+    if (GTK_IS_PROGRESS_BAR(it->second) != 0) {
+        switch (attribute) {
+            case 1: // #PB_ProgressBar_Minimum
+                return static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(
+                    g_object_get_data(G_OBJECT(it->second), detail::progressBarMinKey())));
+            case 2: // #PB_ProgressBar_Maximum
+                return static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(
+                    g_object_get_data(G_OBJECT(it->second), detail::progressBarMaxKey())));
+            default:
+                return 0;
+        }
+    }
     if (GTK_IS_PANED(it->second) == 0) {
         return 0;
     }
@@ -2847,6 +2972,20 @@ inline std::int64_t pbSetGadgetAttribute(std::int64_t gadgetId, std::int64_t att
                                                    static_cast<double>(value));
                 gtk_adjustment_set_step_increment(gtk_scrolled_window_get_vadjustment(scrolled),
                                                    static_cast<double>(value));
+                return 1;
+            default:
+                return 0;
+        }
+    }
+    if (GTK_IS_PROGRESS_BAR(it->second) != 0) {
+        switch (attribute) {
+            case 1: // #PB_ProgressBar_Minimum
+                g_object_set_data(G_OBJECT(it->second), detail::progressBarMinKey(), reinterpret_cast<gpointer>(value));
+                detail::progressBarUpdateFraction(it->second);
+                return 1;
+            case 2: // #PB_ProgressBar_Maximum
+                g_object_set_data(G_OBJECT(it->second), detail::progressBarMaxKey(), reinterpret_cast<gpointer>(value));
+                detail::progressBarUpdateFraction(it->second);
                 return 1;
             default:
                 return 0;
@@ -3323,6 +3462,15 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     if (GTK_IS_COMBO_BOX(it->second) != 0) {
         return gtk_combo_box_get_active(GTK_COMBO_BOX(it->second));
     }
+    // M7b's fifteenth GUI slice: `ProgressBarGadget` reports its own
+    // current value verbatim (including the `#PB_ProgressBar_Unknown`
+    // sentinel) - `OptionGadget` needs no branch of its own here at all,
+    // already covered below by the pre-existing `GTK_IS_TOGGLE_BUTTON`
+    // fallback (a `GtkRadioButton` is one).
+    if (GTK_IS_PROGRESS_BAR(it->second) != 0) {
+        return static_cast<std::int64_t>(
+            reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(it->second), detail::progressBarValueKey())));
+    }
     if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {
         return 0;
     }
@@ -3420,6 +3568,27 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
         g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onComboBoxChanged), nullptr);
         gtk_combo_box_set_active(GTK_COMBO_BOX(it->second), static_cast<int>(state));
         g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onComboBoxChanged), nullptr);
+        return 1;
+    }
+    // `OptionGadget` - oracle-verified directly: `SetGadgetState(…, 0)`
+    // on an already-selected radio button does *nothing* at all (stays
+    // selected) - a radio group can't be left with nothing selected this
+    // way, only by selecting a *different* member of the group, unlike
+    // `CheckBoxGadget`'s own plain on/off toggle the generic fallback
+    // below already handles correctly. `state != 0` still falls through
+    // to that same generic case (selecting it, `GtkRadioButton`'s own
+    // grouping automatically deselecting whichever sibling was active).
+    if (GTK_IS_RADIO_BUTTON(it->second) != 0 && state == 0) {
+        return 1;
+    }
+    if (GTK_IS_PROGRESS_BAR(it->second) != 0) {
+        auto minimum = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(
+            g_object_get_data(G_OBJECT(it->second), detail::progressBarMinKey())));
+        auto maximum = static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(
+            g_object_get_data(G_OBJECT(it->second), detail::progressBarMaxKey())));
+        std::int64_t clamped = state == -1 ? -1 : std::clamp(state, minimum, maximum);
+        g_object_set_data(G_OBJECT(it->second), detail::progressBarValueKey(), reinterpret_cast<gpointer>(clamped));
+        detail::progressBarUpdateFraction(it->second);
         return 1;
     }
     if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {

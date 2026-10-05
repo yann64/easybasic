@@ -196,6 +196,7 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"addgadgetcolumn", "pbAddGadgetColumn"}, {"removegadgetcolumn", "pbRemoveGadgetColumn"},
         {"getgadgetitemattribute", "pbGetGadgetItemAttribute"},
         {"setgadgetitemattribute", "pbSetGadgetItemAttribute"},
+        {"optiongadget", "pbOptionGadget"}, {"progressbargadget", "pbProgressBarGadget"},
         {"messagerequester", "pbMessageRequester"},
         {"colorrequester", "pbColorRequester"}, {"fontrequester", "pbFontRequester"},
         {"selectedfontname", "pbSelectedFontName"}, {"selectedfontsize", "pbSelectedFontSize"},

@@ -516,6 +516,20 @@ void Sema::registerGuiLibBuiltins() {
         {"setgadgetitemattribute", TypeSuffix::Integer,
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
          4},
+        // M7b's fifteenth GUI slice: OptionGadget/ProgressBarGadget.
+        // OptionGadget's own `Text$` is required (oracle-verified
+        // directly - real PB's own doc marks it "(optionnel)" but a bare
+        // five-argument call is actually a compile error). ProgressBar's
+        // own `Options` is optional (a bare seven-argument call defaults
+        // to no flags at all).
+        {"optiongadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String},
+         6},
+        {"progressbargadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         7},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -659,7 +673,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "listviewgadget", "comboboxgadget", "getgadgetitemstate", "setgadgetitemstate",
         "getgadgetitemdata", "setgadgetitemdata",
         "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
-        "setgadgetitemattribute",
+        "setgadgetitemattribute", "optiongadget", "progressbargadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -943,6 +957,14 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_eventtype_rightdoubleclick", 3},
         {"pb_eventtype_columnclick", 8},
         {"pb_eventtype_dragstart", 2048},
+        // OptionGadget/ProgressBarGadget (M7b's fifteenth GUI slice) -
+        // oracle-verified via a direct `Debug #PB_Xxx` probe.
+        // OptionGadget itself has no constants of its own at all.
+        {"pb_progressbar_smooth", 0},
+        {"pb_progressbar_vertical", 1},
+        {"pb_progressbar_unknown", -1},
+        {"pb_progressbar_minimum", 1},
+        {"pb_progressbar_maximum", 2},
     };
     return table;
 }
