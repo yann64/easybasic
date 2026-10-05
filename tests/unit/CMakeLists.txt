@@ -39,5 +39,23 @@ else()
     message(STATUS "GTK3 not found via pkg-config - skipping runtime_guilib_test.cpp (M7b GUI unit tests)")
 endif()
 
+# runtime_systraylib_test.cpp includes systraylib.hpp (M7b's SysTrayIcon
+# slice), which needs ayatana-appindicator3's own dev headers/libs at *this
+# test binary's own* build time, the identical optional-dependency pattern
+# GTK3 itself already has just above (and for the identical reason: a
+# generated program only links it when the program actually calls a
+# SysTray builtin - see main.cpp's own notes). A separate, narrower check
+# than GTK3's own, since most GUI programs never touch SysTray at all.
+if(PkgConfig_FOUND)
+    pkg_check_modules(AYATANA_APPINDICATOR3 QUIET IMPORTED_TARGET ayatana-appindicator3-0.1)
+endif()
+if(AYATANA_APPINDICATOR3_FOUND)
+    target_sources(easybasic_unit_tests PRIVATE runtime_systraylib_test.cpp)
+    target_link_libraries(easybasic_unit_tests PRIVATE PkgConfig::AYATANA_APPINDICATOR3)
+else()
+    message(STATUS "ayatana-appindicator3 not found via pkg-config - skipping runtime_systraylib_test.cpp "
+                    "(M7b SysTrayIcon unit tests)")
+endif()
+
 include(Catch)
 catch_discover_tests(easybasic_unit_tests)

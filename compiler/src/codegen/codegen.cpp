@@ -204,6 +204,10 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"gettoolbarbuttonstate", "pbGetToolBarButtonState"}, {"settoolbarbuttonstate", "pbSetToolBarButtonState"},
         {"toolbarbuttontext", "pbToolBarButtonText"}, {"toolbartooltip", "pbToolBarToolTip"},
         {"toolbarheight", "pbToolBarHeight"}, {"toolbarid", "pbToolBarID"},
+        {"createpopupmenu", "pbCreatePopupMenu"}, {"createpopupimagemenu", "pbCreatePopupImageMenu"},
+        {"addsystrayicon", "pbAddSysTrayIcon"}, {"changesystrayicon", "pbChangeSysTrayIcon"},
+        {"issystrayicon", "pbIsSysTrayIcon"}, {"removesystrayicon", "pbRemoveSysTrayIcon"},
+        {"systrayiconmenu", "pbSysTrayIconMenu"}, {"systrayicontooltip", "pbSysTrayIconToolTip"},
     };
     return "easybasic::runtime::" + names.at(lowerName);
 }
@@ -1571,6 +1575,15 @@ std::string Codegen::generate() {
     // and main.cpp's matching conditional GTK3 compile/link flags.
     if (sema_.usesGuiLibrary()) {
         out_ += "#include <easybasic/runtime/guilib.hpp>\n";
+    }
+    // Same deliberate exclusion from runtime.hpp, one level narrower still:
+    // systraylib.hpp transitively includes AppIndicator's own header, a
+    // separate library from GTK3 itself that most GUI programs never touch
+    // at all - see Sema::usesSysTrayLibrary()'s own doc comment, and
+    // main.cpp's matching conditional ayatana-appindicator3-0.1 compile/
+    // link flags.
+    if (sema_.usesSysTrayLibrary()) {
+        out_ += "#include <easybasic/runtime/systraylib.hpp>\n";
     }
     out_ += "\n";
 

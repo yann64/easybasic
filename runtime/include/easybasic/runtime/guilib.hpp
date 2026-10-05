@@ -1603,9 +1603,17 @@ inline std::int64_t pbToolBarImageButton(std::int64_t buttonId, std::int64_t ima
     }
     int iconSize = detail::toolBarIconPixelSize().count(toolBarId) != 0 ? detail::toolBarIconPixelSize()[toolBarId] : 16;
     GtkWidget* iconImage = nullptr;
-    auto imageIt = detail::imageTable().find(imageId);
-    if (imageIt != detail::imageTable().end()) {
-        GdkPixbuf* scaled = gdk_pixbuf_scale_simple(imageIt->second, iconSize, iconSize, GDK_INTERP_BILINEAR);
+    // A real bug, caught only by testing end-to-end with pbcxx rather than
+    // by this project's own earlier unit/e2e coverage (none of which ever
+    // checked that the icon widget was actually populated, only return
+    // values/labels): `imageId` here is `ImageID()`'s own return value -
+    // the real `GdkPixbuf*` pointer itself (oracle-verified: "'ImageID'
+    // peut être facilement obtenu avec ImageID()"), not a plain `#Image`
+    // number to look up in `imageTable()` - the same direct-pointer
+    // convention `attachMenuItemImage`'s own code already uses correctly.
+    if (imageId != 0) {
+        auto* pixbuf = reinterpret_cast<GdkPixbuf*>(imageId);
+        GdkPixbuf* scaled = gdk_pixbuf_scale_simple(pixbuf, iconSize, iconSize, GDK_INTERP_BILINEAR);
         if (scaled != nullptr) {
             iconImage = gtk_image_new_from_pixbuf(scaled);
             g_object_unref(scaled);

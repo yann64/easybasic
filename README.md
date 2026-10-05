@@ -54,7 +54,10 @@ GTK3 dev files (e.g. `libgtk-3-dev` on Debian/Ubuntu, `gtk3_devel` on Haiku) are
 *optional* build-time dependency: `pbcxx` itself only needs them to compile a `.pb`
 program that actually calls a GUI command, and the unit test binary only builds the GUI
 test cases (`runtime_guilib_test.cpp`) when `pkg-config gtk+-3.0` succeeds - everything
-else builds and passes without it.
+else builds and passes without it. `ayatana-appindicator3-0.1` dev files (e.g.
+`libayatana-appindicator3-dev` on Debian/Ubuntu) are a second, narrower optional
+dependency the same way, needed only for `SysTrayIcon` support specifically
+(`runtime_systraylib_test.cpp`) - most GUI programs never touch it.
 
 ## Usage
 

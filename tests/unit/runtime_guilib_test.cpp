@@ -714,6 +714,15 @@ TEST_CASE("ToolBarImageButton/ToolBarSeparator build a real toolbar; Get/SetTool
     CHECK(pbToolBarSeparator() == 0);                     // Oracle-verified: no return value.
     CHECK(pbToolBarImageButton(11, pbImageID(450), 1) == 0); // #PB_ToolBar_Toggle
 
+    // Regression check for a real bug: pbToolBarImageButton originally
+    // looked `imageId` up in imageTable() as if it were a plain #Image
+    // number, but it's actually ImageID()'s own return value (the real
+    // GdkPixbuf* pointer) - the lookup always missed, so no icon was ever
+    // attached, silently, since nothing here checked for the icon widget
+    // itself until now.
+    GtkWidget* button10 = detail::toolBarButtonWidgets().at(1).at(10);
+    CHECK(gtk_tool_button_get_icon_widget(GTK_TOOL_BUTTON(button10)) != nullptr);
+
     // Oracle-verified default: a fresh Toggle button starts released.
     CHECK(pbGetToolBarButtonState(1, 11) == 0);
     pbSetToolBarButtonState(1, 11, 1);

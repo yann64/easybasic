@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Six slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar` - see M7b notes); further gadget types/`Requester` family/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Seven slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon` - see M7b notes); further gadget types/`Requester` family/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Three slices done (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface - see M7d notes); unqualified `Macro` inside a Module already works, qualified `Module::Macro()` invocation from outside remains deliberately deferred (a separate `MacroExpander` subsystem effort, not Sema's own namespacing) |
 
@@ -2326,6 +2326,77 @@ With this, every slice of the fourth slice's own original "Menu/StatusBar/ToolBa
 closing out that specific thread - item 5 of M7b's own phased scope (further gadget types, the fuller
 `Requester` family, `Dialog`, and everything past that) remains open and unscoped, consistent with this
 project's "incremental, as real need comes up" GUI philosophy stated when M7b itself was first planned.
+
+## M7b Implementation Notes (GUI core, seventh slice: `SysTrayIcon`)
+
+**Scope landed**: `AddSysTrayIcon`/`ChangeSysTrayIcon`/`IsSysTrayIcon`/`RemoveSysTrayIcon`/
+`SysTrayIconMenu`/`SysTrayIconToolTip` (every real PB SysTray command there is - oracle-verified via
+the library's own index page, only 6 exist), plus `CreatePopupMenu`/`CreatePopupImageMenu`, a hard
+prerequisite oracle-verified directly (`SysTrayIconMenu`'s own docs: "Le menu doit être créé avec
+CreatePopupImageMenu()"). `DisplayPopupMenu`/`#PB_Event_RightClick` (useful for a *regular* window's
+own custom right-click popup, not something `SysTrayIconMenu` itself needs - its own docs say it
+positions the popup automatically, and the official `SysTray.pb` example never calls
+`DisplayPopupMenu` at all) are deliberately out of scope for this slice.
+
+**A three-stage backend decision, each stage a genuine correction to the previous one, not just
+deliberation for its own sake** - recorded in full because every stage changed the actual
+implementation, not merely the reasoning behind an unchanged one:
+1. GTK3 itself only ships a *deprecated* tray-icon API (`GtkStatusIcon`, gone in GTK4) - initially
+   recommended switching to `libayatana-appindicator3` (the modern StatusNotifierItem-protocol
+   library), since `GtkStatusIcon` is deprecated with no non-deprecated GTK3-native alternative.
+2. Investigating `AppIndicator`'s own API surface found it exposes **no click/activate signal
+   at all** (`new-icon`/`scroll-event` are its only signals) - a menu-first design where the desktop
+   shell handles clicks, not the application. Real PB's own `AddSysTrayIcon` docs describe click
+   events routing through `#PB_Event_SysTray`/`EventGadget()`/`EventType()`, a capability this
+   would have no way to implement at all - reversed the recommendation back to `GtkStatusIcon`.
+3. An oracle probe deliberately misusing `SysTrayIconMenu` (passing a plain `CreateMenu`'d menu
+   instead of a popup one, to see what would happen) surfaced a real, unprompted
+   `libayatana-appindicator (CRITICAL): app_indicator_set_menu: assertion 'GTK_IS_MENU (menu)'
+   failed` warning from inside the real oracle binary itself - direct, concrete evidence that real
+   PB's own Linux backend *already* uses `AppIndicator` internally. The click-event gap from stage 2
+   isn't a divergence this project would be introducing at all - it's most likely already how real
+   PB behaves on Linux - reversing the recommendation a second time, back to `AppIndicator`, now on
+   stronger footing than the original "more modern" framing alone.
+
+**A fourth, smaller but concrete cost surfaced before committing to the final decision**:
+`AppIndicator` has no in-memory-pixbuf icon support at all (confirmed via its own header - every
+icon-setting function takes a theme-resolved *name*, never a `GdkPixbuf*`), unlike every other
+image-consuming function in this project (`ToolBarImageButton`, `MenuItem`'s own `ImageID`). Each
+tray icon's own current image is therefore written out to a small per-icon scratch directory as a
+plain PNG file (a new name each `ChangeSysTrayIcon` call, never the same name twice, so icon-theme
+caching can't ever serve a stale image under an unchanged name - the previous file is removed only
+*after* the new one is confirmed written) - a real, accepted runtime cost (disk I/O on every icon
+change, not just at creation) the official `ChangeSysTrayIcon` example's own 1000ms-timer icon-
+animation idiom would actually incur.
+
+**A real, pre-existing bug this slice's own testing caught, predating it entirely and unrelated to
+SysTray itself**: `ToolBarImageButton` (M7b's sixth slice) looked `imageId` up in `imageTable()` as
+if it were a plain `#Image` number, rather than treating it as `ImageID()`'s own return value (the
+real `GdkPixbuf*` pointer itself, oracle-verified: "'ImageID' peut être facilement obtenu avec
+ImageID()") - the same direct-pointer convention `MenuItem`'s own `attachMenuItemImage` already used
+correctly. The lookup always missed (a real pointer value colliding with a small table key like `0`/
+`1` is vanishingly unlikely), so no toolbar button has ever actually had an icon attached in this
+project at all - silently, since neither the sixth slice's own unit tests nor its e2e fixture ever
+checked that the icon *widget* was non-null, only return values and labels. Caught here only because
+implementing `AddSysTrayIcon` (needing the exact same `ImageID`-is-a-raw-pointer handling) surfaced
+the same mistake freshly, prompting a check of every other place this pattern is used - fixed in both
+places, with a new regression assertion (`gtk_tool_button_get_icon_widget(...) != nullptr`) added to
+the sixth slice's own existing test to close the "looked right, wasn't verified" gap for good.
+
+**Testing**: extended `runtime_guilib_test.cpp` with the icon-widget regression check above, plus a
+new `runtime_systraylib_test.cpp` (gated on `ayatana-appindicator3-0.1` being found via pkg-config,
+the identical optional-dependency pattern GTK3 itself already has in this same file) covering
+`CreatePopupMenu`'s own no-`MenuTitle`-needed building, the full `AddSysTrayIcon`/`IsSysTrayIcon`/
+`RemoveSysTrayIcon`/`#PB_All` round-trip, `ChangeSysTrayIcon`'s own fresh-file-per-change behavior
+(checked directly against the filesystem), `SysTrayIconMenu` (checked via `app_indicator_get_menu`),
+and `SysTrayIconToolTip` (via `app_indicator_get_title` - see `pbSysTrayIconToolTip`'s own doc comment
+on why that's the closest available approximation, not a real tooltip). A sixth golden e2e case
+(`tests/e2e/gui_systray`) covers deterministic round-trips the same way `gui_toolbar` does. `main.cpp`
+gained a second, narrower optional pkg-config dependency (`ayatana-appindicator3-0.1`, additive to -
+not a replacement for - plain GTK3's own existing conditional linking), gated on a new
+`Sema::usesSysTrayLibrary()` separate from `usesGuiLibrary()`, so a GUI program that never touches
+SysTray still needs nothing beyond GTK3. All 345 tests (across `linux-gcc`/`linux-clang`/
+`linux-clang-sanitize`) pass, including the 332 that predate this slice.
 
 ## M7c Implementation Notes (`Interface`/`EndInterface`)
 

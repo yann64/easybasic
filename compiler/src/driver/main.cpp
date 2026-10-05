@@ -188,6 +188,7 @@ int main(int argc, char** argv) {
         "-I" + runtimeIncludeDir(),
     };
     std::optional<std::vector<std::string>> gtkLibFlags;
+    std::optional<std::vector<std::string>> appIndicatorLibFlags;
     if (sema.usesGuiLibrary()) {
         // Only added for a program that actually calls a GUI builtin (see
         // Sema::usesGuiLibrary()'s own doc comment) - every other program's
@@ -204,9 +205,29 @@ int main(int argc, char** argv) {
         }
         cxxArgs.insert(cxxArgs.end(), gtkCflags->begin(), gtkCflags->end());
     }
+    if (sema.usesSysTrayLibrary()) {
+        // A separate, narrower dependency than plain GTK3 - only a program
+        // that actually calls a SysTray builtin needs it (see
+        // Sema::usesSysTrayLibrary()'s own doc comment). Its own pkg-config
+        // output already includes GTK3's own flags transitively (confirmed
+        // directly), so this is additive, not a replacement for the GTK3
+        // block above - harmless duplicate -I/-l flags either way.
+        auto appIndicatorCflags = pkgConfigFlags("--cflags", "ayatana-appindicator3-0.1");
+        appIndicatorLibFlags = pkgConfigFlags("--libs", "ayatana-appindicator3-0.1");
+        if (!appIndicatorCflags || !appIndicatorLibFlags) {
+            std::cerr << "pbcxx: this program uses SysTray commands, but 'pkg-config "
+                         "ayatana-appindicator3-0.1' failed - install its development package (e.g. "
+                         "libayatana-appindicator3-dev on Debian/Ubuntu) and make sure pkg-config can find it\n";
+            return 1;
+        }
+        cxxArgs.insert(cxxArgs.end(), appIndicatorCflags->begin(), appIndicatorCflags->end());
+    }
     cxxArgs.push_back(cppPath);
     if (gtkLibFlags) {
         cxxArgs.insert(cxxArgs.end(), gtkLibFlags->begin(), gtkLibFlags->end());
+    }
+    if (appIndicatorLibFlags) {
+        cxxArgs.insert(cxxArgs.end(), appIndicatorLibFlags->begin(), appIndicatorLibFlags->end());
     }
     cxxArgs.push_back("-o");
     cxxArgs.push_back(opts.outputPath);

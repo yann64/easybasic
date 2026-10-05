@@ -291,6 +291,10 @@ public:
     /// notes on `OpenWindow`/`IsWindow`'s own oracle-observed return
     /// values).
     static bool isGuiLibBuiltinName(const std::string& lowerName);
+    /// A subset of `isGuiLibBuiltinName`'s own names - see
+    /// `usesSysTrayLibrary`'s own doc comment for why this is tracked
+    /// separately.
+    static bool isSysTrayLibBuiltinName(const std::string& lowerName);
     /// True once `visitCall` has resolved at least one real call to a GUI
     /// builtin (set in `visitCall` itself) - `main.cpp`'s own driver uses
     /// this after a successful `analyze()` to decide whether the backend-
@@ -299,6 +303,21 @@ public:
     /// GTK3 toolchain requirement, no `gtk_init()` call at runtime either -
     /// see `guilib.hpp`'s own lazy-init notes).
     bool usesGuiLibrary() const { return usesGui_; }
+
+    /// Set `true` by `visitCall` for any of the 6 SysTray builtins or the 2
+    /// popup-menu creation functions - `main.cpp`'s own driver uses this to
+    /// decide whether the backend-compiler invocation additionally needs
+    /// `ayatana-appindicator3-0.1`'s own compile/link flags, a narrower,
+    /// separate dependency than plain GTK3 (`usesGuiLibrary()`'s own) -
+    /// most GUI programs never touch SysTray at all and shouldn't need this
+    /// extra library linked in. `CreatePopupMenu`/`CreatePopupImageMenu`
+    /// themselves are pure GTK3 (a plain `GtkMenu`, no AppIndicator
+    /// involved) but are included here anyway since they exist *for*
+    /// SysTray's own `SysTrayIconMenu` - a program using either without
+    /// ever calling a SysTray function too is vanishingly unlikely, and
+    /// splitting this into a third, even narrower flag isn't worth the
+    /// complexity for that edge case.
+    bool usesSysTrayLibrary() const { return usesSysTray_; }
 
     /// The literal Integer value of one of the handful of built-in `#PB_*`
     /// constants Sema pre-declares (currently only `#PB_Round_Down` (0),
@@ -659,6 +678,7 @@ private:
     std::unordered_map<std::string, std::vector<TypeSuffix>> dataLabelItemSuffixes_;
     bool explicitEnabled_ = false;
     bool usesGui_ = false; ///< Set by visitCall - see usesGuiLibrary()'s own doc comment.
+    bool usesSysTray_ = false; ///< Set by visitCall - see usesSysTrayLibrary()'s own doc comment.
     std::unordered_map<std::string, ProcedureInfo> procedures_;
     /// Names `Declare`d but not yet fulfilled by a matching `Procedure`,
     /// mapping the lowercased name to its original spelling and the

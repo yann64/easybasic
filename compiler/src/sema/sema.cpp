@@ -467,6 +467,22 @@ void Sema::registerGuiLibBuiltins() {
         {"toolbartooltip", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String}, 3},
         {"toolbarheight", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"toolbarid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // M7b's seventh GUI slice: SysTrayIcon, plus its own hard
+        // prerequisite - oracle-verified SysTrayIconMenu requires a popup
+        // menu (CreatePopupMenu/CreatePopupImageMenu), not a plain
+        // CreateMenu one. CreatePopupImageMenu's own Options arg
+        // (#PB_Menu_NativeImageSize) doesn't even exist as a constant on
+        // this oracle's own Linux build - accepted but not acted on here
+        // either, the same treatment CreateImageMenu's own already gets.
+        {"createpopupmenu", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"createpopupimagemenu", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"addsystrayicon", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"changesystrayicon", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"issystrayicon", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"removesystrayicon", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"systrayiconmenu", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"systrayicontooltip", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
     };
     for (const auto& sig : signatures) {
         ProcedureInfo info;
@@ -491,7 +507,17 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "statusbarid", "createimage", "loadimage", "isimage", "freeimage", "imageid", "imagewidth", "imageheight",
         "createimagemenu", "createtoolbar", "toolbarimagebutton", "toolbarseparator", "istoolbar", "freetoolbar",
         "disabletoolbarbutton", "gettoolbarbuttonstate", "settoolbarbuttonstate", "toolbarbuttontext",
-        "toolbartooltip", "toolbarheight", "toolbarid",
+        "toolbartooltip", "toolbarheight", "toolbarid", "createpopupmenu", "createpopupimagemenu",
+        "addsystrayicon", "changesystrayicon", "issystrayicon", "removesystrayicon", "systrayiconmenu",
+        "systrayicontooltip",
+    };
+    return names.contains(lowerName);
+}
+
+bool Sema::isSysTrayLibBuiltinName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "createpopupmenu", "createpopupimagemenu", "addsystrayicon", "changesystrayicon",
+        "issystrayicon",   "removesystrayicon",     "systrayiconmenu", "systrayicontooltip",
     };
     return names.contains(lowerName);
 }
@@ -573,6 +599,14 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_event_movewindow", 5},
         {"pb_event_sizewindow", 6},
         {"pb_event_activatewindow", 7},
+        // M7b's seventh GUI slice: SysTrayIcon - oracle-verified via a
+        // direct `Debug #PB_Event_SysTray` probe. `#PB_Menu_SysTrayLook`
+        // (SysTrayIconMenu's own docs name it as the required
+        // CreatePopupImageMenu Options bit) doesn't exist as a constant on
+        // this oracle's own Linux build at all ("Constant not found") - not
+        // registered here either, consistent with not inventing a value
+        // real PB itself doesn't expose on this platform.
+        {"pb_event_systray", 9},
         {"pb_event_timer", 15},
         {"pb_event_firstcustomvalue", 65536},
         {"pb_window_invisible", 1},
@@ -2125,6 +2159,9 @@ void Sema::visitCall(ast::CallExpr& call) {
     // case, the only caller - see its own doc comment.
     if (isGuiLibBuiltinName(call.name)) {
         usesGui_ = true;
+    }
+    if (isSysTrayLibBuiltinName(call.name)) {
+        usesSysTray_ = true;
     }
     auto it = procedures_.find(call.name);
     if (it == procedures_.end()) {
