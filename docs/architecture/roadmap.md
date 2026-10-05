@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirteen slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Fourteen slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -3509,4 +3509,141 @@ through `pbcxx` itself - this is what actually caught the `SetGadgetText` bug ab
 line-for-line against the real oracle afterward (modulo the two already-discussed, already-accounted-for
 divergences) before being pinned. 403 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize`
 (ASan/UBSan/LSan clean), including the 395 that predate this slice.
+
+## M7b Implementation Notes (GUI core, fourteenth slice: `ListIconGadget`/`TreeGadget`)
+
+**Scope landed**: `ListIconGadget`/`TreeGadget` themselves, extending every "universal item" function
+again (`AddGadgetItem`/`CountGadgetItems`/`RemoveGadgetItem`/`ClearGadgetItems`/`GetGadgetItemText`/
+`SetGadgetItemText`/`GetGadgetItemState`/`SetGadgetItemState`/`GetGadgetItemData`/`SetGadgetItemData`,
+the first ten all already generic since the tenth/thirteenth slices) with new branches for both, plus
+`GetGadgetState`/`SetGadgetState`/`GetGadgetText`/`SetGadgetText`/`GetGadgetAttribute` (also already
+generic) gaining their own. Two genuinely new pieces this slice introduces: `AddGadgetColumn`/
+`RemoveGadgetColumn` (`ListIconGadget`-only, real multi-column management) and a brand new
+`GetGadgetItemAttribute`/`SetGadgetItemAttribute` function pair, scoped here to `TreeGadget`'s own
+`#PB_Tree_SubLevel` (an element's own depth) and `ListIconGadget`'s own `#PB_ListIcon_ColumnWidth`.
+`#PB_ListIcon_ThreeState`/`FullRowSelect`/`HeaderDragDrop`/`AlwaysShowSelection` and `#PB_Tree_ThreeState`/
+`AlwaysShowSelection` are registered (a program referencing them by name still compiles) but not acted
+on - the first three `ListIcon` flags are documented Windows-only in real PB itself, and `ThreeState`'s
+own "indeterminate" checkbox state has no `GtkCellRendererToggle` equivalent to map onto without a
+materially bigger custom-renderer investment, the same kind of deliberate, narrow gap `#PB_ComboBox_Image`
+already is. `ImageID` (on `AddGadgetItem`) is deferred for `ListIconGadget` for the same reason.
+
+**A real architectural mismatch between `GtkListStore`'s own fixed column count and `AddGadgetColumn`/
+`RemoveGadgetColumn`'s own fully dynamic one, solved by pre-allocating generous, fixed storage
+underneath a dynamic view**: GTK fixes a `GtkListStore`'s own column count/types at
+`gtk_list_store_newv` time, but real PB lets a `ListIconGadget` program add/remove columns at any time.
+`ListIconGadget`'s own model is created with 16 pre-allocated text "slots" (a generous-but-finite cap,
+in the same spirit as real PB's own documented 65536-item `AddGadgetItem` cap being an accepted finite
+limit) plus one `DATA` column and one `CHECKED` column (always present regardless of whether
+`#PB_ListIcon_CheckBoxes` was actually requested, keeping every instance's own model shape uniform) -
+18 columns total. `AddGadgetColumn`/`RemoveGadgetColumn` only ever add/remove the *view*'s own
+`GtkTreeViewColumn`s, each tagged (`g_object_set_data`) with which underlying store slot it's bound to,
+via a per-view "next free slot" counter that only increases - a removed column's own slot is never
+reclaimed, so its old data just becomes orphaned/unreachable rather than actively cleared, accepted as a
+harmless simplification since slots are never reused in practice.
+
+**A second real architectural problem: a three-way `GtkTreeView`-based widget-identity collision**,
+`ListViewGadget`'s own `GtkScrolledWindow`-wrapped `GtkTreeView` (the thirteenth slice) now joined by
+two more gadget types sharing the exact same outer shape. Resolved via a new `g_object_set_data` marker
+tag (`"pbcxx-gadget-kind"`) set directly on the inner `GtkTreeView` at creation time, two literal string
+values (`"listicon"`/`"tree"`) compared via `g_strcmp0` - `ListViewGadget`'s own creation code stays
+entirely untouched (unmarked), with its own pre-existing `itemListStoreFor`/`listViewTreeView` helpers
+updated to additionally require the marker's *absence*, while two brand new helpers
+(`listIconTreeView`/`treeGadgetTreeView`) each require their own specific marker instead. The same
+"widget type reused across multiple gadget types" problem the ninth/twelfth/thirteenth slices already
+hit twice before (`ContainerGadget`/`ScrollAreaGadget`'s shared `GtkFixed`-in-`GtkScrolledWindow`, then
+`ScrollAreaGadget`/`ListViewGadget`'s shared bare `GtkScrolledWindow`) - this time resolved with an
+explicit marker rather than inferring identity structurally, since no single structural signal was left
+to lean on with three `GtkTreeView`-based types in play at once.
+
+**`TreeGadget`'s own `Element` addressing, oracle-verified directly via a dedicated probe (not
+assumed)**: a flat, depth-first, pre-order index across the *entire* tree (a parent, then all its
+descendants recursively, before the next sibling) - confirmed with a 5-item probe (two root items, two
+children of the second, then a third root item, reporting back `Element` 0-4 in exactly that visitation
+order). Implemented as a small recursive walk (`treeIterAtFlatIndex`/its own reverse,
+`treeFlatIndexOfIter`, the latter comparing candidates via `GtkTreePath` since two `GtkTreeIter`s aren't
+reliably comparable directly) - acceptable `O(n)` per lookup for this project's own scope, not optimized
+for huge trees.
+
+**`TreeGadget`'s own insertion model, also oracle-verified via a dedicated probe**: `AddGadgetItem`'s
+own `Options` parameter (the new item's own level) is *always required* for `TreeGadget`, unlike every
+other gadget type studied so far where it's optional - each new item's own parent is whatever was most
+recently inserted at `level - 1`, tracked via a small `std::vector<GtkTreeIter>` "last iter per depth"
+stack attached to the `GtkTreeView` itself (`g_object_set_data_full`, auto-freed alongside the widget,
+since a bare `GtkTreeIter` isn't safely representable as a raw `gpointer` the way a simple counter would
+be). An invalid level jump (e.g. straight from level 0 to level 5) silently clamps to one level *deeper
+than the previous insertion*, not the nearest level reachable from the requested one - confirmed exactly
+matching the real doc's own claim ("si un élément est ajouté avec un niveau invalide alors il sera quand
+même ajouté, au niveau le plus proche") with a dedicated probe (jumping to level 5 right after a
+level-0 item lands at level 1). The level-stack is conservatively cleared on `RemoveGadgetItem`/
+`ClearGadgetItems` - removing a node could invalidate whatever it was tracking as "the last item at
+level N", and real PB's own precise behavior for a subsequent `AddGadgetItem` right after a removal
+isn't independently oracle-verified; clamping back to level 0 is a safe, correctness-preserving
+simplification (never a dangling `GtkTreeIter`) rather than a confirmed-faithful one.
+
+**A real, oracle-caught GTK behavior that would otherwise have been a silent bug**:
+`GtkTreeSelection::select_iter`/`select_path` silently do nothing for a row whose own ancestor chain
+isn't expanded in the view - discovered when `SetGadgetState`/`SetGadgetItemState` selecting a level-1+
+`TreeGadget` element (under its still-collapsed parent, the default state for every freshly-added
+branch) produced no selection at all in `pbcxx`'s own output while the real oracle selected it
+correctly, caught by the full probe/oracle comparison rather than assumed to just work the way
+`ListViewGadget`'s own flat selection already did. Fixed by calling `gtk_tree_view_expand_to_path`
+before selecting in both setters - real PB's own `TreeGadget` has no such restriction at all.
+
+**A second real, oracle-caught difference from `ListViewGadget`/`ComboBoxGadget`'s own established
+"find item by text, clear selection on no match" `SetGadgetText` behavior**: `TreeGadget`'s own
+`SetGadgetText` does not search for a matching item at all - oracle-verified directly with two dedicated
+probes, it renames whichever element is *currently selected*, symmetric with `GetGadgetText`'s own
+"selected element's own text" reading (also oracle-verified: "Renvoie le texte de l'élément
+sélectionné"). Passing an *existing* other item's own text changes nothing about the current selection
+(confirmed directly - it does not jump to selecting that other, matching item), and with nothing
+selected at all it's a complete no-op. `SetGadgetText` is documented for `TreeGadget` but conspicuously
+*not* for `ListIconGadget` at all (absent from its own "particulièrement utile pour" list, unlike
+`GetGadgetText` which does list it for `ListIconGadget`) - so `ListIconGadget` has no `SetGadgetText`
+branch, a harmless failure there matching the documented gap rather than an oversight.
+
+**`GetGadgetItemState`/`SetGadgetItemState`'s own bitmask values, oracle-verified directly (not
+assumed) including the absolute-not-incremental write semantics**: `#PB_ListIcon_Selected`=`1`/
+`Checked`=`2`/`Inbetween`=`4` (the last unreachable - `ThreeState` is deferred); `#PB_Tree_Selected`=`1`/
+`Expanded`=`2`/`Checked`=`4`/`Collapsed`=`8`/`Inbetween`=`16` (`Expanded`/`Collapsed` mutually exclusive,
+read from `gtk_tree_view_row_expanded`'s own boolean - a leaf reports `Collapsed`, not independently
+verified for that specific case but the only sensible reading of a strictly binary state).
+`SetGadgetItemState` confirmed via a dedicated probe to *replace* the whole state rather than OR new
+bits into the existing one (`SetGadgetItemState(…, Checked)` right after `SetGadgetItemState(…,
+Selected)` reports back `Checked` alone, not `Selected | Checked`) - matching the doc's own wording
+("Etat: le *nouvel* état") taken literally rather than assumed to behave like a typical flags setter.
+
+**Events reuse `ListViewGadget`'s own established shape (the thirteenth slice) for the generic parts,
+extended with two more event types real PB's own docs list for both new gadgets that `ListViewGadget`
+doesn't have**: `GtkTreeSelection::changed` → `LeftClick`, also firing `#PB_EventType_Change`=`768` from
+the same signal (a reasonable simplification - real PB's own precise distinction between a plain click
+and the selection specifically changing isn't independently verifiable without the interactive click
+automation this project's own methodology deliberately avoids); `GtkTreeView::row-activated` →
+`LeftDoubleClick`; `button-press-event` (checking `button == 3`, and `GDK_2BUTTON_PRESS` too) →
+`RightClick`/`RightDoubleClick`=`3`. `ListIconGadget` additionally wires a `GtkTreeViewColumn::clicked`
+→ `#PB_EventType_ColumnClick`=`8`, recording which column for `GetGadgetAttribute`'s own
+`#PB_ListIcon_ClickedColumn`, and (when `#PB_ListIcon_CheckBoxes` is set) a
+`GtkCellRendererToggle::toggled` handler that manually flips the `CHECKED` store column (GTK doesn't
+auto-update a bound model column on a checkbox click the way a `GtkTreeSelection` auto-updates its own
+selection state) before queuing the same `LeftClick`/`Change` pair a selection change does. All new
+`#PB_EventType_*` values (`RightDoubleClick`=`3`, `ColumnClick`=`8`, and `DragStart`=`2048` - registered
+for name-compiling completeness even though nothing fires it yet) oracle-verified via a direct `Debug
+#PB_Xxx` probe, the same as every constant in this slice.
+
+**Testing**: ten new `runtime_guilib_test.cpp` cases - full item/column/state/text/data round-trips for
+both gadget types, `AddGadgetColumn`/`RemoveGadgetColumn` with `ColumnWidth` round-tripping through the
+new `GetGadgetItemAttribute`/`SetGadgetItemAttribute` pair, the `Selected`/`Checked` bitmask's own
+absolute-write semantics, a real `ListIcon` selection-change/row-activation/right-click/column-header-
+click/checkbox-toggle each firing their own event (driving the real GTK signals directly, including a
+synthesized `GdkEventButton` for the right-click case, the same `g_signal_emit_by_name` pattern this
+project's own window-close test already established), `TreeGadget`'s own flat-addressing round-trip,
+the collapsed-ancestor selection fix, the rename-not-search `SetGadgetText` behavior, descendant-
+recursive `RemoveGadgetItem`, and harmless failures for `ListIcon`/`Tree`-only functions on an unrelated
+gadget type. One new golden e2e case (`tests/e2e/gui_listicon_tree`) exercises the same sequence end to
+end through `pbcxx` itself, confirmed line-for-line against the real oracle (modulo the established
+native-creation-handle and undocumented-return-value divergences) before being pinned - this is what
+surfaced both the collapsed-ancestor selection bug and the `SetGadgetText` behavioral difference above,
+neither of which the narrower, hand-picked oracle probes written before implementing had caught on their
+own. 414 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize` (ASan/UBSan/LSan clean),
+including the 403 that predate this slice.
 

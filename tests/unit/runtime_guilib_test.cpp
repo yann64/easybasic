@@ -1940,3 +1940,289 @@ TEST_CASE("ListView/ComboBox-only functions are a harmless failure on an unrelat
 
     pbCloseWindow(806);
 }
+
+TEST_CASE("ListIconGadget round-trips multi-column items, selection state, text, and per-item data",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(900, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbListIconGadget(1, 10, 10, 250, 120, PBString("Name"), 100) == 1);
+    pbAddGadgetColumn(1, 1, PBString("Age"), 60);
+    for (int i = 1; i <= 3; ++i) {
+        CHECK(pbAddGadgetItem(1, -1, PBString("Person " + std::to_string(i) + "\n" + std::to_string(20 + i))) == 1);
+    }
+    CHECK(pbCountGadgetItems(1) == 3);
+    CHECK(pbGetGadgetItemText(1, 0, 0).bytes() == "Person 1");
+    CHECK(pbGetGadgetItemText(1, 0, 1).bytes() == "21");
+    CHECK(pbGetGadgetItemText(1, -1, 0).bytes() == "Name"); // column header
+    CHECK(pbGetGadgetItemText(1, -1, 1).bytes() == "Age");
+
+    CHECK(pbSetGadgetItemText(1, 1, PBString("Changed"), 0) == 1);
+    CHECK(pbGetGadgetItemText(1, 1, 0).bytes() == "Changed");
+    CHECK(pbSetGadgetItemText(1, -1, PBString("NameHdr"), 0) == 1);
+    CHECK(pbGetGadgetItemText(1, -1, 0).bytes() == "NameHdr");
+
+    CHECK(pbGetGadgetState(1) == -1);
+    CHECK(pbSetGadgetState(1, 1) == 1);
+    CHECK(pbGetGadgetState(1) == 1);
+    CHECK(pbGetGadgetText(1).bytes() == "Changed"); // first column of the selected row
+
+    CHECK(pbSetGadgetItemData(1, 0, 555) == 1);
+    CHECK(pbGetGadgetItemData(1, 0) == 555);
+    CHECK(pbGetGadgetItemData(1, 1) == 0); // untouched, defaults to 0
+
+    CHECK(pbRemoveGadgetItem(1, 0) == 1);
+    CHECK(pbCountGadgetItems(1) == 2);
+    CHECK(pbClearGadgetItems(1) == 1);
+    CHECK(pbCountGadgetItems(1) == 0);
+
+    pbCloseWindow(900);
+}
+
+TEST_CASE("AddGadgetColumn/RemoveGadgetColumn manage a ListIcon's own columns, round-tripping ColumnWidth too",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(901, 10, 10, 300, 300, PBString("Test"));
+    pbListIconGadget(1, 10, 10, 250, 120, PBString("Col0"), 100);
+    CHECK(pbGetGadgetAttribute(1, 3) == 1); // #PB_ListIcon_ColumnCount
+
+    CHECK(pbAddGadgetColumn(1, 1, PBString("Col1"), 60) == 1);
+    CHECK(pbAddGadgetColumn(1, -1, PBString("Col2"), 70) == 1); // appended at the end
+    CHECK(pbGetGadgetAttribute(1, 3) == 3);
+    CHECK(pbGetGadgetItemAttribute(1, 0, 1, 1) == 60); // #PB_ListIcon_ColumnWidth of Col1
+
+    CHECK(pbSetGadgetItemAttribute(1, 0, 1, 99, 1) == 1);
+    CHECK(pbGetGadgetItemAttribute(1, 0, 1, 1) == 99);
+
+    CHECK(pbRemoveGadgetColumn(1, 1) == 1); // removes "Col1"
+    CHECK(pbGetGadgetAttribute(1, 3) == 2);
+    CHECK(pbGetGadgetItemText(1, -1, 1).bytes() == "Col2"); // Col2 shifted into position 1
+
+    CHECK(pbRemoveGadgetColumn(1, -1) == 1); // #PB_All
+    CHECK(pbGetGadgetAttribute(1, 3) == 0);
+
+    pbCloseWindow(901);
+}
+
+TEST_CASE("GetGadgetItemState/SetGadgetItemState round-trip a ListIcon's own Selected/Checked bits",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(902, 10, 10, 300, 300, PBString("Test"));
+    pbListIconGadget(1, 10, 10, 250, 120, PBString("Name"), 100, 1 /* #PB_ListIcon_CheckBoxes */);
+    pbAddGadgetItem(1, -1, PBString("Item 1"));
+    pbAddGadgetItem(1, -1, PBString("Item 2"));
+
+    CHECK(pbGetGadgetItemState(1, 0) == 0);
+    CHECK(pbSetGadgetItemState(1, 0, 1) == 1); // #PB_ListIcon_Selected
+    CHECK(pbGetGadgetItemState(1, 0) == 1);
+    CHECK(pbSetGadgetItemState(1, 0, 2) == 1); // #PB_ListIcon_Checked (also clears Selected)
+    CHECK(pbGetGadgetItemState(1, 0) == 2);
+    CHECK(pbSetGadgetItemState(1, 0, 3) == 1); // both at once
+    CHECK(pbGetGadgetItemState(1, 0) == 3);
+    CHECK(pbGetGadgetItemState(1, 1) == 0); // untouched
+
+    pbCloseWindow(902);
+}
+
+TEST_CASE("A real ListIcon selection change/row activation/right-click/column-header click each queue their own "
+          "#PB_EventType",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(903, 10, 10, 300, 300, PBString("Test"));
+    pbListIconGadget(1, 10, 10, 250, 120, PBString("Name"), 100);
+    pbAddGadgetItem(1, -1, PBString("Item 1"));
+    pbAddGadgetItem(1, -1, PBString("Item 2"));
+    drainEvents();
+
+    GtkWidget* treeView = detail::listIconTreeView(detail::gadgetTable().at(1));
+    REQUIRE(treeView != nullptr);
+    GtkTreePath* path = gtk_tree_path_new_from_indices(1, -1);
+    gtk_tree_selection_select_path(gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView)), path);
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 1);
+    CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
+    // The same selection-changed signal also queues #PB_EventType_Change.
+    CHECK(pbWindowEvent() == 3);
+    CHECK(pbEventType() == 768);
+
+    GtkTreeViewColumn* column0 = gtk_tree_view_get_column(GTK_TREE_VIEW(treeView), 0);
+    gtk_tree_view_row_activated(GTK_TREE_VIEW(treeView), path, column0);
+    CHECK(pbWindowEvent() == 3);
+    CHECK(pbEventType() == 2); // #PB_EventType_LeftDoubleClick
+    gtk_tree_path_free(path);
+
+    GdkEvent* rightClick = gdk_event_new(GDK_BUTTON_PRESS);
+    rightClick->button.button = 3;
+    gboolean handled = GDK_EVENT_PROPAGATE;
+    g_signal_emit_by_name(treeView, "button-press-event", rightClick, &handled);
+    gdk_event_free(rightClick);
+    CHECK(pbWindowEvent() == 3);
+    CHECK(pbEventType() == 1); // #PB_EventType_RightClick
+
+    g_signal_emit_by_name(column0, "clicked");
+    CHECK(pbWindowEvent() == 3);
+    CHECK(pbEventType() == 8); // #PB_EventType_ColumnClick
+    CHECK(pbGetGadgetAttribute(1, 4) == 0); // #PB_ListIcon_ClickedColumn
+
+    pbCloseWindow(903);
+}
+
+TEST_CASE("A real ListIcon checkbox toggle flips the Checked bit and queues LeftClick/Change",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(904, 10, 10, 300, 300, PBString("Test"));
+    pbListIconGadget(1, 10, 10, 250, 120, PBString("Name"), 100, 1 /* #PB_ListIcon_CheckBoxes */);
+    pbAddGadgetItem(1, -1, PBString("Item 1"));
+    drainEvents();
+
+    GtkWidget* treeView = detail::listIconTreeView(detail::gadgetTable().at(1));
+    REQUIRE(treeView != nullptr);
+    GtkTreeViewColumn* column0 = gtk_tree_view_get_column(GTK_TREE_VIEW(treeView), 0);
+    GList* cells = gtk_cell_layout_get_cells(GTK_CELL_LAYOUT(column0));
+    REQUIRE(cells != nullptr);
+    auto* toggleRenderer = GTK_CELL_RENDERER_TOGGLE(cells->data);
+    g_list_free(cells);
+
+    CHECK(pbGetGadgetItemState(1, 0) == 0);
+    g_signal_emit_by_name(toggleRenderer, "toggled", "0");
+    CHECK(pbGetGadgetItemState(1, 0) == 2); // #PB_ListIcon_Checked
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
+
+    pbCloseWindow(904);
+}
+
+TEST_CASE("TreeGadget round-trips hierarchical items via flat depth-first Element addressing",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(905, 10, 10, 300, 300, PBString("Test"));
+    CHECK(pbTreeGadget(1, 10, 10, 250, 200) == 1);
+
+    CHECK(pbAddGadgetItem(1, -1, PBString("Root0"), 0, 0) == 1);
+    CHECK(pbAddGadgetItem(1, -1, PBString("Root1"), 0, 0) == 1);
+    CHECK(pbAddGadgetItem(1, -1, PBString("Child1.0"), 0, 1) == 1);
+    CHECK(pbAddGadgetItem(1, -1, PBString("Child1.1"), 0, 1) == 1);
+    CHECK(pbAddGadgetItem(1, -1, PBString("Root2"), 0, 0) == 1);
+
+    CHECK(pbCountGadgetItems(1) == 5); // every depth, not just root-level
+    CHECK(pbGetGadgetItemText(1, 2).bytes() == "Child1.0");
+    CHECK(pbGetGadgetItemAttribute(1, 2, 1) == 1); // #PB_Tree_SubLevel
+    CHECK(pbGetGadgetItemAttribute(1, 0, 1) == 0);
+
+    CHECK(pbSetGadgetItemData(1, 2, 42) == 1);
+    CHECK(pbGetGadgetItemData(1, 2) == 42);
+    CHECK(pbGetGadgetItemData(1, 0) == 0); // untouched
+
+    pbCloseWindow(905);
+}
+
+TEST_CASE("TreeGadget's own SetGadgetState/SetGadgetItemState select a child under a still-collapsed ancestor",
+          "[runtime][guilib]") {
+    // Oracle-verified: real PB lets a level-1+ child be selected directly,
+    // with no prior expansion needed - GtkTreeSelection's own API won't
+    // do that on its own (silently does nothing for a row under a
+    // collapsed ancestor), so this is exercising the gtk_tree_view_
+    // expand_to_path fix-up pbSetGadgetState/pbSetGadgetItemState both
+    // apply for TreeGadget specifically.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(906, 10, 10, 300, 300, PBString("Test"));
+    pbTreeGadget(1, 10, 10, 250, 200);
+    pbAddGadgetItem(1, -1, PBString("Root0"), 0, 0);
+    pbAddGadgetItem(1, -1, PBString("Root1"), 0, 0);
+    pbAddGadgetItem(1, -1, PBString("Child1.0"), 0, 1);
+
+    CHECK(pbSetGadgetState(1, 2) == 1);
+    CHECK(pbGetGadgetState(1) == 2);
+    CHECK(pbGetGadgetText(1).bytes() == "Child1.0");
+
+    CHECK(pbSetGadgetState(1, -1) == 1); // deselect all
+    CHECK(pbGetGadgetState(1) == -1);
+
+    CHECK(pbSetGadgetItemState(1, 2, 1) == 1); // #PB_Tree_Selected
+    CHECK(pbGetGadgetItemState(1, 2) & 1);
+
+    pbCloseWindow(906);
+}
+
+TEST_CASE("TreeGadget's own SetGadgetText renames the currently selected element rather than searching by text",
+          "[runtime][guilib]") {
+    // Oracle-verified directly (not assumed, and genuinely different from
+    // ListView/ComboBox's own "find and select by text" behavior): see
+    // pbSetGadgetText's own doc comment.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(907, 10, 10, 300, 300, PBString("Test"));
+    pbTreeGadget(1, 10, 10, 250, 200);
+    pbAddGadgetItem(1, -1, PBString("Root0"), 0, 0);
+    pbAddGadgetItem(1, -1, PBString("Root1"), 0, 0);
+
+    // Nothing selected: a harmless no-op.
+    CHECK(pbSetGadgetText(1, PBString("Root1")) == 1);
+    CHECK(pbGetGadgetState(1) == -1);
+    CHECK(pbGetGadgetItemText(1, 1).bytes() == "Root1");
+
+    pbSetGadgetState(1, 0);
+    CHECK(pbSetGadgetText(1, PBString("Renamed")) == 1);
+    CHECK(pbGetGadgetItemText(1, 0).bytes() == "Renamed");
+    CHECK(pbGetGadgetItemText(1, 1).bytes() == "Root1"); // untouched, even though it wasn't the match target
+
+    pbCloseWindow(907);
+}
+
+TEST_CASE("RemoveGadgetItem on a TreeGadget removes the item and every descendant",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(908, 10, 10, 300, 300, PBString("Test"));
+    pbTreeGadget(1, 10, 10, 250, 200);
+    pbAddGadgetItem(1, -1, PBString("Root0"), 0, 0);
+    pbAddGadgetItem(1, -1, PBString("Root1"), 0, 0);
+    pbAddGadgetItem(1, -1, PBString("Child1.0"), 0, 1);
+    pbAddGadgetItem(1, -1, PBString("Child1.1"), 0, 1);
+    pbAddGadgetItem(1, -1, PBString("Root2"), 0, 0);
+    CHECK(pbCountGadgetItems(1) == 5);
+
+    CHECK(pbRemoveGadgetItem(1, 1) == 1); // Root1, with both of its children
+    CHECK(pbCountGadgetItems(1) == 2);
+    CHECK(pbGetGadgetItemText(1, 0).bytes() == "Root0");
+    CHECK(pbGetGadgetItemText(1, 1).bytes() == "Root2");
+
+    CHECK(pbClearGadgetItems(1) == 1);
+    CHECK(pbCountGadgetItems(1) == 0);
+
+    pbCloseWindow(908);
+}
+
+TEST_CASE("ListIcon/Tree-only functions are a harmless failure on an unrelated gadget type",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(909, 10, 10, 300, 300, PBString("Test"));
+    pbButtonGadget(1, 10, 10, 60, 20, PBString("B"));
+
+    CHECK(pbAddGadgetColumn(1, 0, PBString("x"), 10) == 0);
+    CHECK(pbRemoveGadgetColumn(1, 0) == 0);
+    CHECK(pbGetGadgetItemAttribute(1, 0, 1) == 0);
+    CHECK(pbSetGadgetItemAttribute(1, 0, 1, 1) == 0);
+
+    pbCloseWindow(909);
+}

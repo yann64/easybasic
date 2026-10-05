@@ -489,6 +489,33 @@ void Sema::registerGuiLibBuiltins() {
         {"getgadgetitemdata", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"setgadgetitemdata", TypeSuffix::Integer,
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        // M7b's fourteenth GUI slice: ListIconGadget/TreeGadget.
+        // `ListIconGadget`'s own `Options` is optional (a bare seven-
+        // argument call defaults to a plain single-select list with no
+        // checkboxes); `TreeGadget`'s own shape matches ListViewGadget's.
+        // `AddGadgetColumn`/`RemoveGadgetColumn` are ListIcon-only, no
+        // optional tail at all (oracle-verified via each one's own real
+        // syntax). `GetGadgetItemAttribute`/`SetGadgetItemAttribute` are a
+        // brand new, generic item-attribute pair real PB's own docs give
+        // an optional trailing `Column` (default 0) - scoped here to
+        // TreeGadget's own `SubLevel` and ListIconGadget's own
+        // `ColumnWidth`.
+        {"listicongadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer},
+         7},
+        {"treegadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         4},
+        {"addgadgetcolumn", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String, TypeSuffix::Integer}, 4},
+        {"removegadgetcolumn", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"getgadgetitemattribute", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"setgadgetitemattribute", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         4},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -631,6 +658,8 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "splittergadget", "getgadgetattribute", "setgadgetattribute", "scrollareagadget",
         "listviewgadget", "comboboxgadget", "getgadgetitemstate", "setgadgetitemstate",
         "getgadgetitemdata", "setgadgetitemdata",
+        "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
+        "setgadgetitemattribute",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -874,6 +903,46 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_combobox_lowercase", 2},
         {"pb_combobox_uppercase", 4},
         {"pb_combobox_image", 8},
+        // ListIconGadget/TreeGadget (M7b's fourteenth GUI slice) -
+        // oracle-verified via a direct `Debug #PB_Xxx` probe.
+        // `#PB_ListIcon_FullRowSelect`/`HeaderDragDrop`/
+        // `AlwaysShowSelection` are registered even though they're a
+        // deliberately deferred, Windows-only-documented gap (see
+        // pbListIconGadget's own doc comment) - a program referencing
+        // them by name should still compile.
+        {"pb_listicon_checkboxes", 1},
+        {"pb_listicon_threestate", 64},
+        {"pb_listicon_multiselect", 2},
+        {"pb_listicon_gridlines", 4},
+        {"pb_listicon_fullrowselect", 8},
+        {"pb_listicon_headerdragdrop", 16},
+        {"pb_listicon_alwaysshowselection", 32},
+        {"pb_listicon_noheaders", 128},
+        {"pb_listicon_selected", 1},
+        {"pb_listicon_checked", 2},
+        {"pb_listicon_inbetween", 4},
+        {"pb_listicon_columncount", 3},
+        {"pb_listicon_clickedcolumn", 4},
+        {"pb_listicon_displaymode", 2},
+        {"pb_listicon_columnwidth", 1},
+        {"pb_listicon_columnalignment", 5},
+        {"pb_listicon_left", 0},
+        {"pb_listicon_right", 1},
+        {"pb_listicon_center", 2},
+        {"pb_tree_alwaysshowselection", 0},
+        {"pb_tree_nolines", 1},
+        {"pb_tree_nobuttons", 2},
+        {"pb_tree_checkboxes", 4},
+        {"pb_tree_threestate", 8},
+        {"pb_tree_selected", 1},
+        {"pb_tree_expanded", 2},
+        {"pb_tree_checked", 4},
+        {"pb_tree_collapsed", 8},
+        {"pb_tree_inbetween", 16},
+        {"pb_tree_sublevel", 1},
+        {"pb_eventtype_rightdoubleclick", 3},
+        {"pb_eventtype_columnclick", 8},
+        {"pb_eventtype_dragstart", 2048},
     };
     return table;
 }

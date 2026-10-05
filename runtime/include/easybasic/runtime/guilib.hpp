@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -473,6 +474,99 @@ inline gboolean onComboBoxFocusOut(GtkWidget*, GdkEvent*, gpointer userData) {
     return FALSE;
 }
 
+/// `ListIconGadget`'s own `CHECKED` store column index and `TreeGadget`'s
+/// own - needed by the toggle handlers below, defined this early (rather
+/// than alongside the rest of each gadget's own column-layout constants
+/// further down) purely so those handlers can see them; see
+/// `listIconMaxColumns`'s own doc comment for the full column-layout
+/// rationale and `treeTextColumn`'s own for `TreeGadget`'s own model
+/// shape.
+inline int listIconCheckedColumn() { return 17; }
+inline int treeCheckedColumn() { return 2; }
+
+/// M7b's fourteenth GUI slice: `ListIconGadget`/`TreeGadget` share the
+/// same event wiring shape `ListViewGadget`'s own thirteenth slice
+/// already established (`GtkTreeSelection::changed`/`row-activated`/
+/// `button-press-event`), extended for the two additional event types
+/// real PB's own docs list for both that `ListViewGadget` doesn't have:
+/// `#PB_EventType_RightDoubleClick` (`3`) and `#PB_EventType_Change`
+/// (`768`) - the latter fired from the exact same selection-change signal
+/// `LeftClick` already is, a reasonable simplification given real PB's
+/// own precise distinction between the two (a plain click vs. the
+/// selection specifically changing) isn't independently verifiable
+/// without the interactive click automation this project's own test
+/// methodology deliberately avoids.
+inline void onListIconSelectionChanged(GtkTreeSelection*, gpointer userData) {
+    queueGadgetEvent(GTK_WIDGET(userData), 0);
+    queueGadgetEvent(GTK_WIDGET(userData), 768);
+}
+inline void onListIconRowActivated(GtkTreeView*, GtkTreePath*, GtkTreeViewColumn*, gpointer userData) {
+    queueGadgetEvent(GTK_WIDGET(userData), 2);
+}
+inline gboolean onListIconButtonPress(GtkWidget*, const GdkEventButton* event, gpointer userData) {
+    if (event->button == 3) {
+        bool isDouble = event->type == GDK_2BUTTON_PRESS;
+        queueGadgetEvent(GTK_WIDGET(userData), isDouble ? 3 : 1);
+    }
+    return FALSE;
+}
+
+/// `GtkCellRendererToggle::toggled` - unlike a plain `GtkTreeSelection`,
+/// GTK doesn't auto-update the bound model column on a checkbox click;
+/// this flips `listIconCheckedColumn()`'s own value for the clicked row
+/// manually, then queues the same `LeftClick`/`Change` pair a selection
+/// change does - oracle-verified `ListIconGadget.html`'s own remarks:
+/// "#PB_EventType_LeftClick : ... ou une case à cocher a été
+/// cochée/décochée".
+inline void onListIconToggle(GtkCellRendererToggle* renderer, gchar* pathStr, gpointer userData) {
+    GtkWidget* treeView = gtk_bin_get_child(GTK_BIN(static_cast<GtkWidget*>(userData)));
+    GtkTreeModel* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+    GtkTreeIter iter;
+    GtkTreePath* path = gtk_tree_path_new_from_string(pathStr);
+    if (gtk_tree_model_get_iter(model, &iter, path) != 0) {
+        gboolean current = gtk_cell_renderer_toggle_get_active(renderer);
+        gtk_list_store_set(GTK_LIST_STORE(model), &iter, listIconCheckedColumn(), current == 0 ? TRUE : FALSE, -1);
+    }
+    gtk_tree_path_free(path);
+    queueGadgetEvent(static_cast<GtkWidget*>(userData), 0);
+    queueGadgetEvent(static_cast<GtkWidget*>(userData), 768);
+}
+
+/// `TreeGadget`'s own sibling of `onListIconToggle` - the same idea, but
+/// against its own `GtkTreeStore` (`gtk_tree_store_set`, not
+/// `gtk_list_store_set` - different C functions even though both
+/// ultimately write through the same `GtkTreeModel` interface) and its
+/// own `treeCheckedColumn()`.
+inline void onTreeToggle(GtkCellRendererToggle* renderer, gchar* pathStr, gpointer userData) {
+    GtkWidget* treeView = gtk_bin_get_child(GTK_BIN(static_cast<GtkWidget*>(userData)));
+    GtkTreeModel* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+    GtkTreeIter iter;
+    GtkTreePath* path = gtk_tree_path_new_from_string(pathStr);
+    if (gtk_tree_model_get_iter(model, &iter, path) != 0) {
+        gboolean current = gtk_cell_renderer_toggle_get_active(renderer);
+        gtk_tree_store_set(GTK_TREE_STORE(model), &iter, treeCheckedColumn(), current == 0 ? TRUE : FALSE, -1);
+    }
+    gtk_tree_path_free(path);
+    queueGadgetEvent(static_cast<GtkWidget*>(userData), 0);
+    queueGadgetEvent(static_cast<GtkWidget*>(userData), 768);
+}
+
+/// `GtkTreeViewColumn::clicked` (a header click) - oracle-verified
+/// `#PB_EventType_ColumnClick` (`8`); the clicked column's own visual
+/// position (what `#PB_ListIcon_ClickedColumn` reports back via
+/// `GetGadgetAttribute`) is recorded on the `GtkTreeView` itself, read
+/// back by `pbGetGadgetAttribute`.
+inline const char* listIconClickedColumnKey() { return "pbcxx-listicon-clicked-column"; }
+inline void onListIconColumnClicked(GtkTreeViewColumn* column, gpointer userData) {
+    auto* scrolled = static_cast<GtkWidget*>(userData);
+    GtkWidget* treeView = gtk_bin_get_child(GTK_BIN(scrolled));
+    GList* columns = gtk_tree_view_get_columns(GTK_TREE_VIEW(treeView));
+    int position = g_list_index(columns, column);
+    g_list_free(columns);
+    g_object_set_data(G_OBJECT(treeView), listIconClickedColumnKey(), reinterpret_cast<gpointer>(static_cast<std::intptr_t>(position)));
+    queueGadgetEvent(scrolled, 8);
+}
+
 /// Queues a `#PB_Event_Menu` for a leaf `MenuItem()`'s own `"activate"`
 /// signal, reading its element/window IDs back from `g_object_set_data`
 /// (set in `pbMenuItem`) - the menu equivalent of `queueGadgetEvent`.
@@ -740,10 +834,25 @@ inline GtkWidget* findLabelInTabWidget(GtkWidget* tabLabelWidget) {
 /// distinguish the two cases just by checking the immediate child's own
 /// type), while `ComboBoxGadget` is a plain `GtkComboBox` stored directly,
 /// no wrapper at all.
+/// M7b's fourteenth GUI slice (`ListIconGadget`/`TreeGadget`) adds two
+/// more `GtkTreeView`-based gadget types, both also wrapped in a
+/// `GtkScrolledWindow` the exact same way `ListViewGadget`'s own already
+/// is - `itemListStoreFor`/`listViewTreeView` below need to tell a bare
+/// `ListViewGadget` apart from the other two now, since their own column
+/// layouts are completely different (`ListIconGadget`'s own has many text
+/// columns plus a checkbox one; `TreeGadget`'s own model is hierarchical,
+/// a `GtkTreeStore`, not a flat `GtkListStore` at all) - tagged directly
+/// on the `GtkTreeView` itself at creation time (`ListViewGadget`'s own
+/// stays untagged, so existing behavior for it needs no changes at all).
+inline const char* gadgetKindKey() { return "pbcxx-gadget-kind"; }
+inline const char* gadgetKindListIcon() { return "listicon"; }
+inline const char* gadgetKindTree() { return "tree"; }
+
 inline GtkListStore* itemListStoreFor(GtkWidget* stored) {
     if (GTK_IS_SCROLLED_WINDOW(stored) != 0) {
         GtkWidget* inner = gtk_bin_get_child(GTK_BIN(stored));
-        if (inner != nullptr && GTK_IS_TREE_VIEW(inner) != 0) {
+        if (inner != nullptr && GTK_IS_TREE_VIEW(inner) != 0 &&
+            g_object_get_data(G_OBJECT(inner), gadgetKindKey()) == nullptr) {
             return GTK_LIST_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(inner)));
         }
         return nullptr;
@@ -766,7 +875,41 @@ inline GtkWidget* listViewTreeView(GtkWidget* stored) {
         return nullptr;
     }
     GtkWidget* inner = gtk_bin_get_child(GTK_BIN(stored));
-    return (inner != nullptr && GTK_IS_TREE_VIEW(inner) != 0) ? inner : nullptr;
+    if (inner == nullptr || GTK_IS_TREE_VIEW(inner) == 0 ||
+        g_object_get_data(G_OBJECT(inner), gadgetKindKey()) != nullptr) {
+        return nullptr;
+    }
+    return inner;
+}
+
+/// The real `GtkTreeView` inside a `ListIconGadget`'s own `GtkScrolledWindow`
+/// wrapper (tagged with `gadgetKindListIcon()` at creation), or `nullptr`
+/// for anything else.
+inline GtkWidget* listIconTreeView(GtkWidget* stored) {
+    if (GTK_IS_SCROLLED_WINDOW(stored) == 0) {
+        return nullptr;
+    }
+    GtkWidget* inner = gtk_bin_get_child(GTK_BIN(stored));
+    if (inner == nullptr || GTK_IS_TREE_VIEW(inner) == 0) {
+        return nullptr;
+    }
+    auto* kind = static_cast<const char*>(g_object_get_data(G_OBJECT(inner), gadgetKindKey()));
+    return (kind != nullptr && g_strcmp0(kind, gadgetKindListIcon()) == 0) ? inner : nullptr;
+}
+
+/// The real `GtkTreeView` inside a `TreeGadget`'s own `GtkScrolledWindow`
+/// wrapper (tagged with `gadgetKindTree()` at creation), or `nullptr` for
+/// anything else.
+inline GtkWidget* treeGadgetTreeView(GtkWidget* stored) {
+    if (GTK_IS_SCROLLED_WINDOW(stored) == 0) {
+        return nullptr;
+    }
+    GtkWidget* inner = gtk_bin_get_child(GTK_BIN(stored));
+    if (inner == nullptr || GTK_IS_TREE_VIEW(inner) == 0) {
+        return nullptr;
+    }
+    auto* kind = static_cast<const char*>(g_object_get_data(G_OBJECT(inner), gadgetKindKey()));
+    return (kind != nullptr && g_strcmp0(kind, gadgetKindTree()) == 0) ? inner : nullptr;
 }
 
 /// Column indices for `itemListStoreFor`'s own two-column
@@ -774,6 +917,196 @@ inline GtkWidget* listViewTreeView(GtkWidget* stored) {
 /// `ListViewGadget`/`ComboBoxGadget` alike.
 inline int itemTextColumn() { return 0; }
 inline int itemDataColumn() { return 1; }
+
+/// `ListIconGadget`'s own `GtkListStore` layout: a fixed, generously-sized
+/// number of text columns (GTK's own `GtkListStore` can't gain/lose
+/// columns once created, unlike real PB's own dynamically growable column
+/// list - `AddGadgetColumn`/`RemoveGadgetColumn` only ever add/remove the
+/// *view*'s own `GtkTreeViewColumn`s, each tagged with which of these
+/// pre-allocated store slots it's bound to via `listIconColumnSlotKey()`,
+/// never reassigning or reclaiming one - 16 is far more than any real PB
+/// program is likely to need, the same kind of generous-but-finite limit
+/// real PB's own "65536 items" cap on `AddGadgetItem` already is), plus
+/// one `DATA` column (`GetGadgetItemData`/`SetGadgetItemData`, shared
+/// layout idea with `itemDataColumn()` above but not the same index) and
+/// one `CHECKED` column (`#PB_ListIcon_CheckBoxes`), always present in
+/// the model regardless of whether that flag was actually requested, to
+/// keep every `ListIconGadget`'s own model shape uniform.
+inline int listIconMaxColumns() { return 16; }
+inline int listIconDataColumn() { return listIconMaxColumns(); }
+// listIconCheckedColumn() - defined earlier, see its own doc comment.
+inline int listIconTotalModelColumns() { return listIconMaxColumns() + 2; }
+
+/// Tag on each `GtkTreeViewColumn` recording which of `ListIconGadget`'s
+/// own pre-allocated store slots it displays - `gtk_tree_view_get_columns`
+/// returns columns in their current *visual* order (what `AddGadgetColumn`'s
+/// own `Position` and `GetGadgetItemText`/`SetGadgetItemText`'s own
+/// `Column` both address), which is independent of - and, once a column is
+/// inserted anywhere but the end, no longer the same sequence as - the
+/// underlying store slot each one is bound to.
+inline const char* listIconColumnSlotKey() { return "pbcxx-listicon-column-slot"; }
+/// The next not-yet-used store slot for this `ListIconGadget`'s own next
+/// `AddGadgetColumn` call, tagged on the `GtkTreeView` itself (starts at
+/// `1` - slot `0` is always the column `ListIconGadget` itself creates).
+inline const char* listIconNextSlotKey() { return "pbcxx-listicon-next-slot"; }
+
+/// The real `GtkTreeViewColumn` at visual position `position` (what a
+/// `ListIconGadget`'s own `AddGadgetColumn`/`GetGadgetItemText` etc. all
+/// address), or `nullptr` if out of range.
+inline GtkTreeViewColumn* listIconColumnAtPosition(GtkTreeView* treeView, int position) {
+    if (position < 0) {
+        return nullptr;
+    }
+    GList* columns = gtk_tree_view_get_columns(treeView);
+    GList* nth = g_list_nth(columns, static_cast<guint>(position));
+    auto* column = nth != nullptr ? GTK_TREE_VIEW_COLUMN(nth->data) : nullptr;
+    g_list_free(columns);
+    return column;
+}
+
+/// The underlying store slot a visual column position is bound to, or
+/// `-1` if that position doesn't exist.
+inline int listIconStoreSlotAtPosition(GtkTreeView* treeView, int position) {
+    GtkTreeViewColumn* column = listIconColumnAtPosition(treeView, position);
+    if (column == nullptr) {
+        return -1;
+    }
+    return static_cast<int>(reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(column), listIconColumnSlotKey())));
+}
+
+/// `AddGadgetItem`/`SetGadgetItemText`'s own `Chr(10)`-separated
+/// multi-column text, oracle-verified via `ListIconGadget.html`'s own
+/// remarks: "premiÃ¨re colonne"+Chr(10)+"deuxiÃ¨me colonne".
+inline std::vector<std::string> splitByNewline(const std::string& text) {
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (true) {
+        std::size_t pos = text.find('\n', start);
+        parts.push_back(text.substr(start, pos == std::string::npos ? std::string::npos : pos - start));
+        if (pos == std::string::npos) {
+            break;
+        }
+        start = pos + 1;
+    }
+    return parts;
+}
+
+/// `TreeGadget`'s own model: a two-column `GtkTreeStore` (`TEXT`, `DATA` -
+/// the same column *indices* `itemTextColumn()`/`itemDataColumn()` already
+/// use, just a hierarchical store instead of a flat one, so the same
+/// constants are reused rather than duplicated).
+inline int treeTextColumn() { return itemTextColumn(); }
+inline int treeDataColumn() { return itemDataColumn(); }
+// treeCheckedColumn() - defined earlier, see its own doc comment.
+
+/// `AddGadgetItem`'s own required `Options` (the new item's own level) -
+/// oracle-verified directly: real PB tracks an implicit "last item
+/// inserted at each depth" per Tree, used to find a new item's own
+/// parent (depth `L`'s own parent is whatever's currently at depth
+/// `L - 1`) - an invalid (too deep) level clamps to one deeper than
+/// the *previous* insertion's own level, not simply the requested one,
+/// confirmed with a dedicated probe (jumping from level 0 straight to
+/// level 5 lands at level 1, not 5 or an error). Lives as a real
+/// `std::vector<GtkTreeIter>`, attached to the `GtkTreeView` itself via
+/// `g_object_set_data_full` so it's automatically freed alongside the
+/// widget - GTK's own `g_object_data` can only hold a raw `gpointer`,
+/// unlike a `GtkTreeIter` which isn't safely representable as one on its
+/// own.
+inline const char* treeLevelStackKey() { return "pbcxx-tree-level-stack"; }
+inline std::vector<GtkTreeIter>& treeLevelStack(GtkWidget* treeView) {
+    auto* stack = static_cast<std::vector<GtkTreeIter>*>(g_object_get_data(G_OBJECT(treeView), treeLevelStackKey()));
+    if (stack == nullptr) {
+        stack = new std::vector<GtkTreeIter>();
+        g_object_set_data_full(G_OBJECT(treeView), treeLevelStackKey(), stack,
+                                [](gpointer p) { delete static_cast<std::vector<GtkTreeIter>*>(p); });
+    }
+    return *stack;
+}
+
+/// Finds the `GtkTreeIter` at `targetIndex`'s own flat, depth-first,
+/// pre-order position across the whole tree - oracle-verified directly to
+/// be exactly how real PB's own `Element` addresses a `TreeGadget`'s
+/// items (confirmed with a dedicated probe: inserting two root items,
+/// two children of the second, then a third root item reports back
+/// `Element` 0-4 in exactly that visitation order, not e.g. grouped by
+/// level).
+inline bool treeIterAtFlatIndexRecursive(GtkTreeModel* model, GtkTreeIter* parent, int& remaining,
+                                          GtkTreeIter* out) {
+    GtkTreeIter iter;
+    if (gtk_tree_model_iter_children(model, &iter, parent) == 0) {
+        return false;
+    }
+    do {
+        if (remaining == 0) {
+            *out = iter;
+            return true;
+        }
+        --remaining;
+        if (treeIterAtFlatIndexRecursive(model, &iter, remaining, out)) {
+            return true;
+        }
+    } while (gtk_tree_model_iter_next(model, &iter) != 0);
+    return false;
+}
+inline bool treeIterAtFlatIndex(GtkTreeModel* model, int targetIndex, GtkTreeIter* out) {
+    if (targetIndex < 0) {
+        return false;
+    }
+    int remaining = targetIndex;
+    return treeIterAtFlatIndexRecursive(model, nullptr, remaining, out);
+}
+
+/// The reverse direction - a given iter's own flat, depth-first index,
+/// needed by `GetGadgetState`'s own "which element is selected" query.
+/// Two iterators aren't reliably comparable for equality directly, so
+/// each candidate is compared by converting both to a `GtkTreePath`
+/// instead (`gtk_tree_path_compare`'s own well-defined `0`-means-equal
+/// contract).
+inline bool treeFlatIndexRecursive(GtkTreeModel* model, GtkTreeIter* parent, GtkTreePath* targetPath, int& counter,
+                                    int& result) {
+    GtkTreeIter iter;
+    if (gtk_tree_model_iter_children(model, &iter, parent) == 0) {
+        return false;
+    }
+    do {
+        GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+        bool isMatch = gtk_tree_path_compare(path, targetPath) == 0;
+        gtk_tree_path_free(path);
+        if (isMatch) {
+            result = counter;
+            return true;
+        }
+        ++counter;
+        if (treeFlatIndexRecursive(model, &iter, targetPath, counter, result)) {
+            return true;
+        }
+    } while (gtk_tree_model_iter_next(model, &iter) != 0);
+    return false;
+}
+inline int treeFlatIndexOfIter(GtkTreeModel* model, GtkTreeIter* target) {
+    GtkTreePath* targetPath = gtk_tree_model_get_path(model, target);
+    int counter = 0;
+    int result = -1;
+    treeFlatIndexRecursive(model, nullptr, targetPath, counter, result);
+    gtk_tree_path_free(targetPath);
+    return result;
+}
+
+/// `CountGadgetItems`'s own total node count across every depth - "Nombre
+/// d'éléments actuellement contenus dans le gadget" counts the *whole*
+/// tree, not just root-level items.
+inline int treeCountAll(GtkTreeModel* model, GtkTreeIter* parent) {
+    GtkTreeIter iter;
+    if (gtk_tree_model_iter_children(model, &iter, parent) == 0) {
+        return 0;
+    }
+    int count = 0;
+    do {
+        ++count;
+        count += treeCountAll(model, &iter);
+    } while (gtk_tree_model_iter_next(model, &iter) != 0);
+    return count;
+}
 
 /// Shared by `pbSetGadgetText`'s own `ListViewGadget`/non-editable-
 /// `ComboBoxGadget` case - oracle-verified `SetGadgetText` selects
@@ -1412,6 +1745,206 @@ inline std::int64_t pbComboBoxGadget(std::int64_t gadgetId, std::int64_t x, std:
     return 1;
 }
 
+/// M7b's fourteenth GUI slice: `ListIconGadget` - a multi-column
+/// `GtkTreeView` (headers visible by default; `#PB_ListIcon_NoHeaders`
+/// hides them, `#PB_ListIcon_GridLines` maps directly onto
+/// `gtk_tree_view_set_grid_lines`), created with one initial column -
+/// `#PB_ListIcon_CheckBoxes` packs a `GtkCellRendererToggle` alongside
+/// that column's own text renderer (oracle-verified: "Affiche une case à
+/// cocher dans la première colonne"), bound to `listIconCheckedColumn()`'s
+/// own always-present model slot regardless of whether the flag was
+/// actually requested (see `listIconMaxColumns()`'s own doc comment for
+/// why the whole model shape is fixed and uniform this way).
+/// `#PB_ListIcon_MultiSelect` maps onto `GTK_SELECTION_MULTIPLE`, the
+/// same as `ListViewGadget`'s own `Multiselect`/`ClickSelect` flags
+/// already do. `#PB_ListIcon_FullRowSelect`/`AlwaysShowSelection`/
+/// `HeaderDragDrop`/`ThreeState` are accepted but not acted on - the
+/// first three are documented Windows-only in real PB itself, and
+/// `ThreeState`'s own "indeterminate" checkbox state has no
+/// `GtkCellRendererToggle` equivalent to map onto without a materially
+/// bigger custom-renderer investment, the same kind of deliberate,
+/// narrow gap `#PB_ComboBox_Image`'s own deferred flag already is.
+inline std::int64_t pbListIconGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                      std::int64_t height, const PBString& firstColumnTitle,
+                                      std::int64_t firstColumnWidth, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    std::vector<GType> types(static_cast<std::size_t>(detail::listIconTotalModelColumns()));
+    for (int i = 0; i < detail::listIconMaxColumns(); ++i) {
+        types[static_cast<std::size_t>(i)] = G_TYPE_STRING;
+    }
+    types[static_cast<std::size_t>(detail::listIconDataColumn())] = G_TYPE_INT64;
+    types[static_cast<std::size_t>(detail::listIconCheckedColumn())] = G_TYPE_BOOLEAN;
+    GtkListStore* store = gtk_list_store_newv(static_cast<gint>(types.size()), types.data());
+    GtkWidget* treeView = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    g_object_unref(store);
+    g_object_set_data(G_OBJECT(treeView), detail::gadgetKindKey(),
+                       const_cast<char*>(detail::gadgetKindListIcon()));
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(treeView), (flags & 128) == 0 ? TRUE : FALSE);
+    gtk_tree_view_set_grid_lines(GTK_TREE_VIEW(treeView), (flags & 4) != 0 ? GTK_TREE_VIEW_GRID_LINES_BOTH
+                                                                            : GTK_TREE_VIEW_GRID_LINES_NONE);
+
+    GtkTreeViewColumn* firstColumn = gtk_tree_view_column_new();
+    gtk_tree_view_column_set_title(firstColumn, firstColumnTitle.bytes().c_str());
+    gtk_tree_view_column_set_sizing(firstColumn, GTK_TREE_VIEW_COLUMN_FIXED);
+    gtk_tree_view_column_set_fixed_width(firstColumn, static_cast<int>(firstColumnWidth));
+    GtkCellRenderer* toggleRenderer = nullptr;
+    if ((flags & 1) != 0) { // #PB_ListIcon_CheckBoxes
+        toggleRenderer = gtk_cell_renderer_toggle_new();
+        gtk_cell_renderer_toggle_set_activatable(GTK_CELL_RENDERER_TOGGLE(toggleRenderer), TRUE);
+        gtk_tree_view_column_pack_start(firstColumn, toggleRenderer, FALSE);
+        gtk_tree_view_column_add_attribute(firstColumn, toggleRenderer, "active", detail::listIconCheckedColumn());
+    }
+    GtkCellRenderer* textRenderer = gtk_cell_renderer_text_new();
+    gtk_tree_view_column_pack_start(firstColumn, textRenderer, TRUE);
+    gtk_tree_view_column_add_attribute(firstColumn, textRenderer, "text", 0);
+    gtk_tree_view_column_set_clickable(firstColumn, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(treeView), firstColumn);
+    g_object_set_data(G_OBJECT(firstColumn), detail::listIconColumnSlotKey(),
+                       reinterpret_cast<gpointer>(std::intptr_t{0}));
+    g_object_set_data(G_OBJECT(treeView), detail::listIconNextSlotKey(), reinterpret_cast<gpointer>(std::intptr_t{1}));
+
+    GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+    gtk_tree_selection_set_mode(selection, (flags & 2) != 0 ? GTK_SELECTION_MULTIPLE : GTK_SELECTION_SINGLE);
+
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scrolled), treeView);
+    gtk_widget_show(treeView);
+
+    if (!detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, scrolled)) {
+        return 0;
+    }
+    g_signal_connect(selection, "changed", G_CALLBACK(detail::onListIconSelectionChanged), scrolled);
+    g_signal_connect(treeView, "row-activated", G_CALLBACK(detail::onListIconRowActivated), scrolled);
+    g_signal_connect(treeView, "button-press-event", G_CALLBACK(detail::onListIconButtonPress), scrolled);
+    g_signal_connect(firstColumn, "clicked", G_CALLBACK(detail::onListIconColumnClicked), scrolled);
+    if (toggleRenderer != nullptr) {
+        g_signal_connect(toggleRenderer, "toggled", G_CALLBACK(detail::onListIconToggle), scrolled);
+    }
+    return 1;
+}
+
+/// `AddGadgetColumn(#Gadget, Position, Title$, Width)` - `Position`'s own
+/// `-1`-means-"append" convention matches `gtk_tree_view_insert_column`'s
+/// own directly. Returns `0` (a harmless failure, this project's own
+/// established simplification for the function's real "no documented
+/// return value" contract) once `listIconMaxColumns()`'s own pre-allocated
+/// slots are exhausted - unreachable in practice for any real PB program.
+inline std::int64_t pbAddGadgetColumn(std::int64_t gadgetId, std::int64_t position, const PBString& title,
+                                       std::int64_t width) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* treeView = detail::listIconTreeView(it->second);
+    if (treeView == nullptr) {
+        return 0;
+    }
+    auto nextSlot =
+        reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(treeView), detail::listIconNextSlotKey()));
+    if (nextSlot >= detail::listIconMaxColumns()) {
+        return 0;
+    }
+    GtkTreeViewColumn* column = gtk_tree_view_column_new();
+    gtk_tree_view_column_set_title(column, title.bytes().c_str());
+    gtk_tree_view_column_set_sizing(column, GTK_TREE_VIEW_COLUMN_FIXED);
+    gtk_tree_view_column_set_fixed_width(column, static_cast<int>(width));
+    GtkCellRenderer* renderer = gtk_cell_renderer_text_new();
+    gtk_tree_view_column_pack_start(column, renderer, TRUE);
+    gtk_tree_view_column_add_attribute(column, renderer, "text", static_cast<int>(nextSlot));
+    gtk_tree_view_column_set_clickable(column, TRUE);
+    int insertAt = position < 0 ? -1 : static_cast<int>(position);
+    gtk_tree_view_insert_column(GTK_TREE_VIEW(treeView), column, insertAt);
+    g_object_set_data(G_OBJECT(column), detail::listIconColumnSlotKey(), reinterpret_cast<gpointer>(nextSlot));
+    g_object_set_data(G_OBJECT(treeView), detail::listIconNextSlotKey(), reinterpret_cast<gpointer>(nextSlot + 1));
+    g_signal_connect(column, "clicked", G_CALLBACK(detail::onListIconColumnClicked), it->second);
+    return 1;
+}
+
+/// `RemoveGadgetColumn(#Gadget, Column)` - `#PB_All` (`-1`) removes every
+/// column. The underlying store slot a removed column was bound to is
+/// never reclaimed (see `listIconMaxColumns()`'s own doc comment) - its
+/// own old data just becomes permanently unreachable, which is
+/// functionally equivalent to "removed" from the PB program's own point
+/// of view, matching the documented contract ("supprime une colonne
+/// (ainsi que ses données)") without needing to actually clear it.
+inline std::int64_t pbRemoveGadgetColumn(std::int64_t gadgetId, std::int64_t column) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* treeView = detail::listIconTreeView(it->second);
+    if (treeView == nullptr) {
+        return 0;
+    }
+    if (column < 0) { // #PB_All
+        GList* columns = gtk_tree_view_get_columns(GTK_TREE_VIEW(treeView));
+        for (GList* l = columns; l != nullptr; l = l->next) {
+            gtk_tree_view_remove_column(GTK_TREE_VIEW(treeView), GTK_TREE_VIEW_COLUMN(l->data));
+        }
+        g_list_free(columns);
+        return 1;
+    }
+    GtkTreeViewColumn* col = detail::listIconColumnAtPosition(GTK_TREE_VIEW(treeView), static_cast<int>(column));
+    if (col == nullptr) {
+        return 0;
+    }
+    gtk_tree_view_remove_column(GTK_TREE_VIEW(treeView), col);
+    return 1;
+}
+
+/// M7b's fourteenth GUI slice: `TreeGadget` - a headerless, single-column
+/// `GtkTreeView` over a hierarchical `GtkTreeStore` (`TEXT`/`DATA`/
+/// `CHECKED` - `treeTextColumn`/`treeDataColumn`/`treeCheckedColumn`),
+/// wrapped in a `GtkScrolledWindow` the same way every other `GtkTreeView`-
+/// based gadget already is. `#PB_Tree_NoLines`/`NoButtons` map directly
+/// onto `gtk_tree_view_set_enable_tree_lines`/`gtk_tree_view_set_show_
+/// expanders`; `#PB_Tree_CheckBoxes` packs a `GtkCellRendererToggle` the
+/// same way `ListIconGadget`'s own does. `#PB_Tree_AlwaysShowSelection`/
+/// `ThreeState` are accepted but not acted on, the same deliberate,
+/// narrow gaps `ListIconGadget`'s own equivalent flags already are.
+inline std::int64_t pbTreeGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                  std::int64_t height, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkTreeStore* store = gtk_tree_store_new(3, G_TYPE_STRING, G_TYPE_INT64, G_TYPE_BOOLEAN);
+    GtkWidget* treeView = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    g_object_unref(store);
+    g_object_set_data(G_OBJECT(treeView), detail::gadgetKindKey(), const_cast<char*>(detail::gadgetKindTree()));
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(treeView), FALSE);
+    gtk_tree_view_set_enable_tree_lines(GTK_TREE_VIEW(treeView), (flags & 1) == 0 ? TRUE : FALSE); // #PB_Tree_NoLines
+    gtk_tree_view_set_show_expanders(GTK_TREE_VIEW(treeView), (flags & 2) == 0 ? TRUE : FALSE); // #PB_Tree_NoButtons
+
+    GtkTreeViewColumn* column = gtk_tree_view_column_new();
+    GtkCellRenderer* toggleRenderer = nullptr;
+    if ((flags & 4) != 0) { // #PB_Tree_CheckBoxes
+        toggleRenderer = gtk_cell_renderer_toggle_new();
+        gtk_cell_renderer_toggle_set_activatable(GTK_CELL_RENDERER_TOGGLE(toggleRenderer), TRUE);
+        gtk_tree_view_column_pack_start(column, toggleRenderer, FALSE);
+        gtk_tree_view_column_add_attribute(column, toggleRenderer, "active", detail::treeCheckedColumn());
+    }
+    GtkCellRenderer* textRenderer = gtk_cell_renderer_text_new();
+    gtk_tree_view_column_pack_start(column, textRenderer, TRUE);
+    gtk_tree_view_column_add_attribute(column, textRenderer, "text", detail::treeTextColumn());
+    gtk_tree_view_append_column(GTK_TREE_VIEW(treeView), column);
+
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scrolled), treeView);
+    gtk_widget_show(treeView);
+
+    if (!detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, scrolled)) {
+        return 0;
+    }
+    GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+    g_signal_connect(selection, "changed", G_CALLBACK(detail::onListIconSelectionChanged), scrolled);
+    g_signal_connect(treeView, "row-activated", G_CALLBACK(detail::onListIconRowActivated), scrolled);
+    g_signal_connect(treeView, "button-press-event", G_CALLBACK(detail::onListIconButtonPress), scrolled);
+    if (toggleRenderer != nullptr) {
+        g_signal_connect(toggleRenderer, "toggled", G_CALLBACK(detail::onTreeToggle), scrolled);
+    }
+    return 1;
+}
+
 /// `AddGadgetItem(#Gadget, Position, Text$ [, ImageID [, Options]])` -
 /// scoped to `PanelGadget` only for now (the one gadget type this project
 /// actually has that supports it; real PB's own docs also list
@@ -1444,7 +1977,7 @@ inline std::int64_t pbComboBoxGadget(std::int64_t gadgetId, std::int64_t x, std:
 /// case exercises) still pushes a genuinely new frame, since its own
 /// `containerId` won't match whatever's currently on top.
 inline std::int64_t pbAddGadgetItem(std::int64_t gadgetId, std::int64_t position, const PBString& text,
-                                     std::int64_t imageId = 0, std::int64_t /*options*/ = 0) {
+                                     std::int64_t imageId = 0, std::int64_t options = 0) {
     auto it = detail::gadgetTable().find(gadgetId);
     if (it == detail::gadgetTable().end()) {
         return 0;
@@ -1457,6 +1990,43 @@ inline std::int64_t pbAddGadgetItem(std::int64_t gadgetId, std::int64_t position
         int insertAt = position < 0 ? -1 : static_cast<int>(position);
         gtk_list_store_insert(store, &iter, insertAt);
         gtk_list_store_set(store, &iter, detail::itemTextColumn(), text.bytes().c_str(), -1);
+        return 1;
+    }
+    // M7b's fourteenth GUI slice: ListIconGadget - `Chr(10)`-separated
+    // multi-column text, written to each visual column's own underlying
+    // store slot (`ImageID` is deferred here too, the same reason).
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        auto* store = GTK_LIST_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(treeView)));
+        GtkTreeIter iter;
+        int insertAt = position < 0 ? -1 : static_cast<int>(position);
+        gtk_list_store_insert(store, &iter, insertAt);
+        auto parts = detail::splitByNewline(text.bytes());
+        for (std::size_t visualPos = 0; visualPos < parts.size(); ++visualPos) {
+            int slot = detail::listIconStoreSlotAtPosition(GTK_TREE_VIEW(treeView), static_cast<int>(visualPos));
+            if (slot < 0) {
+                break;
+            }
+            gtk_list_store_set(store, &iter, slot, parts[visualPos].c_str(), -1);
+        }
+        return 1;
+    }
+    // M7b's fourteenth GUI slice: TreeGadget - `Options` is the new
+    // item's own level, required (not optional in practice, though still
+    // accepted with a default like every other builtin here) - see
+    // `treeLevelStack`'s own doc comment for the parent-finding/level-
+    // clamping algorithm, oracle-verified directly.
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        auto* store = GTK_TREE_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(treeView)));
+        auto& stack = detail::treeLevelStack(treeView);
+        int requestedLevel = static_cast<int>(options);
+        int effectiveLevel = std::min(requestedLevel < 0 ? 0 : requestedLevel, static_cast<int>(stack.size()));
+        GtkTreeIter* parent = effectiveLevel == 0 ? nullptr : &stack[static_cast<std::size_t>(effectiveLevel - 1)];
+        GtkTreeIter iter;
+        int insertAt = position < 0 ? -1 : static_cast<int>(position);
+        gtk_tree_store_insert(store, &iter, parent, insertAt);
+        gtk_tree_store_set(store, &iter, detail::treeTextColumn(), text.bytes().c_str(), -1);
+        stack.resize(static_cast<std::size_t>(effectiveLevel) + 1);
+        stack[static_cast<std::size_t>(effectiveLevel)] = iter;
         return 1;
     }
     if (GTK_IS_NOTEBOOK(it->second) == 0) {
@@ -1486,6 +2056,12 @@ inline std::int64_t pbCountGadgetItems(std::int64_t gadgetId) {
     if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
         return gtk_tree_model_iter_n_children(GTK_TREE_MODEL(store), nullptr);
     }
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        return gtk_tree_model_iter_n_children(gtk_tree_view_get_model(GTK_TREE_VIEW(treeView)), nullptr);
+    }
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        return detail::treeCountAll(gtk_tree_view_get_model(GTK_TREE_VIEW(treeView)), nullptr);
+    }
     if (GTK_IS_NOTEBOOK(it->second) == 0) {
         return 0;
     }
@@ -1511,6 +2087,34 @@ inline std::int64_t pbRemoveGadgetItem(std::int64_t gadgetId, std::int64_t posit
         gtk_list_store_remove(store, &iter);
         return 1;
     }
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        auto* store = GTK_LIST_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(treeView)));
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(position)) == 0) {
+            return 0;
+        }
+        gtk_list_store_remove(store, &iter);
+        return 1;
+    }
+    // `gtk_tree_store_remove` already recursively removes every
+    // descendant row GTK-side, matching the documented "et ses sous-
+    // éléments" contract with no extra code needed. `treeLevelStack` is
+    // cleared afterward - removing a node could have invalidated whatever
+    // it was tracking as "the last item at level N", and real PB's own
+    // precise behavior for a subsequent AddGadgetItem *after* a removal
+    // isn't independently oracle-verified; clamping back to level 0 is a
+    // safe, correctness-preserving simplification (never a dangling
+    // GtkTreeIter) rather than a confirmed-faithful one.
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        if (!detail::treeIterAtFlatIndex(model, static_cast<int>(position), &iter)) {
+            return 0;
+        }
+        gtk_tree_store_remove(GTK_TREE_STORE(model), &iter);
+        detail::treeLevelStack(treeView).clear();
+        return 1;
+    }
     if (GTK_IS_NOTEBOOK(it->second) == 0) {
         return 0;
     }
@@ -1533,6 +2137,15 @@ inline std::int64_t pbClearGadgetItems(std::int64_t gadgetId) {
         gtk_list_store_clear(store);
         return 1;
     }
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        gtk_list_store_clear(GTK_LIST_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(treeView))));
+        return 1;
+    }
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        gtk_tree_store_clear(GTK_TREE_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(treeView))));
+        detail::treeLevelStack(treeView).clear();
+        return 1;
+    }
     if (GTK_IS_NOTEBOOK(it->second) == 0) {
         return 0;
     }
@@ -1550,7 +2163,7 @@ inline std::int64_t pbClearGadgetItems(std::int64_t gadgetId) {
 /// `Column` is `ListIconGadget`/`ExplorerListGadget`-specific - accepted
 /// but ignored for `PanelGadget`, oracle-verified via each function's own
 /// remarks ("'Colonne' est ignorée" for Panel specifically).
-inline PBString pbGetGadgetItemText(std::int64_t gadgetId, std::int64_t element, std::int64_t /*column*/ = 0) {
+inline PBString pbGetGadgetItemText(std::int64_t gadgetId, std::int64_t element, std::int64_t column = 0) {
     auto it = detail::gadgetTable().find(gadgetId);
     if (it == detail::gadgetTable().end()) {
         return PBString();
@@ -1562,6 +2175,45 @@ inline PBString pbGetGadgetItemText(std::int64_t gadgetId, std::int64_t element,
         }
         gchar* text = nullptr;
         gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, detail::itemTextColumn(), &text, -1);
+        PBString result(text != nullptr ? text : "");
+        g_free(text);
+        return result;
+    }
+    // `Element = -1` addresses the column header's own title instead of
+    // any row's cell - oracle-verified directly via `ListIconGadget.html`.
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        GtkTreeView* view = GTK_TREE_VIEW(treeView);
+        if (element == -1) {
+            GtkTreeViewColumn* col = detail::listIconColumnAtPosition(view, static_cast<int>(column));
+            if (col == nullptr) {
+                return PBString();
+            }
+            const char* title = gtk_tree_view_column_get_title(col);
+            return PBString(title != nullptr ? title : "");
+        }
+        int slot = detail::listIconStoreSlotAtPosition(view, static_cast<int>(column));
+        if (slot < 0) {
+            return PBString();
+        }
+        GtkTreeIter iter;
+        auto* model = gtk_tree_view_get_model(view);
+        if (gtk_tree_model_iter_nth_child(model, &iter, nullptr, static_cast<int>(element)) == 0) {
+            return PBString();
+        }
+        gchar* text = nullptr;
+        gtk_tree_model_get(model, &iter, slot, &text, -1);
+        PBString result(text != nullptr ? text : "");
+        g_free(text);
+        return result;
+    }
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        if (!detail::treeIterAtFlatIndex(model, static_cast<int>(element), &iter)) {
+            return PBString();
+        }
+        gchar* text = nullptr;
+        gtk_tree_model_get(model, &iter, detail::treeTextColumn(), &text, -1);
         PBString result(text != nullptr ? text : "");
         g_free(text);
         return result;
@@ -1583,7 +2235,7 @@ inline PBString pbGetGadgetItemText(std::int64_t gadgetId, std::int64_t element,
 }
 
 inline std::int64_t pbSetGadgetItemText(std::int64_t gadgetId, std::int64_t element, const PBString& text,
-                                         std::int64_t /*column*/ = 0) {
+                                         std::int64_t column = 0) {
     auto it = detail::gadgetTable().find(gadgetId);
     if (it == detail::gadgetTable().end()) {
         return 0;
@@ -1594,6 +2246,37 @@ inline std::int64_t pbSetGadgetItemText(std::int64_t gadgetId, std::int64_t elem
             return 0;
         }
         gtk_list_store_set(store, &iter, detail::itemTextColumn(), text.bytes().c_str(), -1);
+        return 1;
+    }
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        GtkTreeView* view = GTK_TREE_VIEW(treeView);
+        if (element == -1) {
+            GtkTreeViewColumn* col = detail::listIconColumnAtPosition(view, static_cast<int>(column));
+            if (col == nullptr) {
+                return 0;
+            }
+            gtk_tree_view_column_set_title(col, text.bytes().c_str());
+            return 1;
+        }
+        int slot = detail::listIconStoreSlotAtPosition(view, static_cast<int>(column));
+        if (slot < 0) {
+            return 0;
+        }
+        GtkTreeIter iter;
+        auto* model = gtk_tree_view_get_model(view);
+        if (gtk_tree_model_iter_nth_child(model, &iter, nullptr, static_cast<int>(element)) == 0) {
+            return 0;
+        }
+        gtk_list_store_set(GTK_LIST_STORE(model), &iter, slot, text.bytes().c_str(), -1);
+        return 1;
+    }
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        if (!detail::treeIterAtFlatIndex(model, static_cast<int>(element), &iter)) {
+            return 0;
+        }
+        gtk_tree_store_set(GTK_TREE_STORE(model), &iter, detail::treeTextColumn(), text.bytes().c_str(), -1);
         return 1;
     }
     if (GTK_IS_NOTEBOOK(it->second) == 0) {
@@ -1622,6 +2305,63 @@ inline std::int64_t pbGetGadgetItemState(std::int64_t gadgetId, std::int64_t ele
     if (it == detail::gadgetTable().end()) {
         return 0;
     }
+    // `ListIconGadget`'s own bitmask - oracle-verified values
+    // `#PB_ListIcon_Selected`=1, `Checked`=2, `Inbetween`=4 (the latter
+    // unreachable here - `#PB_ListIcon_ThreeState` is a deliberately
+    // deferred gap, see `pbListIconGadget`'s own doc comment).
+    if (GtkWidget* iconView = detail::listIconTreeView(it->second)) {
+        GtkTreeView* view = GTK_TREE_VIEW(iconView);
+        auto* model = gtk_tree_view_get_model(view);
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(model, &iter, nullptr, static_cast<int>(element)) == 0) {
+            return 0;
+        }
+        GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+        gboolean selected = gtk_tree_selection_path_is_selected(gtk_tree_view_get_selection(view), path);
+        gtk_tree_path_free(path);
+        gboolean checked = FALSE;
+        gtk_tree_model_get(model, &iter, detail::listIconCheckedColumn(), &checked, -1);
+        std::int64_t result = 0;
+        if (selected != 0) {
+            result |= 1;
+        }
+        if (checked != 0) {
+            result |= 2;
+        }
+        return result;
+    }
+    // `TreeGadget`'s own bitmask - oracle-verified values
+    // `#PB_Tree_Selected`=1, `Expanded`=2, `Checked`=4, `Collapsed`=8,
+    // `Inbetween`=16 (the last unreachable, the same deliberate-gap
+    // reason `ListIconGadget`'s own `Inbetween` is). `Expanded`/
+    // `Collapsed` are mutually exclusive, set from
+    // `gtk_tree_view_row_expanded`'s own boolean - a leaf (no children)
+    // reports `Collapsed`, not independently oracle-verified for that
+    // specific case but the only sensible reading of a strictly binary
+    // expanded/collapsed state.
+    if (GtkWidget* treeGadgetView = detail::treeGadgetTreeView(it->second)) {
+        GtkTreeView* view = GTK_TREE_VIEW(treeGadgetView);
+        auto* model = gtk_tree_view_get_model(view);
+        GtkTreeIter iter;
+        if (!detail::treeIterAtFlatIndex(model, static_cast<int>(element), &iter)) {
+            return 0;
+        }
+        GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+        gboolean selected = gtk_tree_selection_path_is_selected(gtk_tree_view_get_selection(view), path);
+        gboolean expanded = gtk_tree_view_row_expanded(view, path);
+        gtk_tree_path_free(path);
+        gboolean checked = FALSE;
+        gtk_tree_model_get(model, &iter, detail::treeCheckedColumn(), &checked, -1);
+        std::int64_t result = 0;
+        if (selected != 0) {
+            result |= 1;
+        }
+        result |= expanded != 0 ? 2 : 8;
+        if (checked != 0) {
+            result |= 4;
+        }
+        return result;
+    }
     GtkWidget* treeView = detail::listViewTreeView(it->second);
     if (treeView == nullptr) {
         return 0;
@@ -1642,6 +2382,61 @@ inline std::int64_t pbSetGadgetItemState(std::int64_t gadgetId, std::int64_t ele
     auto it = detail::gadgetTable().find(gadgetId);
     if (it == detail::gadgetTable().end()) {
         return 0;
+    }
+    if (GtkWidget* iconView = detail::listIconTreeView(it->second)) {
+        GtkTreeView* view = GTK_TREE_VIEW(iconView);
+        auto* model = gtk_tree_view_get_model(view);
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(model, &iter, nullptr, static_cast<int>(element)) == 0) {
+            return 0;
+        }
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
+        GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+        g_signal_handlers_block_by_func(selection, reinterpret_cast<gpointer>(detail::onListIconSelectionChanged),
+                                         it->second);
+        if ((state & 1) != 0) {
+            gtk_tree_selection_select_path(selection, path);
+        } else {
+            gtk_tree_selection_unselect_path(selection, path);
+        }
+        g_signal_handlers_unblock_by_func(selection, reinterpret_cast<gpointer>(detail::onListIconSelectionChanged),
+                                           it->second);
+        gtk_tree_path_free(path);
+        gtk_list_store_set(GTK_LIST_STORE(model), &iter, detail::listIconCheckedColumn(),
+                            (state & 2) != 0 ? TRUE : FALSE, -1);
+        return 1;
+    }
+    if (GtkWidget* treeGadgetView = detail::treeGadgetTreeView(it->second)) {
+        GtkTreeView* view = GTK_TREE_VIEW(treeGadgetView);
+        auto* model = gtk_tree_view_get_model(view);
+        GtkTreeIter iter;
+        if (!detail::treeIterAtFlatIndex(model, static_cast<int>(element), &iter)) {
+            return 0;
+        }
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(view);
+        GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+        g_signal_handlers_block_by_func(selection, reinterpret_cast<gpointer>(detail::onListIconSelectionChanged),
+                                         it->second);
+        if ((state & 1) != 0) {
+            // See `pbSetGadgetState`'s own matching doc comment -
+            // `GtkTreeSelection` won't select a row under a collapsed
+            // ancestor on its own.
+            gtk_tree_view_expand_to_path(view, path);
+            gtk_tree_selection_select_path(selection, path);
+        } else {
+            gtk_tree_selection_unselect_path(selection, path);
+        }
+        g_signal_handlers_unblock_by_func(selection, reinterpret_cast<gpointer>(detail::onListIconSelectionChanged),
+                                           it->second);
+        if ((state & 2) != 0) {
+            gtk_tree_view_expand_row(view, path, FALSE);
+        } else if ((state & 8) != 0) {
+            gtk_tree_view_collapse_row(view, path);
+        }
+        gtk_tree_path_free(path);
+        gtk_tree_store_set(GTK_TREE_STORE(model), &iter, detail::treeCheckedColumn(),
+                            (state & 4) != 0 ? TRUE : FALSE, -1);
+        return 1;
     }
     GtkWidget* treeView = detail::listViewTreeView(it->second);
     if (treeView == nullptr) {
@@ -1674,17 +2469,36 @@ inline std::int64_t pbGetGadgetItemData(std::int64_t gadgetId, std::int64_t elem
     if (it == detail::gadgetTable().end()) {
         return 0;
     }
-    GtkListStore* store = detail::itemListStoreFor(it->second);
-    if (store == nullptr) {
-        return 0;
+    if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(element)) == 0) {
+            return 0;
+        }
+        gint64 data = 0;
+        gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, detail::itemDataColumn(), &data, -1);
+        return data;
     }
-    GtkTreeIter iter;
-    if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(element)) == 0) {
-        return 0;
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(model, &iter, nullptr, static_cast<int>(element)) == 0) {
+            return 0;
+        }
+        gint64 data = 0;
+        gtk_tree_model_get(model, &iter, detail::listIconDataColumn(), &data, -1);
+        return data;
     }
-    gint64 data = 0;
-    gtk_tree_model_get(GTK_TREE_MODEL(store), &iter, detail::itemDataColumn(), &data, -1);
-    return data;
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        if (!detail::treeIterAtFlatIndex(model, static_cast<int>(element), &iter)) {
+            return 0;
+        }
+        gint64 data = 0;
+        gtk_tree_model_get(model, &iter, detail::treeDataColumn(), &data, -1);
+        return data;
+    }
+    return 0;
 }
 
 inline std::int64_t pbSetGadgetItemData(std::int64_t gadgetId, std::int64_t element, std::int64_t value) {
@@ -1692,15 +2506,93 @@ inline std::int64_t pbSetGadgetItemData(std::int64_t gadgetId, std::int64_t elem
     if (it == detail::gadgetTable().end()) {
         return 0;
     }
-    GtkListStore* store = detail::itemListStoreFor(it->second);
-    if (store == nullptr) {
+    if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(element)) == 0) {
+            return 0;
+        }
+        gtk_list_store_set(store, &iter, detail::itemDataColumn(), static_cast<gint64>(value), -1);
+        return 1;
+    }
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(model, &iter, nullptr, static_cast<int>(element)) == 0) {
+            return 0;
+        }
+        gtk_list_store_set(GTK_LIST_STORE(model), &iter, detail::listIconDataColumn(), static_cast<gint64>(value),
+                            -1);
+        return 1;
+    }
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        if (!detail::treeIterAtFlatIndex(model, static_cast<int>(element), &iter)) {
+            return 0;
+        }
+        gtk_tree_store_set(GTK_TREE_STORE(model), &iter, detail::treeDataColumn(), static_cast<gint64>(value), -1);
+        return 1;
+    }
+    return 0;
+}
+
+/// `GetGadgetItemAttribute`/`SetGadgetItemAttribute(#Gadget, Element,
+/// Attribute [, Value], [Column])` - a brand new, generic function pair
+/// (the same dispatch shape `GetGadgetAttribute`'s own already has, at
+/// item level instead of gadget level). Real PB's own docs, oracle-
+/// verified, scope this to two gadget/attribute pairs: `TreeGadget`'s
+/// own `#PB_Tree_SubLevel`=1 (`Element`-driven, `Column` ignored) and
+/// `ListIconGadget`'s own `#PB_ListIcon_ColumnWidth`=1 (`Column`-driven,
+/// `Element`/`Value`'s own... wait, `Element` is ignored, not `Value` -
+/// "Le paramètre 'Element' est ignoré" for both Get and Set).
+/// `SubLevel` - a given element's own depth, read directly off its
+/// `GtkTreePath`'s own `gtk_tree_path_get_depth` (`1` for a root item,
+/// matching `#PB_Tree_SubLevel`'s own `0`-based convention once offset
+/// by one) - is get-only, real PB's own docs listing no settable
+/// counterpart for it at all.
+inline std::int64_t pbGetGadgetItemAttribute(std::int64_t gadgetId, std::int64_t element, std::int64_t attribute,
+                                              std::int64_t column = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
         return 0;
     }
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        if (attribute != 1) { // #PB_ListIcon_ColumnWidth
+            return 0;
+        }
+        GtkTreeViewColumn* col = detail::listIconColumnAtPosition(GTK_TREE_VIEW(treeView), static_cast<int>(column));
+        return col == nullptr ? 0 : gtk_tree_view_column_get_fixed_width(col);
+    }
+    GtkWidget* treeView = detail::treeGadgetTreeView(it->second);
+    if (treeView == nullptr || attribute != 1) { // #PB_Tree_SubLevel
+        return 0;
+    }
+    auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
     GtkTreeIter iter;
-    if (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(store), &iter, nullptr, static_cast<int>(element)) == 0) {
+    if (!detail::treeIterAtFlatIndex(model, static_cast<int>(element), &iter)) {
         return 0;
     }
-    gtk_list_store_set(store, &iter, detail::itemDataColumn(), static_cast<gint64>(value), -1);
+    GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+    std::int64_t level = gtk_tree_path_get_depth(path) - 1;
+    gtk_tree_path_free(path);
+    return level;
+}
+
+inline std::int64_t pbSetGadgetItemAttribute(std::int64_t gadgetId, std::int64_t /*element*/,
+                                              std::int64_t attribute, std::int64_t value, std::int64_t column = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* treeView = detail::listIconTreeView(it->second);
+    if (treeView == nullptr || attribute != 1) { // #PB_ListIcon_ColumnWidth
+        return 0;
+    }
+    GtkTreeViewColumn* col = detail::listIconColumnAtPosition(GTK_TREE_VIEW(treeView), static_cast<int>(column));
+    if (col == nullptr) {
+        return 0;
+    }
+    gtk_tree_view_column_set_fixed_width(col, static_cast<int>(value));
     return 1;
 }
 
@@ -1858,6 +2750,26 @@ inline std::int64_t pbGetGadgetAttribute(std::int64_t gadgetId, std::int64_t att
             case 5: // #PB_ScrollArea_ScrollStep
                 return static_cast<std::int64_t>(
                     gtk_adjustment_get_step_increment(gtk_scrolled_window_get_hadjustment(scrolled)));
+            default:
+                return 0;
+        }
+    }
+    // M7b's fourteenth GUI slice: `ListIconGadget` - both get-only,
+    // oracle-verified attribute values `#PB_ListIcon_ColumnCount`=3/
+    // `ClickedColumn`=4 (`DisplayMode`/`ColumnWidth`/`ColumnAlignment`
+    // aren't implemented yet - real PB's own docs list them too, but
+    // they're a narrower, deferred gap for now).
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        switch (attribute) {
+            case 3: { // #PB_ListIcon_ColumnCount
+                GList* columns = gtk_tree_view_get_columns(GTK_TREE_VIEW(treeView));
+                int count = g_list_length(columns);
+                g_list_free(columns);
+                return count;
+            }
+            case 4: // #PB_ListIcon_ClickedColumn
+                return reinterpret_cast<std::int64_t>(
+                    g_object_get_data(G_OBJECT(treeView), detail::listIconClickedColumnKey()));
             default:
                 return 0;
         }
@@ -2195,6 +3107,47 @@ inline PBString pbGetGadgetText(std::int64_t gadgetId) {
         g_free(text);
         return result;
     }
+    // M7b's fourteenth GUI slice: `ListIconGadget` returns the *first
+    // column's* own text of the first selected row (oracle-verified:
+    // "Renvoie le texte de la première colonne de l'élément sélectionné"),
+    // `TreeGadget` the selected element's own text - both via the same
+    // `GtkTreeSelection`-based shape `ListViewGadget`'s own above uses.
+    if (GtkWidget* treeView = detail::listIconTreeView(widget)) {
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        GList* rows = gtk_tree_selection_get_selected_rows(selection, nullptr);
+        if (rows == nullptr) {
+            return PBString();
+        }
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        PBString result;
+        if (gtk_tree_model_get_iter(model, &iter, static_cast<GtkTreePath*>(rows->data)) != 0) {
+            gchar* text = nullptr;
+            gtk_tree_model_get(model, &iter, 0, &text, -1);
+            result = safe(text);
+            g_free(text);
+        }
+        g_list_free_full(rows, reinterpret_cast<GDestroyNotify>(gtk_tree_path_free));
+        return result;
+    }
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(widget)) {
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        GList* rows = gtk_tree_selection_get_selected_rows(selection, nullptr);
+        if (rows == nullptr) {
+            return PBString();
+        }
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        PBString result;
+        if (gtk_tree_model_get_iter(model, &iter, static_cast<GtkTreePath*>(rows->data)) != 0) {
+            gchar* text = nullptr;
+            gtk_tree_model_get(model, &iter, detail::treeTextColumn(), &text, -1);
+            result = safe(text);
+            g_free(text);
+        }
+        g_list_free_full(rows, reinterpret_cast<GDestroyNotify>(gtk_tree_path_free));
+        return result;
+    }
     return PBString();
 }
 
@@ -2260,6 +3213,34 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
             }
             g_signal_handlers_unblock_by_func(widget, reinterpret_cast<gpointer>(detail::onComboBoxChanged), nullptr);
         }
+    } else if (GtkWidget* treeView = detail::treeGadgetTreeView(widget)) {
+        // `SetGadgetText` is documented for `TreeGadget` but *not* for
+        // `ListIconGadget` (oracle-verified: absent from its own
+        // "particulièrement utile pour" list, unlike `GetGadgetText`
+        // above which does list it) - so there's no `listIconTreeView`
+        // branch here at all, falling through to the harmless-failure
+        // `return 0` below for it.
+        //
+        // Oracle-verified directly (not assumed, and genuinely different
+        // from ListView/ComboBox's own above): `TreeGadget`'s own
+        // `SetGadgetText` does *not* search for a matching item at all -
+        // it renames whichever item is *currently selected*, symmetric
+        // with `GetGadgetText`'s own "selected element's text" reading
+        // above. A dedicated probe confirmed both halves: passing an
+        // existing *other* item's own text does nothing to the
+        // selection (stays on whatever was already selected, even when
+        // that text would have matched a different node), and with
+        // nothing selected at all it's a complete no-op.
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        GList* rows = gtk_tree_selection_get_selected_rows(selection, nullptr);
+        if (rows != nullptr) {
+            auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+            GtkTreeIter iter;
+            if (gtk_tree_model_get_iter(model, &iter, static_cast<GtkTreePath*>(rows->data)) != 0) {
+                gtk_tree_store_set(GTK_TREE_STORE(model), &iter, detail::treeTextColumn(), text.bytes().c_str(), -1);
+            }
+            g_list_free_full(rows, reinterpret_cast<GDestroyNotify>(gtk_tree_path_free));
+        }
     } else {
         return 0;
     }
@@ -2303,6 +3284,39 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
         }
         auto* path = static_cast<GtkTreePath*>(rows->data);
         std::int64_t index = gtk_tree_path_get_indices(path)[0];
+        g_list_free_full(rows, reinterpret_cast<GDestroyNotify>(gtk_tree_path_free));
+        return index;
+    }
+    // M7b's fourteenth GUI slice: `ListIconGadget` - oracle-verified
+    // "Renvoie le numéro du premier élément sélectionné ou -1" - the same
+    // flat row-index convention `ListViewGadget`'s own above already
+    // uses, just over its own distinct marker-tagged `GtkTreeView`.
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        GList* rows = gtk_tree_selection_get_selected_rows(selection, nullptr);
+        if (rows == nullptr) {
+            return -1;
+        }
+        auto* path = static_cast<GtkTreePath*>(rows->data);
+        std::int64_t index = gtk_tree_path_get_indices(path)[0];
+        g_list_free_full(rows, reinterpret_cast<GDestroyNotify>(gtk_tree_path_free));
+        return index;
+    }
+    // `TreeGadget` - the same selected-index convention, but translated
+    // through `treeFlatIndexOfIter` since the index is the flat, depth-
+    // first position across the whole tree, not a sibling index.
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        GList* rows = gtk_tree_selection_get_selected_rows(selection, nullptr);
+        if (rows == nullptr) {
+            return -1;
+        }
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        std::int64_t index = -1;
+        if (gtk_tree_model_get_iter(model, &iter, static_cast<GtkTreePath*>(rows->data)) != 0) {
+            index = detail::treeFlatIndexOfIter(model, &iter);
+        }
         g_list_free_full(rows, reinterpret_cast<GDestroyNotify>(gtk_tree_path_free));
         return index;
     }
@@ -2359,6 +3373,46 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
             gtk_tree_path_free(path);
         }
         g_signal_handlers_unblock_by_func(selection, reinterpret_cast<gpointer>(detail::onListViewSelectionChanged),
+                                           it->second);
+        return 1;
+    }
+    if (GtkWidget* treeView = detail::listIconTreeView(it->second)) {
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        g_signal_handlers_block_by_func(selection, reinterpret_cast<gpointer>(detail::onListIconSelectionChanged),
+                                         it->second);
+        if (state < 0) {
+            gtk_tree_selection_unselect_all(selection);
+        } else {
+            GtkTreePath* path = gtk_tree_path_new_from_indices(static_cast<int>(state), -1);
+            gtk_tree_selection_select_path(selection, path);
+            gtk_tree_path_free(path);
+        }
+        g_signal_handlers_unblock_by_func(selection, reinterpret_cast<gpointer>(detail::onListIconSelectionChanged),
+                                           it->second);
+        return 1;
+    }
+    // `GtkTreeSelection::select_iter`/`select_path` silently do nothing
+    // for a row whose own ancestor chain isn't expanded - oracle-verified
+    // real PB's own `SetGadgetState`/`SetGadgetItemState` have no such
+    // restriction (a freshly-populated Tree, with every branch collapsed
+    // by default, still lets element 2 - a level-1 child - be selected
+    // directly), so the target row's own ancestor chain is force-expanded
+    // first via `gtk_tree_view_expand_to_path` to match.
+    if (GtkWidget* treeView = detail::treeGadgetTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeSelection* selection = gtk_tree_view_get_selection(GTK_TREE_VIEW(treeView));
+        g_signal_handlers_block_by_func(selection, reinterpret_cast<gpointer>(detail::onListIconSelectionChanged),
+                                         it->second);
+        GtkTreeIter iter;
+        if (state < 0) {
+            gtk_tree_selection_unselect_all(selection);
+        } else if (detail::treeIterAtFlatIndex(model, static_cast<int>(state), &iter)) {
+            GtkTreePath* path = gtk_tree_model_get_path(model, &iter);
+            gtk_tree_view_expand_to_path(GTK_TREE_VIEW(treeView), path);
+            gtk_tree_selection_select_path(selection, path);
+            gtk_tree_path_free(path);
+        }
+        g_signal_handlers_unblock_by_func(selection, reinterpret_cast<gpointer>(detail::onListIconSelectionChanged),
                                            it->second);
         return 1;
     }
