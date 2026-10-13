@@ -546,6 +546,17 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
           TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
          8},
+        // M7b's seventeenth GUI slice: ImageGadget/ButtonImageGadget -
+        // both take an ImageID-style handle (an Integer, same as every
+        // other ImageID-consuming builtin) plus optional Options.
+        {"imagegadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer},
+         6},
+        {"buttonimagegadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer},
+         6},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -690,7 +701,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "getgadgetitemdata", "setgadgetitemdata",
         "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
         "setgadgetitemattribute", "optiongadget", "progressbargadget", "spingadget", "trackbargadget",
-        "scrollbargadget",
+        "scrollbargadget", "imagegadget", "buttonimagegadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -1002,6 +1013,15 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_scrollbar_pagelength", 3},
         {"pb_eventtype_up", 4},
         {"pb_eventtype_down", 5},
+        // ImageGadget/ButtonImageGadget (M7b's seventeenth GUI slice) -
+        // oracle-verified via a direct `Debug #PB_Xxx` probe.
+        // `#PB_Button_Default`/`MultiLine` are registered for name-
+        // compiling completeness even though this slice doesn't act on
+        // them (see guilib.hpp's own pbButtonImageGadget doc comment).
+        {"pb_image_border", 1},
+        {"pb_button_toggle", 4},
+        {"pb_button_default", 8},
+        {"pb_button_multiline", 16},
     };
     return table;
 }

@@ -3780,3 +3780,79 @@ established native-creation-handle divergence) before being pinned. 428 tests pa
 `linux-gcc`/`linux-clang`, including the 422 that predate this slice; the new tests also pass
 individually under `linux-clang-sanitize`.
 
+## M7b Implementation Notes (GUI core, seventeenth slice: `ImageGadget`/`ButtonImageGadget`)
+
+**Scope landed**: both gadgets, closing out the two still-missing types from the official
+`GadgetAdvanced.pb` example (see the `qt6_subsystem` reference project's own `15-gadgetadvanced.md`).
+`ImageGadget` is a plain `GtkImage`; `ButtonImageGadget` is a `GtkButton` (or, with `#PB_Button_
+Toggle`, a `GtkToggleButton`) whose child is a `GtkImage` via `gtk_button_set_image`, not a label.
+Both take an `ImageID()`-sourced native handle directly, the same convention `attachMenuItemImage`/
+`pbToolBarImageButton` already established - not a plain `#Image` number.
+
+**`ImageGadget`'s own state is the displayed image's own handle, not a boolean** - oracle-verified
+directly: `SetGadgetState(id, ImageID(other))` changes which image is shown, and `GetGadgetState`
+reads back whichever handle was set most recently (at creation or via `SetGadgetState`). Tracked via
+a dedicated `g_object_data` tag (`GtkImage` has no inherent notion of "which PB image number is
+this"), read/written by one new `GTK_IS_IMAGE` branch each in `GetGadgetState`/`SetGadgetState`.
+`Width`/`Height` of `0` is oracle-verified to mean "use the image's own natural size"
+(`GadgetAdvanced.pb`'s own official call: `ImageGadget(0, 200, 5, 0, 0, ImageID(2))`) - already
+exactly what `placeGadget`'s own unconditional `gtk_widget_set_size_request(widget, 0, 0)` call does
+with zero special-casing needed: a `0` size *request* only ever sets a floor, never forcing a widget
+smaller than its own natural minimum.
+
+**A real bug caught only by writing the e2e case, not by the oracle probing done beforehand**:
+neither gadget has any text capability at all (oracle-verified directly: `SetGadgetText(id,
+"caption")` then `GetGadgetText(id)` stays empty for both), but `ButtonImageGadget` is a real
+`GtkButton` under the hood, so the pre-existing generic `GTK_IS_BUTTON` dispatch in `SetGadgetText`
+would otherwise call `gtk_button_set_label` - which unconditionally *replaces* a `GtkButton`'s own
+child widget with a fresh `GtkLabel`, destroying the image entirely rather than just failing to set
+invisible text. (The *read* side happened to come out oracle-correct anyway, by coincidence -
+`gtk_button_get_label` returns `nullptr` for a button whose child was never set via the label
+convenience API - but relying on that coincidence would have been fragile.) Fixed with a dedicated
+`detail::imageButtonMarkerKey()` tag, checked ahead of every other branch in both `GetGadgetText`
+and `SetGadgetText` to make both gadgets' own no-op genuinely explicit rather than accidental.
+`ImageGadget`'s matching `SetGadgetText` no-op needed its own explicit `GTK_IS_IMAGE` branch too -
+not because anything would otherwise go *wrong* (nothing else matches a bare `GtkImage` either), but
+because the oracle's own return value is a nonzero handle, not `0`: the same "simplify to a clean
+`1`" treatment `pbOpenWindow`'s own doc comment establishes for a native, not-meaningfully-checked
+return value, rather than silently falling through to the harmless-failure default.
+
+**`#PB_Button_Toggle` is the one flag actually acted on** for `ButtonImageGadget` - oracle-verified
+to produce a real, observable difference (`GetGadgetState` always `0` without it, a genuine on/off
+toggle with it), and simply building a `GtkToggleButton` instead of a `GtkButton` gets this entirely
+for free from the pre-existing generic `GTK_IS_TOGGLE_BUTTON` fallback already in `GetGadgetState`/
+`SetGadgetState` - no new branch needed for either case. `#PB_Button_Default`/`MultiLine` and
+`#PB_Image_Border` are all registered (oracle-verified values) for name-compiling completeness but
+not acted on: the first two are the same still-fully-deferred gap plain `ButtonGadget`'s own `Flags`
+already has (not reopened here), and the third is a purely cosmetic border with no PB-visible,
+Debug-testable accessor of its own - the same kind of deliberately deferred gap as
+`#PB_ProgressBar_Smooth`/`#PB_TrackBar_Ticks` before it.
+
+**Testing**: four new `runtime_guilib_test.cpp` cases - `ImageGadget`'s own handle-state round-trip
+(plus the harmless no-image-at-all creation case), the text-no-op round-trip for both gadgets (the
+fix above), `ButtonImageGadget`'s own plain-vs-`Toggle` state behavior, and a real click (driving
+`gtk_button_clicked` directly) confirming `#PB_Event_Gadget`/`#PB_EventType_LeftClick` fires the same
+way every other `GtkButton`-based gadget's own click already does. One new golden e2e case
+(`tests/e2e/gui_image_gadgets`) exercises the same sequence end to end through `pbcxx` itself.
+Comparing `GetGadgetState`'s own non-reproducible native handle against a freshly-read `ImageID()`
+(rather than printing the raw value) needed a `Debug (a = b)`-shaped bare comparison expression -
+which surfaced a genuine, previously-unknown `pbcxx` parser gap: `Debug`'s own argument (and
+assignment RHS) is parsed via `parseExpr()`, which doesn't include comparison operators at all
+(`parseComparison()` is a separate grammar rule, reached only from `If`/`While`/`Until` conditions) -
+confirmed accepted by the real oracle (`pbcompilerc -k`) but rejected by `pbcxx` with "expected end
+of statement, found '='". Worked around in this slice's own e2e case with an explicit `If`/`EndIf`
+instead of fixing the parser - a deliberately scoped-out, separate, previously-untracked gap, now
+noted here rather than silently patched over mid-slice. 433 tests pass across `linux-gcc`/
+`linux-clang`, including the 428 that predate this slice.
+
+**Haiku note, found as a side effect of this slice (not a regression it introduced)**: `gtk3_devel`
+was finally installed on the real Haiku machine while investigating this slice's own Haiku CI status
+(previously absent, silently skipping every single GUI test there since M7b began - see M7b's first-
+slice notes). With it installed, `runtime_guilib_test.cpp` compiles and actually runs there for the
+first time ever - and crashes with `SIGSEGV`, at a *different, unrelated* test case each run
+(observed at both the `StatusBar` round-trip test and the plain `LoadImage` test, neither related to
+each other or to this slice), the classic signature of heap corruction rather than a bug local to
+any one gadget. Not yet root-caused - deliberately deferred to its own separate investigation rather
+than block this slice, but a real, now-tracked finding: every GUI slice merged so far has been
+entirely unverified on Haiku's own GTK3 port until this moment.
+

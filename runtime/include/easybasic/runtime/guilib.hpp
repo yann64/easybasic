@@ -1396,6 +1396,45 @@ inline gboolean onSpinOutput(GtkSpinButton* spin, gpointer) {
     return numeric ? FALSE : TRUE;
 }
 
+/// M7b's seventeenth GUI slice: `ImageGadget`/`ButtonImageGadget`.
+/// `imageHandle` here is `ImageID()`'s own return value - the real
+/// `GdkPixbuf*` pointer itself, the same direct-pointer convention
+/// `attachMenuItemImage`/`pbToolBarImageButton` already established, not
+/// a plain `#Image` number to look up in `imageTable()`. `0` (no image at
+/// all) is a harmless, oracle-verified-successful creation - leaves the
+/// `GtkImage` empty rather than erroring, the same latitude
+/// `attachMenuItemImage`'s own `imageId == 0` early-return already gives.
+/// Deliberately does *not* scale the pixbuf the way the toolbar/menu-item
+/// cases do (those are oracle-verified fixed-pixel-size icon contexts;
+/// neither `ImageGadget` nor `ButtonImageGadget` has any such documented
+/// fixed size) - displayed at the pixbuf's own native resolution, with
+/// `Width`/`Height` only ever a `placeGadget`-driven layout size request.
+inline const char* imageGadgetHandleKey() { return "pbcxx-image-gadget-handle"; }
+inline void setImageGadgetPixbuf(GtkWidget* image, std::int64_t imageHandle) {
+    g_object_set_data(G_OBJECT(image), imageGadgetHandleKey(), reinterpret_cast<gpointer>(imageHandle));
+    if (imageHandle == 0) {
+        gtk_image_clear(GTK_IMAGE(image));
+        return;
+    }
+    gtk_image_set_from_pixbuf(GTK_IMAGE(image), reinterpret_cast<GdkPixbuf*>(imageHandle));
+}
+
+/// `ButtonImageGadget` - oracle-verified directly: unlike a plain
+/// `ButtonGadget`, its own `GetGadgetText`/`SetGadgetText` are a complete
+/// no-op (`SetGadgetText(id, "caption")` then `GetGadgetText(id)` stayed
+/// empty) - it has no text-label capability at all, only the image. Left
+/// unmarked, the pre-existing generic `GTK_IS_BUTTON` dispatch would
+/// still happen to read back empty (`gtk_button_get_label` returns
+/// `nullptr` for a button whose child was never set via the label
+/// convenience API) but would be actively *wrong* on the write side -
+/// `gtk_button_set_label` unconditionally replaces a `GtkButton`'s own
+/// child widget with a fresh `GtkLabel`, which would destroy the image
+/// entirely, not just silently fail to set invisible text. This marker
+/// is checked ahead of every other `GetGadgetText`/`SetGadgetText`
+/// branch to make both genuinely match the oracle instead of relying on
+/// that read-side coincidence.
+inline const char* imageButtonMarkerKey() { return "pbcxx-image-button"; }
+
 } // namespace detail
 
 /// Oracle-verified: `OpenWindow`'s own return value is some nonzero,
@@ -1763,6 +1802,65 @@ inline std::int64_t pbScrollBarGadget(std::int64_t gadgetId, std::int64_t x, std
                             static_cast<double>(pageLength));
     GtkWidget* widget = gtk_scrollbar_new(orientation, adjustment);
     g_signal_connect(adjustment, "value-changed", G_CALLBACK(detail::onScrollAreaValueChanged), widget);
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
+/// M7b's seventeenth GUI slice: `ImageGadget` - a plain `GtkImage`.
+/// `Width`/`Height` of `0` is oracle-verified to mean "use the image's
+/// own natural size" (`GadgetAdvanced.pb`'s own official example:
+/// `ImageGadget(0, 200, 5, 0, 0, ImageID(2))`) - already exactly what
+/// `placeGadget`'s own unconditional `gtk_widget_set_size_request(widget,
+/// 0, 0)` call does, with no special-casing needed here at all: a `0`
+/// size *request* only ever sets a floor, never forces a widget smaller
+/// than its own natural minimum, so requesting `0` is already
+/// indistinguishable from not constraining the size at all.
+/// `GetGadgetState`/`SetGadgetState` round-trip `imageHandle` itself (see
+/// `detail::setImageGadgetPixbuf`'s own doc comment) - oracle-verified
+/// directly: `SetGadgetState(id, ImageID(otherImage))` changes which
+/// image is displayed, and `GetGadgetState` reads back whichever
+/// `ImageID`-style handle was set most recently, not a plain boolean.
+/// `#PB_Image_Border` (oracle-verified value `1`) is registered for
+/// name-compiling completeness but not implemented - a purely cosmetic
+/// border with no PB-visible, Debug-testable accessor of its own, the
+/// same kind of deliberately deferred gap as `#PB_ProgressBar_Smooth`/
+/// `#PB_TrackBar_Ticks` before it.
+inline std::int64_t pbImageGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                   std::int64_t height, std::int64_t imageHandle, std::int64_t /*flags*/ = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* widget = gtk_image_new();
+    detail::setImageGadgetPixbuf(widget, imageHandle);
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
+/// `ButtonImageGadget` - a `GtkButton` (or, with `#PB_Button_Toggle`, a
+/// `GtkToggleButton`) whose child is a `GtkImage` via
+/// `gtk_button_set_image`, not a label - see
+/// `detail::imageButtonMarkerKey`'s own doc comment for why
+/// `GetGadgetText`/`SetGadgetText` need a dedicated marker rather than
+/// falling through to the generic `GtkButton` dispatch. `#PB_Button_
+/// Toggle` (oracle-verified value `4`, shared with plain `ButtonGadget`'s
+/// own still-fully-deferred `Flags`) is the one flag actually acted on
+/// here, since it's the one oracle-verified to produce an observable
+/// difference: without it, `GetGadgetState` always reads back `0`
+/// (confirmed directly: even after `SetGadgetState(id, 1)`) - already
+/// exactly what the pre-existing generic `GTK_IS_TOGGLE_BUTTON` fallback
+/// gives for free for a plain (non-toggle) `GtkButton`, no new branch
+/// needed. With it, `GetGadgetState`/`SetGadgetState` behave like
+/// `CheckBoxGadget`'s own plain on/off toggle - also already covered by
+/// that same fallback once built as a real `GtkToggleButton`.
+/// `#PB_Button_Default`/`MultiLine` are registered (name-compiling
+/// completeness) but, like plain `ButtonGadget`'s own `Flags`, not acted
+/// on - a pre-existing, independently tracked gap, not reopened here.
+inline std::int64_t pbButtonImageGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                         std::int64_t height, std::int64_t imageHandle, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    bool toggle = (flags & 4) != 0; // #PB_Button_Toggle
+    GtkWidget* widget = toggle ? gtk_toggle_button_new() : gtk_button_new();
+    g_object_set_data(G_OBJECT(widget), detail::imageButtonMarkerKey(), reinterpret_cast<gpointer>(1));
+    GtkWidget* image = gtk_image_new();
+    detail::setImageGadgetPixbuf(image, imageHandle);
+    gtk_button_set_image(GTK_BUTTON(widget), image);
+    g_signal_connect(widget, toggle ? "toggled" : "clicked", G_CALLBACK(detail::onGadgetClicked), nullptr);
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
@@ -3423,6 +3521,12 @@ inline PBString pbGetGadgetText(std::int64_t gadgetId) {
     // with at least an empty-string label), but PBString(nullptr) would be
     // undefined behavior if one ever did, so guard defensively anyway.
     auto safe = [](const char* text) { return PBString(text != nullptr ? text : ""); };
+    // `ButtonImageGadget` - see `detail::imageButtonMarkerKey`'s own doc
+    // comment: oracle-verified as a genuine no-op, checked ahead of the
+    // generic `GTK_IS_BUTTON` branch below rather than relying on it.
+    if (g_object_get_data(G_OBJECT(widget), detail::imageButtonMarkerKey()) != nullptr) {
+        return PBString();
+    }
     if (GTK_IS_ENTRY(widget) != 0) {
         return safe(gtk_entry_get_text(GTK_ENTRY(widget)));
     }
@@ -3527,6 +3631,23 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
         return 0;
     }
     GtkWidget* widget = it->second;
+    // `ButtonImageGadget` - see `detail::imageButtonMarkerKey`'s own doc
+    // comment: oracle-verified as a genuine no-op (the displayed image is
+    // not disturbed) - checked ahead of the generic `GTK_IS_BUTTON`
+    // branch below, which would otherwise call `gtk_button_set_label` and
+    // destroy the image entirely.
+    if (g_object_get_data(G_OBJECT(widget), detail::imageButtonMarkerKey()) != nullptr) {
+        return 1;
+    }
+    // `ImageGadget` - oracle-verified: `SetGadgetText` on it is *also* a
+    // visual no-op (`GetGadgetText` stays empty either way, matching the
+    // natural fallthrough below), but real PB's own return value is a
+    // nonzero handle, not `0` - the same "simplify to a clean `1`"
+    // treatment `pbOpenWindow`'s own doc comment establishes for a
+    // nonzero-but-not-meaningfully-checked native return value.
+    if (GTK_IS_IMAGE(widget) != 0) {
+        return 1;
+    }
     // `SpinGadget` - oracle-verified: its own displayed text IS settable
     // to arbitrary, non-numeric text, but plain `gtk_entry_set_text` gets
     // silently rejected (cleared back to empty) by `GtkSpinButton`'s own
@@ -3639,6 +3760,14 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     if (GTK_IS_NOTEBOOK(it->second) != 0) {
         return gtk_notebook_get_current_page(GTK_NOTEBOOK(it->second));
     }
+    // M7b's seventeenth GUI slice: `ImageGadget` reports back whichever
+    // `ImageID`-style handle it's currently displaying - oracle-verified
+    // directly (see `pbImageGadget`'s own doc comment), not a plain
+    // boolean the way most other gadgets' own state is.
+    if (GTK_IS_IMAGE(it->second) != 0) {
+        return static_cast<std::int64_t>(
+            reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(it->second), detail::imageGadgetHandleKey())));
+    }
     // `SplitterGadget` (M7b's eleventh GUI slice, a `GtkPaned`) reports
     // its own divider position in pixels - oracle-verified via
     // `SplitterGadget.html`'s own remarks ("Renvoie la position de la
@@ -3749,6 +3878,14 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
         g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
         gtk_notebook_set_current_page(GTK_NOTEBOOK(it->second), static_cast<int>(state));
         g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
+        return 1;
+    }
+    // `ImageGadget` - `state` is an `ImageID`-style handle, not a
+    // boolean (see `pbGetGadgetState`'s own matching branch, and
+    // `detail::setImageGadgetPixbuf`'s doc comment). No signal to block
+    // here - `ImageGadget` has no documented `EventType()` support.
+    if (GTK_IS_IMAGE(it->second) != 0) {
+        detail::setImageGadgetPixbuf(it->second, state);
         return 1;
     }
     // No signal to block here at all - `SplitterGadget` has no

@@ -2493,3 +2493,113 @@ TEST_CASE("Spin/TrackBar attributes are a harmless failure on an unrelated gadge
 
     pbCloseWindow(921);
 }
+
+TEST_CASE("ImageGadget's own state is an ImageID-style handle, not a boolean - GetGadgetState reads "
+          "back whichever handle was most recently set",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: SetGadgetState(id, ImageID(other)) changes
+    // which image is displayed, and GetGadgetState reads back whichever
+    // ImageID-style handle was set most recently (at creation or via
+    // SetGadgetState) - not a plain boolean the way most other gadgets'
+    // own state is.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(922, 10, 10, 300, 300, PBString("Test"));
+    pbCreateImage(0, 64, 32);
+    pbCreateImage(1, 20, 20);
+
+    CHECK(pbImageGadget(0, 10, 10, 0, 0, pbImageID(0)) == 1);
+    CHECK(pbGetGadgetState(0) == pbImageID(0));
+
+    CHECK(pbSetGadgetState(0, pbImageID(1)) == 1);
+    CHECK(pbGetGadgetState(0) == pbImageID(1));
+
+    // A harmless, oracle-verified-successful creation with no image at
+    // all - leaves the GtkImage empty rather than erroring.
+    CHECK(pbImageGadget(1, 10, 50, 50, 20, 0) == 1);
+    CHECK(pbGetGadgetState(1) == 0);
+
+    pbCloseWindow(922);
+}
+
+TEST_CASE("Neither ImageGadget nor ButtonImageGadget has any text capability - SetGadgetText/"
+          "GetGadgetText are both genuine no-ops for each",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: SetGadgetText(id, "caption") then
+    // GetGadgetText(id) stays empty for both - unlike a plain
+    // ButtonGadget. Confirmed with a dedicated, isolated probe after
+    // this slice's own e2e case caught the naive approach (leaning on
+    // the generic GTK_IS_BUTTON dispatch) actually destroying the
+    // displayed image via gtk_button_set_label.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(923, 10, 10, 300, 300, PBString("Test"));
+    pbCreateImage(0, 64, 32);
+
+    pbImageGadget(0, 10, 10, 0, 0, pbImageID(0));
+    CHECK(pbGetGadgetText(0).bytes().empty());
+    CHECK(pbSetGadgetText(0, PBString("hello")) == 1); // simplified handle-ish return, see doc comment
+    CHECK(pbGetGadgetText(0).bytes().empty());
+
+    pbButtonImageGadget(1, 10, 60, 100, 30, pbImageID(0));
+    CHECK(pbGetGadgetText(1).bytes().empty());
+    CHECK(pbSetGadgetText(1, PBString("caption")) == 1);
+    CHECK(pbGetGadgetText(1).bytes().empty());
+
+    pbCloseWindow(923);
+}
+
+TEST_CASE("ButtonImageGadget's own GetGadgetState is a plain boolean, always 0 unless "
+          "#PB_Button_Toggle was given at creation",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: without #PB_Button_Toggle, GetGadgetState
+    // always reads back 0, even after SetGadgetState(id, 1) - already
+    // exactly what the pre-existing generic GTK_IS_TOGGLE_BUTTON fallback
+    // gives for free for a plain (non-toggle) GtkButton. With it, state
+    // behaves like CheckBoxGadget's own plain on/off toggle.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(924, 10, 10, 300, 300, PBString("Test"));
+    pbCreateImage(0, 64, 32);
+
+    pbButtonImageGadget(0, 10, 10, 100, 30, pbImageID(0));
+    CHECK(pbGetGadgetState(0) == 0);
+    CHECK(pbSetGadgetState(0, 1) == 0); // harmless no-op: not a toggle button
+    CHECK(pbGetGadgetState(0) == 0);
+
+    pbButtonImageGadget(1, 10, 60, 100, 30, pbImageID(0), 4); // #PB_Button_Toggle
+    CHECK(pbGetGadgetState(1) == 0);
+    CHECK(pbSetGadgetState(1, 1) == 1);
+    CHECK(pbGetGadgetState(1) == 1);
+
+    pbCloseWindow(924);
+}
+
+TEST_CASE("A real click (gtk_button_clicked) queues #PB_Event_Gadget with #PB_EventType_LeftClick "
+          "for a ButtonImageGadget",
+          "[runtime][guilib]") {
+    // Not independently oracle-verified (this project's own methodology
+    // deliberately avoids simulated-click probing against the real
+    // oracle) - a reasonable inference by analogy with every other
+    // GtkButton-based gadget, which all reuse this same onGadgetClicked
+    // handler on "clicked".
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(925, 10, 10, 300, 300, PBString("Test"));
+    pbCreateImage(0, 64, 32);
+    pbButtonImageGadget(1, 10, 10, 100, 30, pbImageID(0));
+    drainEvents();
+
+    GtkWidget* button = detail::gadgetTable().at(1);
+    gtk_button_clicked(GTK_BUTTON(button));
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 1);
+    CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
+
+    pbCloseWindow(925);
+}

@@ -199,6 +199,7 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"optiongadget", "pbOptionGadget"}, {"progressbargadget", "pbProgressBarGadget"},
         {"spingadget", "pbSpinGadget"}, {"trackbargadget", "pbTrackBarGadget"},
         {"scrollbargadget", "pbScrollBarGadget"},
+        {"imagegadget", "pbImageGadget"}, {"buttonimagegadget", "pbButtonImageGadget"},
         {"messagerequester", "pbMessageRequester"},
         {"colorrequester", "pbColorRequester"}, {"fontrequester", "pbFontRequester"},
         {"selectedfontname", "pbSelectedFontName"}, {"selectedfontsize", "pbSelectedFontSize"},
