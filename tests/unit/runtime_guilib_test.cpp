@@ -1035,7 +1035,7 @@ TEST_CASE("PathRequester returns an empty string on cancel, and the chosen path 
     scheduleDialogAction(
         [](GtkDialog* dialog) { gtk_dialog_response(dialog, GTK_RESPONSE_OK); });
     PBString result = pbPathRequester(PBString("T"), PBString("/tmp"));
-    CHECK_FALSE(result.bytes().empty());
+    REQUIRE_FALSE(result.bytes().empty()); // guards the .back() below from undefined behavior
     CHECK(result.bytes().back() == '/');
 }
 
@@ -2385,4 +2385,111 @@ TEST_CASE("ProgressBar's own Minimum/Maximum attribute, and SetGadgetState's own
     CHECK(pbSetGadgetAttribute(1, 1, 1) == 0);
 
     pbCloseWindow(916);
+}
+
+TEST_CASE("SpinGadget's own displayed text is genuinely independent of its internal state unless "
+          "#PB_Spin_Numeric was given at creation time",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: a freshly-created, non-#PB_Spin_Numeric
+    // SpinGadget reports back an *empty* GetGadgetText() (despite an
+    // initial value of 0), and SetGadgetState leaves the displayed text
+    // completely untouched; SetGadgetText itself is still settable to
+    // arbitrary, non-numeric text - confirmed with a dedicated, isolated
+    // probe after this slice's own e2e case caught plain
+    // gtk_entry_set_text silently getting rejected by GtkSpinButton's
+    // own internal numeric-input validation.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(917, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbSpinGadget(0, 10, 10, 100, 20, 0, 100) == 1);
+    CHECK(pbGetGadgetState(0) == 0);
+    CHECK(pbGetGadgetText(0).bytes().empty());
+
+    CHECK(pbSetGadgetState(0, 42) == 1);
+    CHECK(pbGetGadgetState(0) == 42);
+    CHECK(pbGetGadgetText(0).bytes().empty()); // still untouched
+
+    CHECK(pbSetGadgetText(0, PBString("hi")) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "hi");
+
+    pbCloseWindow(917);
+}
+
+TEST_CASE("#PB_Spin_Numeric auto-syncs SpinGadget's own displayed text to SetGadgetState", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(918, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbSpinGadget(0, 10, 10, 100, 20, 5, 100, 8) == 1); // #PB_Spin_Numeric
+    CHECK(pbGetGadgetText(0).bytes() == "5"); // formatted from the initial value
+
+    CHECK(pbSetGadgetState(0, 55) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "55");
+
+    pbCloseWindow(918);
+}
+
+TEST_CASE("GetGadgetAttribute/SetGadgetAttribute round-trip SpinGadget/TrackBarGadget's own Minimum/Maximum, "
+          "and SetGadgetState clamps into the (possibly changed) range",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(919, 10, 10, 300, 300, PBString("Test"));
+    pbSpinGadget(0, 10, 10, 100, 20, 0, 100);
+    pbTrackBarGadget(1, 10, 40, 200, 30, 0, 50);
+
+    CHECK(pbGetGadgetAttribute(0, 1) == 0); // #PB_Spin_Minimum
+    CHECK(pbGetGadgetAttribute(0, 2) == 100); // #PB_Spin_Maximum
+    CHECK(pbSetGadgetAttribute(0, 2, 200) == 1);
+    CHECK(pbGetGadgetAttribute(0, 2) == 200);
+    CHECK(pbSetGadgetState(0, 1000) == 1);
+    CHECK(pbGetGadgetState(0) == 200); // clamped to the new Maximum
+
+    CHECK(pbGetGadgetAttribute(1, 1) == 0); // #PB_TrackBar_Minimum
+    CHECK(pbGetGadgetAttribute(1, 2) == 50); // #PB_TrackBar_Maximum
+    CHECK(pbSetGadgetAttribute(1, 2, 80) == 1);
+    CHECK(pbGetGadgetAttribute(1, 2) == 80);
+    CHECK(pbSetGadgetState(1, 1000) == 1);
+    CHECK(pbGetGadgetState(1) == 80); // clamped to the new Maximum
+
+    pbCloseWindow(919);
+}
+
+TEST_CASE("ScrollBarGadget's own PageLength narrows the effective maximum selectable position to "
+          "Maximum - PageLength + 1, but #PB_ScrollBar_Maximum itself reads back the plain Maximum",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: Minimum=0/Maximum=100/PageLength=30
+    // clamps SetGadgetState to 71, not 100 or 70.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(920, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbScrollBarGadget(0, 10, 10, 200, 20, 0, 100, 30) == 1);
+    CHECK(pbGetGadgetState(0) == 0);
+    CHECK(pbGetGadgetAttribute(0, 1) == 0); // #PB_ScrollBar_Minimum
+    CHECK(pbGetGadgetAttribute(0, 2) == 100); // #PB_ScrollBar_Maximum
+    CHECK(pbGetGadgetAttribute(0, 3) == 30); // #PB_ScrollBar_PageLength
+
+    CHECK(pbSetGadgetState(0, 1000) == 1);
+    CHECK(pbGetGadgetState(0) == 71); // clamped to Maximum - PageLength + 1
+
+    pbCloseWindow(920);
+}
+
+TEST_CASE("Spin/TrackBar attributes are a harmless failure on an unrelated gadget type", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(921, 10, 10, 300, 300, PBString("Test"));
+    pbButtonGadget(1, 10, 10, 60, 20, PBString("B"));
+
+    CHECK(pbGetGadgetAttribute(1, 1) == 0); // #PB_Spin_Minimum
+    CHECK(pbSetGadgetAttribute(1, 1, 1) == 0); // #PB_TrackBar_Minimum
+
+    pbCloseWindow(921);
 }

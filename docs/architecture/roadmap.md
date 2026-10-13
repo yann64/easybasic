@@ -3724,3 +3724,59 @@ confirmed line-for-line against the real oracle (modulo the established native-c
 divergence) before being pinned. 422 tests pass across `linux-gcc`/`linux-clang`/`linux-clang-sanitize`
 (ASan/UBSan/LSan clean), including the 414 that predate this slice.
 
+## M7b Implementation Notes (GUI core, sixteenth slice: `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`)
+
+**Scope landed**: all three gadgets. `SpinGadget` is a `GtkSpinButton`; `TrackBarGadget`/`ScrollBarGadget`
+are both `GtkRange` subtypes (`GtkScale`/`GtkScrollbar`). `GetGadgetState`/`SetGadgetState` gained one new
+`GTK_IS_SPIN_BUTTON` branch and one new, shared `GTK_IS_RANGE` branch (covering both range gadgets at
+once); `GetGadgetAttribute`/`SetGadgetAttribute` gained matching `Minimum`/`Maximum` (`ScrollBarGadget`
+also `PageLength`) branches for all three. `#PB_TrackBar_Ticks` and `#PB_EventType_Up`/`Down` are
+registered for name-compiling completeness only - see below.
+
+**`SpinGadget`'s own displayed *text* and internal *state* are genuinely independent, oracle-verified
+directly**: a freshly-created, non-`#PB_Spin_Numeric` `SpinGadget` reports back an *empty*
+`GetGadgetText()` despite an initial value of `0`, and `SetGadgetState` leaves the displayed text
+completely untouched - only `#PB_Spin_Numeric` auto-syncs it. `GtkSpinButton`'s own `"output"` signal is
+the hook (`TRUE` suppresses its default auto-formatting, `FALSE` lets it apply), but two real GTK
+wrinkles surfaced only while writing the e2e case, not by the oracle probing done beforehand: first,
+`gtk_spin_button_new_with_range` itself already auto-formats the entry to the initial value during
+construction, before `pbSpinGadget` ever gets a chance to connect that very signal - worked around by
+explicitly clearing the entry straight back out through its underlying `GtkEntryBuffer` right after
+creation (non-`#PB_Spin_Numeric` only). Second, and more surprising: plain `gtk_entry_set_text` on a
+`GtkSpinButton` gets silently rejected (cleared back to empty) by its own internal numeric-input
+validation on anything that doesn't parse as a number - but real PB's own `SpinGadget` text *is*
+independently settable to arbitrary, non-numeric text (oracle-verified: `SetGadgetText(id, "hi")` then
+read back verbatim). `SetGadgetText` needed its own dedicated `GTK_IS_SPIN_BUTTON` branch, writing
+straight through the `GtkEntryBuffer` to bypass that validation entirely - the pre-existing generic
+`GTK_IS_ENTRY` dispatch (a `GtkSpinButton` *is* a `GtkEntry`) only ever worked for the *read* side.
+
+**`ScrollBarGadget`'s own `PageLength` narrows the effective maximum selectable position to
+`Maximum - PageLength + 1`, not `Maximum` itself** - oracle-verified directly with a dedicated probe
+(`Minimum`=0/`Maximum`=100/`PageLength`=30 clamps `SetGadgetState` to `71`, not `100` or `70`).
+`GtkAdjustment`'s own documented clamping range is `[lower, upper - page_size]` (GTK's own convention
+treats `upper` as the content's *exclusive* end, unlike PB's own inclusive `Maximum`) - setting
+`upper = Maximum + 1` and `page_size = PageLength` makes GTK's own native clamping land on exactly the
+oracle-verified `71`, with no manual offset math needed anywhere else; `GetGadgetAttribute`'s own
+`#PB_ScrollBar_Maximum` branch subtracts the `+1` back off when reading it back, so the stored `upper`
+is the only place this offset lives at all. `TrackBarGadget` has no such narrowing (its own `GtkAdjustment`
+has a `page_size` of `0`, so GTK's own clamp range is just the plain `[lower, upper]`).
+
+**Deferred, name-compiling-only gaps, each with a documented reason rather than a silent omission**:
+`#PB_TrackBar_Ticks` - `GtkScale` has no simple "evenly-spaced tick marks" toggle the way a native Win32
+trackbar does, only a per-value `gtk_scale_add_mark`, and it's a purely cosmetic feature with no
+functionally testable behavior anyway. `#PB_EventType_Up`/`Down` (oracle-verified values `4`/`5`) -
+`GtkSpinButton` has no public signal distinguishing an arrow click from any other value change, and this
+project's own methodology deliberately avoids the interactive click automation that pinpointing the
+arrows' own exact pixel targets would need; `#PB_EventType_Change` (`768`, already registered) covers
+every `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget` value change uniformly instead.
+
+**Testing**: six new `runtime_guilib_test.cpp` cases - the text/state independence round-trip (including
+the `GtkEntryBuffer` fix above), `#PB_Spin_Numeric`'s own auto-sync, `Minimum`/`Maximum` round-tripping
+through `GetGadgetAttribute`/`SetGadgetAttribute` with clamping into a changed range, `ScrollBarGadget`'s
+own `PageLength` narrowing, and a harmless failure for Spin/TrackBar-only attributes on an unrelated
+gadget type. One new golden e2e case (`tests/e2e/gui_spin_trackbar_scrollbar`) exercises the same
+sequence end to end through `pbcxx` itself, confirmed line-for-line against the real oracle (modulo the
+established native-creation-handle divergence) before being pinned. 428 tests pass across
+`linux-gcc`/`linux-clang`, including the 422 that predate this slice; the new tests also pass
+individually under `linux-clang-sanitize`.
+

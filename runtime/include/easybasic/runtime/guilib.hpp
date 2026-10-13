@@ -1360,6 +1360,42 @@ inline void progressBarUpdateFraction(GtkWidget* widget) {
     gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(widget), fraction);
 }
 
+/// M7b's sixteenth GUI slice: `SpinGadget` - oracle-verified directly
+/// that its own displayed *text* and internal *state* are genuinely
+/// independent, unlike a plain `GtkSpinButton`'s own native behavior
+/// (which always auto-formats its own `GtkEntry` text from its current
+/// value): a freshly-created `SpinGadget` with an initial value of `0`
+/// reports back an *empty* `GetGadgetText()`, and `SetGadgetState`
+/// leaves the displayed text completely untouched unless
+/// `#PB_Spin_Numeric` was given at creation time, in which case the text
+/// *does* auto-sync. `GtkSpinButton`'s own `"output"` signal is the
+/// exact hook for this - returning `TRUE` suppresses its own default
+/// auto-formatting entirely (leaving whatever text was already there),
+/// returning `FALSE` lets GTK's own default formatting apply instead,
+/// which is exactly what `#PB_Spin_Numeric` needs. The non-`#PB_Spin_
+/// Numeric` starting text is an explicitly-cleared empty string, not
+/// `GtkEntry`'s own default - `gtk_spin_button_new_with_range` itself
+/// already auto-formats the entry to the initial value before
+/// `pbSpinGadget` ever gets a chance to connect this very signal, so it
+/// clears the entry straight back out, through the underlying
+/// `GtkEntryBuffer` (see `pbSetGadgetText`'s own doc comment for why the
+/// buffer, not `gtk_entry_set_text`, is needed) right after creation.
+/// `GetGadgetText`'s pre-existing generic `GTK_IS_ENTRY` dispatch covers
+/// the *read* side for free after that - a `GtkSpinButton` *is* a
+/// `GtkEntry` - but `SetGadgetText`'s matching generic dispatch needed
+/// its own dedicated `GTK_IS_SPIN_BUTTON` branch: plain `gtk_entry_set_
+/// text` gets silently rejected (cleared back to empty) by
+/// `GtkSpinButton`'s own internal numeric-input validation on anything
+/// that doesn't parse as a number, confirmed with a dedicated, isolated
+/// probe after this slice's own e2e case caught it disagreeing with the
+/// real oracle (real PB's own SpinGadget text IS independently settable
+/// to arbitrary, non-numeric text).
+inline const char* spinNumericKey() { return "pbcxx-spin-numeric"; }
+inline gboolean onSpinOutput(GtkSpinButton* spin, gpointer) {
+    bool numeric = g_object_get_data(G_OBJECT(spin), spinNumericKey()) != nullptr;
+    return numeric ? FALSE : TRUE;
+}
+
 } // namespace detail
 
 /// Oracle-verified: `OpenWindow`'s own return value is some nonzero,
@@ -1624,6 +1660,109 @@ inline std::int64_t pbProgressBarGadget(std::int64_t gadgetId, std::int64_t x, s
     g_object_set_data(G_OBJECT(widget), detail::progressBarMaxKey(), reinterpret_cast<gpointer>(maximum));
     g_object_set_data(G_OBJECT(widget), detail::progressBarValueKey(), reinterpret_cast<gpointer>(minimum));
     detail::progressBarUpdateFraction(widget);
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
+/// M7b's sixteenth GUI slice: `SpinGadget` - a `GtkSpinButton` (a
+/// `GtkEntry` subtype with its own built-in `GtkAdjustment`, so
+/// `GetGadgetState`/`SetGadgetState`'s own clamping-to-range comes from
+/// GTK's own adjustment machinery directly, no manual clamping needed
+/// the way `ProgressBarGadget`'s own plain `GtkProgressBar` needed).
+/// `#PB_Spin_Numeric` is read back by `onSpinOutput` (see its own doc
+/// comment for the full text/state-independence story); `#PB_Spin_
+/// ReadOnly` maps onto `gtk_editable_set_editable` (the arrows still
+/// work either way - only direct typing is blocked, matching real PB's
+/// own "sa valeur ne peut être changée que par les flèches" wording).
+/// `#PB_EventType_Change`'s own `GtkSpinButton::value-changed` fires for
+/// *any* value change (typing, arrows, or `SetGadgetState` - the latter
+/// blocked the same established way every other stateful gadget's own
+/// creation function already blocks a spurious creation/programmatic
+/// event); `#PB_EventType_Up`/`Down` are registered for name-compiling
+/// completeness but not independently fired - `GtkSpinButton` has no
+/// public signal distinguishing an arrow click from any other value
+/// change, and this project's own methodology deliberately avoids the
+/// interactive click automation that pinpointing the arrows' own exact
+/// pixel targets would need.
+inline std::int64_t pbSpinGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                  std::int64_t height, std::int64_t minimum, std::int64_t maximum,
+                                  std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* widget = gtk_spin_button_new_with_range(static_cast<double>(minimum), static_cast<double>(maximum), 1.0);
+    gtk_spin_button_set_digits(GTK_SPIN_BUTTON(widget), 0);
+    if ((flags & 8) != 0) { // #PB_Spin_Numeric
+        g_object_set_data(G_OBJECT(widget), detail::spinNumericKey(), reinterpret_cast<gpointer>(1));
+    } else {
+        // Oracle-verified: a non-`#PB_Spin_Numeric` SpinGadget starts out
+        // with genuinely *empty* displayed text, but `gtk_spin_button_
+        // new_with_range` itself already auto-formats the entry to the
+        // initial value (e.g. `"0"`) before this function ever gets a
+        // chance to connect `onSpinOutput` - clear it back out straight
+        // through the `GtkEntryBuffer` (see `pbSetGadgetText`'s own doc
+        // comment for why the buffer, not `gtk_entry_set_text`, is needed
+        // here).
+        gtk_entry_buffer_set_text(gtk_entry_get_buffer(GTK_ENTRY(widget)), "", -1);
+    }
+    if ((flags & 4) != 0) { // #PB_Spin_ReadOnly
+        gtk_editable_set_editable(GTK_EDITABLE(widget), FALSE);
+    }
+    g_signal_connect(widget, "output", G_CALLBACK(detail::onSpinOutput), nullptr);
+    g_signal_connect(widget, "value-changed", G_CALLBACK(detail::onGadgetChanged), nullptr);
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
+/// M7b's sixteenth GUI slice: `TrackBarGadget`/`ScrollBarGadget` - both
+/// `GtkRange` subtypes (`GtkScale`/`GtkScrollbar`), sharing `GetGadgetState`/
+/// `SetGadgetState`'s own generic `GTK_IS_RANGE` dispatch (added there,
+/// not here) since `gtk_range_set_value`'s own clamping already does the
+/// right thing for both once each one's own `GtkAdjustment` is built
+/// correctly below - no manual clamping code needed either.
+/// `#PB_TrackBar_Vertical` maps onto the orientation `gtk_scale_new_with_
+/// range` itself takes; `#PB_TrackBar_Ticks` is registered for name-
+/// compiling completeness but not implemented - `GtkScale` has no simple
+/// "evenly-spaced tick marks" toggle the way a native Win32 trackbar
+/// does, only a per-value `gtk_scale_add_mark`, and this is a purely
+/// cosmetic feature with no functionally testable behavior anyway.
+/// `EventType()` isn't documented for this gadget at all - `0` is used
+/// as the same "nothing distinctive" default `ScrollAreaGadget`'s own
+/// scrollbar-change event already uses (see `onScrollAreaValueChanged`'s
+/// own doc comment), reusing that exact handler here too.
+inline std::int64_t pbTrackBarGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                      std::int64_t height, std::int64_t minimum, std::int64_t maximum,
+                                      std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkOrientation orientation = (flags & 2) != 0 ? GTK_ORIENTATION_VERTICAL : GTK_ORIENTATION_HORIZONTAL;
+    GtkWidget* widget = gtk_scale_new_with_range(orientation, static_cast<double>(minimum),
+                                                  static_cast<double>(maximum), 1.0);
+    gtk_scale_set_draw_value(GTK_SCALE(widget), FALSE);
+    GtkAdjustment* adjustment = gtk_range_get_adjustment(GTK_RANGE(widget));
+    g_signal_connect(adjustment, "value-changed", G_CALLBACK(detail::onScrollAreaValueChanged), widget);
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
+/// `ScrollBarGadget`'s own `PageLength` - oracle-verified directly: the
+/// *effective* maximum selectable position is `Maximum - PageLength +
+/// 1`, not `Maximum` itself (confirmed with a dedicated probe: `Minimum`
+/// =0/`Maximum`=100/`PageLength`=30 clamps `SetGadgetState` to `71`, not
+/// `100` or `70`). `GtkAdjustment`'s own documented clamping range is
+/// `[lower, upper - page_size]` (GTK's own convention assumes `upper` is
+/// the *exclusive* end of the content, unlike PB's own inclusive
+/// `Maximum`) - setting `upper = Maximum + 1` and `page_size =
+/// PageLength` makes GTK's own native clamping land on exactly the same
+/// `71`, with no manual offset math needed anywhere else; `GetGadgetAttribute`'s
+/// own `#PB_ScrollBar_Maximum` branch (not here - see `pbGetGadgetAttribute`'s
+/// own doc comment) subtracts the `+1` back off when reading it back, so
+/// the stored `upper` is the only place this offset lives at all.
+inline std::int64_t pbScrollBarGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                       std::int64_t height, std::int64_t minimum, std::int64_t maximum,
+                                       std::int64_t pageLength, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkOrientation orientation = (flags & 1) != 0 ? GTK_ORIENTATION_VERTICAL : GTK_ORIENTATION_HORIZONTAL;
+    GtkAdjustment* adjustment =
+        gtk_adjustment_new(static_cast<double>(minimum), static_cast<double>(minimum),
+                            static_cast<double>(maximum + 1), 1.0, static_cast<double>(pageLength),
+                            static_cast<double>(pageLength));
+    GtkWidget* widget = gtk_scrollbar_new(orientation, adjustment);
+    g_signal_connect(adjustment, "value-changed", G_CALLBACK(detail::onScrollAreaValueChanged), widget);
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
@@ -2899,6 +3038,51 @@ inline std::int64_t pbGetGadgetAttribute(std::int64_t gadgetId, std::int64_t att
                 return 0;
         }
     }
+    // M7b's sixteenth GUI slice: `SpinGadget` - both get-only here
+    // (`SetGadgetAttribute`'s own matching branch below is the setter
+    // half), read straight off its own `GtkAdjustment`.
+    if (GTK_IS_SPIN_BUTTON(it->second) != 0) {
+        GtkAdjustment* adjustment = gtk_spin_button_get_adjustment(GTK_SPIN_BUTTON(it->second));
+        switch (attribute) {
+            case 1: // #PB_Spin_Minimum
+                return static_cast<std::int64_t>(gtk_adjustment_get_lower(adjustment));
+            case 2: // #PB_Spin_Maximum
+                return static_cast<std::int64_t>(gtk_adjustment_get_upper(adjustment));
+            default:
+                return 0;
+        }
+    }
+    // `TrackBarGadget` - plain `lower`/`upper`, no offset (its own
+    // `GtkAdjustment` has a `page_size` of `0`, so GTK's own
+    // `[lower, upper - page_size]` clamp range is just `[lower, upper]`).
+    if (GTK_IS_SCALE(it->second) != 0) {
+        GtkAdjustment* adjustment = gtk_range_get_adjustment(GTK_RANGE(it->second));
+        switch (attribute) {
+            case 1: // #PB_TrackBar_Minimum
+                return static_cast<std::int64_t>(gtk_adjustment_get_lower(adjustment));
+            case 2: // #PB_TrackBar_Maximum
+                return static_cast<std::int64_t>(gtk_adjustment_get_upper(adjustment));
+            default:
+                return 0;
+        }
+    }
+    // `ScrollBarGadget` - `#PB_ScrollBar_Maximum` subtracts the `+1`
+    // `pbScrollBarGadget`'s own doc comment explains back off, so the
+    // caller sees PB's own `Maximum` convention, not GTK's own
+    // exclusive-upper-bound one.
+    if (GTK_IS_SCROLLBAR(it->second) != 0) {
+        GtkAdjustment* adjustment = gtk_range_get_adjustment(GTK_RANGE(it->second));
+        switch (attribute) {
+            case 1: // #PB_ScrollBar_Minimum
+                return static_cast<std::int64_t>(gtk_adjustment_get_lower(adjustment));
+            case 2: // #PB_ScrollBar_Maximum
+                return static_cast<std::int64_t>(gtk_adjustment_get_upper(adjustment)) - 1;
+            case 3: // #PB_ScrollBar_PageLength
+                return static_cast<std::int64_t>(gtk_adjustment_get_page_size(adjustment));
+            default:
+                return 0;
+        }
+    }
     if (GTK_IS_PANED(it->second) == 0) {
         return 0;
     }
@@ -2986,6 +3170,48 @@ inline std::int64_t pbSetGadgetAttribute(std::int64_t gadgetId, std::int64_t att
             case 2: // #PB_ProgressBar_Maximum
                 g_object_set_data(G_OBJECT(it->second), detail::progressBarMaxKey(), reinterpret_cast<gpointer>(value));
                 detail::progressBarUpdateFraction(it->second);
+                return 1;
+            default:
+                return 0;
+        }
+    }
+    if (GTK_IS_SPIN_BUTTON(it->second) != 0) {
+        GtkAdjustment* adjustment = gtk_spin_button_get_adjustment(GTK_SPIN_BUTTON(it->second));
+        switch (attribute) {
+            case 1: // #PB_Spin_Minimum
+                gtk_adjustment_set_lower(adjustment, static_cast<double>(value));
+                return 1;
+            case 2: // #PB_Spin_Maximum
+                gtk_adjustment_set_upper(adjustment, static_cast<double>(value));
+                return 1;
+            default:
+                return 0;
+        }
+    }
+    if (GTK_IS_SCALE(it->second) != 0) {
+        GtkAdjustment* adjustment = gtk_range_get_adjustment(GTK_RANGE(it->second));
+        switch (attribute) {
+            case 1: // #PB_TrackBar_Minimum
+                gtk_adjustment_set_lower(adjustment, static_cast<double>(value));
+                return 1;
+            case 2: // #PB_TrackBar_Maximum
+                gtk_adjustment_set_upper(adjustment, static_cast<double>(value));
+                return 1;
+            default:
+                return 0;
+        }
+    }
+    if (GTK_IS_SCROLLBAR(it->second) != 0) {
+        GtkAdjustment* adjustment = gtk_range_get_adjustment(GTK_RANGE(it->second));
+        switch (attribute) {
+            case 1: // #PB_ScrollBar_Minimum
+                gtk_adjustment_set_lower(adjustment, static_cast<double>(value));
+                return 1;
+            case 2: // #PB_ScrollBar_Maximum
+                gtk_adjustment_set_upper(adjustment, static_cast<double>(value) + 1.0);
+                return 1;
+            case 3: // #PB_ScrollBar_PageLength
+                gtk_adjustment_set_page_size(adjustment, static_cast<double>(value));
                 return 1;
             default:
                 return 0;
@@ -3301,7 +3527,18 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
         return 0;
     }
     GtkWidget* widget = it->second;
-    if (GTK_IS_ENTRY(widget) != 0) {
+    // `SpinGadget` - oracle-verified: its own displayed text IS settable
+    // to arbitrary, non-numeric text, but plain `gtk_entry_set_text` gets
+    // silently rejected (cleared back to empty) by `GtkSpinButton`'s own
+    // internal numeric-input validation on its entry's `insert-text`/
+    // `delete-text` handlers - confirmed with a dedicated, isolated probe
+    // after this slice's own e2e case caught it disagreeing with the
+    // real oracle. Writing straight through the underlying
+    // `GtkEntryBuffer` bypasses that validation entirely (it only
+    // intercepts `GtkEditable`-level edits, not the buffer directly).
+    if (GTK_IS_SPIN_BUTTON(widget) != 0) {
+        gtk_entry_buffer_set_text(gtk_entry_get_buffer(GTK_ENTRY(widget)), text.bytes().c_str(), -1);
+    } else if (GTK_IS_ENTRY(widget) != 0) {
         g_signal_handlers_block_by_func(widget, reinterpret_cast<gpointer>(detail::onGadgetChanged), nullptr);
         gtk_entry_set_text(GTK_ENTRY(widget), text.bytes().c_str());
         g_signal_handlers_unblock_by_func(widget, reinterpret_cast<gpointer>(detail::onGadgetChanged), nullptr);
@@ -3471,6 +3708,23 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
         return static_cast<std::int64_t>(
             reinterpret_cast<std::intptr_t>(g_object_get_data(G_OBJECT(it->second), detail::progressBarValueKey())));
     }
+    // M7b's sixteenth GUI slice: `SpinGadget` reports its own internal
+    // numeric value, already an integer (`gtk_spin_button_set_digits`
+    // was set to `0` at creation) - independent of whatever its own
+    // displayed *text* happens to be (see `pbSpinGadget`'s own doc
+    // comment).
+    if (GTK_IS_SPIN_BUTTON(it->second) != 0) {
+        return gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(it->second));
+    }
+    // `TrackBarGadget`/`ScrollBarGadget` share this one `GTK_IS_RANGE`
+    // branch - `gtk_range_get_value` reads back whatever `gtk_range_
+    // set_value`'s own clamping already settled on (see
+    // `pbScrollBarGadget`'s own doc comment for why that clamping
+    // already lands on the oracle-verified right answer for both,
+    // without this code needing to know about `PageLength` at all).
+    if (GTK_IS_RANGE(it->second) != 0) {
+        return static_cast<std::int64_t>(gtk_range_get_value(GTK_RANGE(it->second)));
+    }
     if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {
         return 0;
     }
@@ -3589,6 +3843,21 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
         std::int64_t clamped = state == -1 ? -1 : std::clamp(state, minimum, maximum);
         g_object_set_data(G_OBJECT(it->second), detail::progressBarValueKey(), reinterpret_cast<gpointer>(clamped));
         detail::progressBarUpdateFraction(it->second);
+        return 1;
+    }
+    if (GTK_IS_SPIN_BUTTON(it->second) != 0) {
+        g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onGadgetChanged), nullptr);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(it->second), static_cast<double>(state));
+        g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onGadgetChanged), nullptr);
+        return 1;
+    }
+    if (GTK_IS_RANGE(it->second) != 0) {
+        GtkAdjustment* adjustment = gtk_range_get_adjustment(GTK_RANGE(it->second));
+        g_signal_handlers_block_by_func(adjustment, reinterpret_cast<gpointer>(detail::onScrollAreaValueChanged),
+                                         it->second);
+        gtk_range_set_value(GTK_RANGE(it->second), static_cast<double>(state));
+        g_signal_handlers_unblock_by_func(adjustment, reinterpret_cast<gpointer>(detail::onScrollAreaValueChanged),
+                                           it->second);
         return 1;
     }
     if (GTK_IS_TOGGLE_BUTTON(it->second) == 0) {

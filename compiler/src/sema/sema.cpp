@@ -530,6 +530,22 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
           TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
          7},
+        // M7b's sixteenth GUI slice: SpinGadget/TrackBarGadget/
+        // ScrollBarGadget. SpinGadget/TrackBarGadget share the same
+        // shape (Minimum/Maximum, optional Options); ScrollBarGadget
+        // adds a required PageLength before its own optional Options.
+        {"spingadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         7},
+        {"trackbargadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         7},
+        {"scrollbargadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         8},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -673,7 +689,8 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "listviewgadget", "comboboxgadget", "getgadgetitemstate", "setgadgetitemstate",
         "getgadgetitemdata", "setgadgetitemdata",
         "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
-        "setgadgetitemattribute", "optiongadget", "progressbargadget",
+        "setgadgetitemattribute", "optiongadget", "progressbargadget", "spingadget", "trackbargadget",
+        "scrollbargadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -965,6 +982,26 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_progressbar_unknown", -1},
         {"pb_progressbar_minimum", 1},
         {"pb_progressbar_maximum", 2},
+        // SpinGadget/TrackBarGadget/ScrollBarGadget (M7b's sixteenth GUI
+        // slice) - oracle-verified via a direct `Debug #PB_Xxx` probe.
+        // `#PB_EventType_Up`/`Down` are new EventType() sub-codes (4/5),
+        // registered even though this slice doesn't independently fire
+        // them yet (see guilib.hpp's own pbSpinGadget/pbTrackBarGadget
+        // doc comments).
+        {"pb_spin_numeric", 8},
+        {"pb_spin_readonly", 4},
+        {"pb_spin_minimum", 1},
+        {"pb_spin_maximum", 2},
+        {"pb_trackbar_vertical", 2},
+        {"pb_trackbar_ticks", 1},
+        {"pb_trackbar_minimum", 1},
+        {"pb_trackbar_maximum", 2},
+        {"pb_scrollbar_vertical", 1},
+        {"pb_scrollbar_minimum", 1},
+        {"pb_scrollbar_maximum", 2},
+        {"pb_scrollbar_pagelength", 3},
+        {"pb_eventtype_up", 4},
+        {"pb_eventtype_down", 5},
     };
     return table;
 }
