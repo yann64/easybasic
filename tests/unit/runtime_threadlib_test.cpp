@@ -93,7 +93,28 @@ TEST_CASE("pbKillThread terminates a genuinely still-running thread", "[runtime]
     CHECK(pbIsThread(tid) == 1);
     pbKillThread(tid);
     CHECK(pbIsThread(tid) == 0);
-    std::int64_t frozen = g_counter.load();
+
+    // `pbKillThread` is deliberately non-blocking (see its own doc
+    // comment) - deferred `pthread_cancel` only actually stops the target
+    // at its next cancellation point, not synchronously with this call
+    // returning. A single fixed sleep-then-compare margin here was found
+    // to be real-world flaky under Valgrind's heavy per-instruction
+    // overhead (recurring nightly CI failure: the target thread's own
+    // cancellation point fired late enough under Valgrind to tick the
+    // counter one more time after a 50ms margin), so poll for the counter
+    // to actually settle instead of assuming a single fixed delay is
+    // always long enough, bounded so a genuine "never stops" regression
+    // still fails within a couple of seconds rather than hanging.
+    std::int64_t previous = g_counter.load();
+    std::int64_t frozen = previous;
+    bool stable = false;
+    for (int i = 0; i < 100 && !stable; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        frozen = g_counter.load();
+        stable = (frozen == previous);
+        previous = frozen;
+    }
+    CHECK(stable);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     CHECK(g_counter.load() == frozen);
 }
