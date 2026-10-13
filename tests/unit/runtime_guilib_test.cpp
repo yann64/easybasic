@@ -2506,20 +2506,22 @@ TEST_CASE("ImageGadget's own state is an ImageID-style handle, not a boolean - G
         SKIP("no usable display available in this environment");
     }
     pbOpenWindow(922, 10, 10, 300, 300, PBString("Test"));
-    pbCreateImage(0, 64, 32);
-    pbCreateImage(1, 20, 20);
+    pbCreateImage(460, 64, 32);
+    pbCreateImage(461, 20, 20);
 
-    CHECK(pbImageGadget(0, 10, 10, 0, 0, pbImageID(0)) == 1);
-    CHECK(pbGetGadgetState(0) == pbImageID(0));
+    CHECK(pbImageGadget(0, 10, 10, 0, 0, pbImageID(460)) == 1);
+    CHECK(pbGetGadgetState(0) == pbImageID(460));
 
-    CHECK(pbSetGadgetState(0, pbImageID(1)) == 1);
-    CHECK(pbGetGadgetState(0) == pbImageID(1));
+    CHECK(pbSetGadgetState(0, pbImageID(461)) == 1);
+    CHECK(pbGetGadgetState(0) == pbImageID(461));
 
     // A harmless, oracle-verified-successful creation with no image at
     // all - leaves the GtkImage empty rather than erroring.
     CHECK(pbImageGadget(1, 10, 50, 50, 20, 0) == 1);
     CHECK(pbGetGadgetState(1) == 0);
 
+    pbFreeImage(460);
+    pbFreeImage(461);
     pbCloseWindow(922);
 }
 
@@ -2536,18 +2538,19 @@ TEST_CASE("Neither ImageGadget nor ButtonImageGadget has any text capability - S
         SKIP("no usable display available in this environment");
     }
     pbOpenWindow(923, 10, 10, 300, 300, PBString("Test"));
-    pbCreateImage(0, 64, 32);
+    pbCreateImage(462, 64, 32);
 
-    pbImageGadget(0, 10, 10, 0, 0, pbImageID(0));
+    pbImageGadget(0, 10, 10, 0, 0, pbImageID(462));
     CHECK(pbGetGadgetText(0).bytes().empty());
     CHECK(pbSetGadgetText(0, PBString("hello")) == 1); // simplified handle-ish return, see doc comment
     CHECK(pbGetGadgetText(0).bytes().empty());
 
-    pbButtonImageGadget(1, 10, 60, 100, 30, pbImageID(0));
+    pbButtonImageGadget(1, 10, 60, 100, 30, pbImageID(462));
     CHECK(pbGetGadgetText(1).bytes().empty());
     CHECK(pbSetGadgetText(1, PBString("caption")) == 1);
     CHECK(pbGetGadgetText(1).bytes().empty());
 
+    pbFreeImage(462);
     pbCloseWindow(923);
 }
 
@@ -2563,18 +2566,19 @@ TEST_CASE("ButtonImageGadget's own GetGadgetState is a plain boolean, always 0 u
         SKIP("no usable display available in this environment");
     }
     pbOpenWindow(924, 10, 10, 300, 300, PBString("Test"));
-    pbCreateImage(0, 64, 32);
+    pbCreateImage(463, 64, 32);
 
-    pbButtonImageGadget(0, 10, 10, 100, 30, pbImageID(0));
+    pbButtonImageGadget(0, 10, 10, 100, 30, pbImageID(463));
     CHECK(pbGetGadgetState(0) == 0);
     CHECK(pbSetGadgetState(0, 1) == 0); // harmless no-op: not a toggle button
     CHECK(pbGetGadgetState(0) == 0);
 
-    pbButtonImageGadget(1, 10, 60, 100, 30, pbImageID(0), 4); // #PB_Button_Toggle
+    pbButtonImageGadget(1, 10, 60, 100, 30, pbImageID(463), 4); // #PB_Button_Toggle
     CHECK(pbGetGadgetState(1) == 0);
     CHECK(pbSetGadgetState(1, 1) == 1);
     CHECK(pbGetGadgetState(1) == 1);
 
+    pbFreeImage(463);
     pbCloseWindow(924);
 }
 
@@ -2590,8 +2594,8 @@ TEST_CASE("A real click (gtk_button_clicked) queues #PB_Event_Gadget with #PB_Ev
         SKIP("no usable display available in this environment");
     }
     pbOpenWindow(925, 10, 10, 300, 300, PBString("Test"));
-    pbCreateImage(0, 64, 32);
-    pbButtonImageGadget(1, 10, 10, 100, 30, pbImageID(0));
+    pbCreateImage(464, 64, 32);
+    pbButtonImageGadget(1, 10, 10, 100, 30, pbImageID(464));
     drainEvents();
 
     GtkWidget* button = detail::gadgetTable().at(1);
@@ -2601,5 +2605,6 @@ TEST_CASE("A real click (gtk_button_clicked) queues #PB_Event_Gadget with #PB_Ev
     CHECK(pbEventGadget() == 1);
     CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
 
+    pbFreeImage(464);
     pbCloseWindow(925);
 }
