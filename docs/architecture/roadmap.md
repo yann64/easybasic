@@ -3845,14 +3845,70 @@ instead of fixing the parser - a deliberately scoped-out, separate, previously-u
 noted here rather than silently patched over mid-slice. 433 tests pass across `linux-gcc`/
 `linux-clang`, including the 428 that predate this slice.
 
-**Haiku note, found as a side effect of this slice (not a regression it introduced)**: `gtk3_devel`
-was finally installed on the real Haiku machine while investigating this slice's own Haiku CI status
-(previously absent, silently skipping every single GUI test there since M7b began - see M7b's first-
-slice notes). With it installed, `runtime_guilib_test.cpp` compiles and actually runs there for the
-first time ever - and crashes with `SIGSEGV`, at a *different, unrelated* test case each run
-(observed at both the `StatusBar` round-trip test and the plain `LoadImage` test, neither related to
-each other or to this slice), the classic signature of heap corruction rather than a bug local to
-any one gadget. Not yet root-caused - deliberately deferred to its own separate investigation rather
-than block this slice, but a real, now-tracked finding: every GUI slice merged so far has been
-entirely unverified on Haiku's own GTK3 port until this moment.
+## Haiku GUI testing: three real environment bugs found and root-caused, one left genuinely open
+
+Found as a side effect of the seventeenth slice's own Haiku CI investigation (not a regression it
+introduced): `gtk3_devel` was finally installed on the real Haiku machine (previously absent, silently
+skipping every single GUI test there since M7b began - see M7b's first-slice notes). With it
+installed, `runtime_guilib_test.cpp` compiles and actually runs there for the first time ever -
+immediately surfacing three distinct, previously-invisible real bugs, two now fixed, one genuinely
+external to this project:
+
+1. **A crash on this box hung indefinitely instead of terminating** (minimal repro: `int *p = 0; *p
+   = 1;` over SSH never returns). Root cause: Haiku's own `debug_server` defaults to
+   `kActionPromptUser` on any unhandled fault - an interactive "show a crash alert" action with no
+   possible dismisser in a headless/CI SSH session, hanging forever rather than letting the process
+   die. Fixed (on the Haiku machine itself, not in this repo - a one-time environment setup step, the
+   same category as installing `gtk3_devel`): `/boot/home/config/settings/system/debug_server/settings`
+   now reads `default_action kill` (plain `kill`, *not* `kill_team` - a first, wrong guess at the
+   right-looking string that silently no-opped back to the interactive prompt default, caught only by
+   checking Haiku's own `DebugServer.cpp` source directly). This alone turned "CI job hangs for the
+   configured timeout" into "CI job fails fast with a clear SIGSEGV," which is what finally made the
+   next two findings possible to investigate at all.
+
+2. **A separate, unconditionally-fatal `GLib-GIO-ERROR`** ("No GSettings schemas are installed on the
+   system") aborts any GTK3 program the moment it constructs a widget that happens to touch a
+   GSettings-backed property - oracle-confirmed via `pbColorRequester`'s own `GtkColorChooserDialog`
+   (`gtk_color_chooser_widget_init` sets a property GSettings itself; GLib treats a totally-missing
+   schema source as fatal by design, not a recoverable error). Root cause, confirmed by reading GLib's
+   own `gsettingsschema.c`: `g_settings_schema_source_get_default()` searches `g_get_system_data_dirs()`
+   (`/boot/system/data` only, confirmed directly - *not* the `/boot/system/non-packaged/data` this
+   port's own compiled-in fallback string misleadingly suggests) plus `g_get_user_data_dir()`
+   (`/boot/home/config/non-packaged/data`), and *only* additionally honors the `GSETTINGS_SCHEMA_DIR`
+   env var when not running setuid - but even with it set correctly (confirmed directly, both via
+   plain shell `export` and `gdb`'s own `set environment`), `g_settings_schema_source_get_default()`
+   still returned `NULL`, while a from-scratch minimal C program manually calling
+   `g_settings_schema_source_new_from_directory()` on the exact same directory found the schema fine -
+   meaning the env var path genuinely isn't being honored by this Haiku glib2 build for some
+   still-unexplained reason (not fully root-caused, abandoned once the *working* fix was found, since
+   two independent paths existed and one worked). Fixed the same way as the first: Haiku's own
+   `glib2`/`gsettings_desktop_schemas` packages ship the schema *sources* but never ran
+   `glib-compile-schemas` to produce the `gschemas.compiled` cache GIO actually reads (confirmed:
+   genuinely absent anywhere on the system, `/boot/system/data/glib-2.0/schemas` being read-only
+   packagefs rules out compiling in place). Compiled it instead into the one directory confirmed to be
+   unconditionally searched regardless of setuid status - `g_get_user_data_dir()`'s own
+   `/boot/home/config/non-packaged/data/glib-2.0/schemas` - which a from-scratch `g_settings_schema_
+   source_get_default()` probe then confirmed resolves correctly.
+
+3. **The real, still-fully-open one**: with both of the above fixed, the suite now runs its real
+   content and reliably SIGSEGVs anyway (confirmed 3/3 runs) - but at a seemingly arbitrary, different
+   "current" test case each time (`Menu building...`, `LoadImage loads a real file...`, `StatusBar`
+   round-trip, observed across different runs), the exact "random order" symptom this investigation
+   set out to explain. `gdb`'s own backtrace resolves it completely: the fault is in `WaylandWindow::
+   FrameResized(float, float)` inside `/boot/system/lib/wayland-server-inproc.so`, on a *separate*,
+   per-`BWindow` looper thread (named `w>Test`/`w>Title`/etc. after whichever window's own title,
+   confirmed via `gdb`'s own thread list) - not the main thread the "current" Catch2 test case happens
+   to be running on at all. This is Haiku's own in-process Wayland-compositor compatibility shim (an
+   external, third-party-contributed project providing Wayland support so GTK3 apps can run on Haiku
+   natively at all - not part of GTK3, GLib, or this project), apparently not yet robust against the
+   sheer volume of window-resize events this test suite's hundreds of `OpenWindow`/gadget-placement
+   test cases generate. Since the crash lands asynchronously on a background thread, *whichever*
+   foreground test happens to be running at that exact moment gets blamed - fully explaining the
+   "different, unrelated test fails each run" pattern that originally looked like heap corruption in
+   this project's own code. Not a `pbcxx`/`easybasic` bug at all, and not fixable from this side of
+   the stack - genuinely external, upstream to Haiku's own Wayland compatibility layer. Every GUI slice
+   merged so far remains functionally unverified on real Haiku as a result, through no fault of its
+   own; revisiting this needs either an upstream fix to `wayland-server-inproc`, or a way to avoid
+   triggering it (unclear one exists, since window resizing is fundamental to placing any gadget at
+   all).
 
