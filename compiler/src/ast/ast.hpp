@@ -37,7 +37,7 @@ enum class UnaryOp { Negate, BitNot, LogicalNot };
 /// of node types known entirely at compile time).
 enum class ExprKind {
     IntLiteral, FloatLiteral, StringLiteral, VarRef, ConstRef, Binary, Unary, Call, FieldAccess, AddressOf,
-    DataLabelAddress, MethodCall
+    DataLabelAddress, MethodCall, Bool
 };
 
 /// Base of every expression node. Untyped: Sema annotates/validates types in
@@ -165,6 +165,30 @@ struct MethodCallExpr : Expr {
     std::string method; ///< Lowercased.
     std::string methodSpelling;
     std::vector<std::unique_ptr<Expr>> args;
+};
+
+/// `Bool(condition)` - the one documented, oracle-verified way to turn a
+/// comparison (or an `And`/`Or`/`Not` combination of them) into a plain
+/// Integer `0`/`1` usable anywhere a value is expected - `Debug`'s own
+/// argument, an assignment's RHS, a function call argument, ... - unlike a
+/// *bare* comparison, which real PB restricts to `If`/`While`/`Until`
+/// conditions only. Oracle-verified directly: a bare `Debug (a = b)` is a
+/// real, named compile error ("Comparisons (=, <, >, =< and >=) are only
+/// supported with keywords like If, While, Until or within Bool()."), not
+/// a missing `pbcxx` feature - `docs/architecture/roadmap.md`'s own M1
+/// notes already documented this restriction before `Bool()` itself was
+/// implemented. `condition` is parsed through the exact same grammar an
+/// `If`/`While` condition already uses (see `Parser::parsePrimaryAtom`'s
+/// own special-case for `Bool(`), not the plain expression grammar every
+/// other call's own argument list uses - and lowered by reusing
+/// `Sema::visitCondition`/`Codegen::genCondition` directly rather than
+/// duplicating their own logic. Oracle-verified truthiness, matching
+/// `genCondition`'s own existing "bare expression" fallback exactly:
+/// `Bool(5)`/`Bool(-1)` -> `1`, `Bool(0)` -> `0` - a non-comparison
+/// argument is still legal, using PB's standard nonzero-is-true rule.
+struct BoolExpr : Expr {
+    BoolExpr() : Expr(ExprKind::Bool) {}
+    std::unique_ptr<Expr> condition;
 };
 
 enum class StmtKind {

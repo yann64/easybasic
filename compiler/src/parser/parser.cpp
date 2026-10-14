@@ -1246,6 +1246,20 @@ std::unique_ptr<ast::Expr> Parser::parsePrimaryAtom() {
                 name += "::" + toLower(memberTok.text);
                 suffix = memberTok.suffix;
             }
+            if (check(TokenKind::LParen) && name == "bool") {
+                // `Bool(condition)` - see ast::BoolExpr's own doc comment.
+                // Its own single argument is parsed through the condition
+                // grammar (comparisons, And/Or/Not), not the plain
+                // `parseExpr()` loop every other call's argument list uses
+                // just below - that grammar doesn't accept a bare
+                // comparison at all, matching real PB's own restriction.
+                advance(); // '('
+                auto boolExpr = std::make_unique<ast::BoolExpr>();
+                boolExpr->loc = tok.loc;
+                boolExpr->condition = parseCondition();
+                expect(TokenKind::RParen, "to close 'Bool(...)'");
+                return boolExpr;
+            }
             if (check(TokenKind::LParen)) {
                 // `Name(args)` as a value - a call expression, not a
                 // variable reference (PB requires parens for a call, so

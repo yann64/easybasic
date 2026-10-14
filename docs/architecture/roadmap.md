@@ -3836,14 +3836,58 @@ way every other `GtkButton`-based gadget's own click already does. One new golde
 (`tests/e2e/gui_image_gadgets`) exercises the same sequence end to end through `pbcxx` itself.
 Comparing `GetGadgetState`'s own non-reproducible native handle against a freshly-read `ImageID()`
 (rather than printing the raw value) needed a `Debug (a = b)`-shaped bare comparison expression -
-which surfaced a genuine, previously-unknown `pbcxx` parser gap: `Debug`'s own argument (and
-assignment RHS) is parsed via `parseExpr()`, which doesn't include comparison operators at all
-(`parseComparison()` is a separate grammar rule, reached only from `If`/`While`/`Until` conditions) -
-confirmed accepted by the real oracle (`pbcompilerc -k`) but rejected by `pbcxx` with "expected end
-of statement, found '='". Worked around in this slice's own e2e case with an explicit `If`/`EndIf`
-instead of fixing the parser - a deliberately scoped-out, separate, previously-untracked gap, now
-noted here rather than silently patched over mid-slice. 433 tests pass across `linux-gcc`/
-`linux-clang`, including the 428 that predate this slice.
+rejected by `pbcxx` with a generic "expected end of statement, found '='". Worked around in this
+slice's own e2e case with an explicit `If`/`EndIf` instead, pending investigation (initially
+misdiagnosed as a `pbcxx` parser gap based on `pbcompilerc -k`'s own clean syntax-check result - `-k`
+only checks syntax, not semantics, and this turned out to be exactly backwards; see the "`Bool()`"
+notes below for the real finding and fix once actually investigated). 433 tests pass across
+`linux-gcc`/`linux-clang`, including the 428 that predate this slice.
+
+## `Bool()`: a genuinely missing builtin, not the parser gap it first looked like
+
+Follow-up to the `Debug (a = b)` question the seventeenth GUI slice raised above. Actually *running*
+the oracle (not just `pbcompilerc -k`'s own syntax-only check) immediately settled it: real PB
+rejects `Debug (a = b)` too, with a specific, named, semantic-level error - `"Comparisons (=, <, >,
+=< and >=) are only supported with keywords like If, While, Until or within Bool()."` - confirming
+this project's own pre-existing M1 documentation (`ast.hpp`'s own `BinaryOp` doc comment already
+said exactly this: "Comparisons sit looser still and are restricted to boolean contexts (If/While/
+Until conditions, or `Bool()`)") was correct all along, and `pbcxx`'s own restriction was never a bug
+- just a less friendly error message than real PB's own. The real, genuine gap was `Bool()` itself:
+grepped for across the whole compiler, it had never been implemented at all.
+
+**What real `Bool()` actually does, oracle-verified directly, not assumed from its name**: turns any
+condition - a comparison, or an `And`/`Or`/`Not` combination of them, the *exact* grammar an
+`If`/`While` condition already accepts - into a plain Integer `0`/`1`, usable anywhere a value is
+expected (a `Debug` argument, an assignment's RHS, a function call argument, composed with ordinary
+arithmetic, ...). A non-comparison argument is still legal too, following PB's own standard
+nonzero-is-true rule (`Bool(5)`/`Bool(-1)` -> `1`, `Bool(0)` -> `0`) - exactly PB's own general
+truthiness convention.
+
+**Implementation**: a new `ast::BoolExpr` node (`condition` parsed through `Parser::parseCondition()`
+- the identical grammar `If`/`While` already use - via a dedicated check in
+`Parser::parsePrimaryAtom()` for `Bool(` specifically, intercepted *before* the generic `Name(args)`
+call-parsing path since that path's own `parseExpr()`-based argument loop is exactly what doesn't
+accept a bare comparison). `Sema::visitExpr`'s new case reuses `visitCondition` directly (the same
+name-resolution/type-checking an `If`/`While` condition already gets); `classify` always returns
+`IntegerFamily` regardless of `floatContext` (the same "categorically Integer" reasoning `AddressOf`/
+`DataLabelAddress` already use). `Codegen::genExpr`'s new case reuses `genCondition` directly too
+(`static_cast<std::int64_t>(genCondition(condition))`) - its own existing "bare expression is true
+iff nonzero" fallback already *is* `Bool()`'s own non-comparison-argument truthiness rule, so no
+separate logic was needed for that case either. Reusing `visitCondition`/`genCondition` rather than
+duplicating their logic means every condition-grammar edge case they already handle (nested `And`/
+`Or`, `Not`, the `LogicalXOr` deferred-error path) works inside `Bool()` for free, with zero new
+tests needed to cover them independently.
+
+**Testing**: one new differential e2e case (`tests/e2e_diff/bool_builtin`) - confirmed line-for-line
+identical to the real oracle's own output across every case above (comparisons, non-comparison
+truthiness, And/Or/Not, a function call argument, a plain and a Float-destination assignment RHS,
+composed with `Str()`/string concatenation, and even redundantly inside a real `If`) - no unit test
+added on top, consistent with this project's own existing precedent for single-AST-node core-
+language features like `?Label`/`AddressOf` (e2e/e2e_diff coverage only, no dedicated `sema_test.cpp`
+case). Malformed usage (`Bool()`, `Bool(a, b)`) was checked by hand to fail with a clean parse
+diagnostic, not a crash - not elevated to a committed test case, the same proportionate-effort
+standard error-recovery paths elsewhere in this codebase get. 434 tests pass across `linux-gcc`/
+`linux-clang`, including the 433 that predate this fix.
 
 ## Haiku GUI testing: three real environment bugs found and root-caused, one left genuinely open
 

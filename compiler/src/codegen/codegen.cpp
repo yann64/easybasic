@@ -391,6 +391,16 @@ std::string Codegen::genExpr(const ast::Expr& expr, bool floatContext) {
             return "reinterpret_cast<std::int64_t>(pb_label_" + sanitizeModuleQualifier(addr.labelName) +
                    ".data())";
         }
+        case ast::ExprKind::Bool: {
+            // Reuses genCondition directly, the exact same lowering an
+            // If/While condition already gets - its own "bare (non-
+            // comparison) expression is true iff nonzero" fallback is
+            // exactly Bool()'s own oracle-verified truthiness rule too
+            // (Bool(5)/Bool(-1) -> 1, Bool(0) -> 0), so no separate logic
+            // is needed for that case either.
+            const auto& boolExpr = static_cast<const ast::BoolExpr&>(expr);
+            return "static_cast<std::int64_t>(" + genCondition(*boolExpr.condition) + ")";
+        }
         case ast::ExprKind::MethodCall: {
             const auto& call = static_cast<const ast::MethodCallExpr&>(expr);
             // Sema already rejected anything but a `*ptr`-named VarRef base

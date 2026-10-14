@@ -2488,6 +2488,16 @@ void Sema::visitExpr(ast::Expr& expr) {
             }
             break;
         }
+        case ast::ExprKind::Bool: {
+            auto& boolExpr = static_cast<ast::BoolExpr&>(expr);
+            // Reuses visitCondition directly - its own condition is parsed
+            // through the identical grammar an If/While condition already
+            // is (see ast::BoolExpr's own doc comment), so it needs the
+            // exact same name-resolution/type-checking pass, not a plain
+            // visitExpr.
+            visitCondition(*boolExpr.condition);
+            break;
+        }
         case ast::ExprKind::IntLiteral:
         case ast::ExprKind::FloatLiteral:
         case ast::ExprKind::StringLiteral:
@@ -2701,6 +2711,13 @@ ValueKind Sema::classify(const ast::Expr& expr, bool floatContext) const {
             return ValueKind::IntegerFamily;
         case ast::ExprKind::DataLabelAddress:
             // `?Label` likewise always yields a plain Integer address.
+            return ValueKind::IntegerFamily;
+        case ast::ExprKind::Bool:
+            // `Bool(...)` always yields a plain Integer 0/1, the same
+            // "categorically Integer, regardless of floatContext" reasoning
+            // AddressOf/DataLabelAddress's own branches just above already
+            // use (not independently oracle-verified for this specific
+            // interaction, but the closest existing precedent).
             return ValueKind::IntegerFamily;
         case ast::ExprKind::MethodCall: {
             const auto& call = static_cast<const ast::MethodCallExpr&>(expr);
