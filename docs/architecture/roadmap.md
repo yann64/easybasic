@@ -3872,27 +3872,32 @@ external to this project:
    (`gtk_color_chooser_widget_init` sets a property GSettings itself; GLib treats a totally-missing
    schema source as fatal by design, not a recoverable error). Root cause, confirmed by reading GLib's
    own `gsettingsschema.c`: `g_settings_schema_source_get_default()` searches `g_get_system_data_dirs()`
-   (`/boot/system/data` only, confirmed directly - *not* the `/boot/system/non-packaged/data` this
-   port's own compiled-in fallback string misleadingly suggests) plus `g_get_user_data_dir()`
-   (`/boot/home/config/non-packaged/data`), and *only* additionally honors the `GSETTINGS_SCHEMA_DIR`
-   env var when not running setuid - but even with it set correctly (confirmed directly, both via
-   plain shell `export` and `gdb`'s own `set environment`), `g_settings_schema_source_get_default()`
-   still returned `NULL`, while a from-scratch minimal C program manually calling
-   `g_settings_schema_source_new_from_directory()` on the exact same directory found the schema fine -
-   meaning the env var path genuinely isn't being honored by this Haiku glib2 build for some
-   still-unexplained reason (not fully root-caused, abandoned once the *working* fix was found, since
-   two independent paths existed and one worked). Fixed the same way as the first: Haiku's own
-   `glib2`/`gsettings_desktop_schemas` packages ship the schema *sources* but never ran
-   `glib-compile-schemas` to produce the `gschemas.compiled` cache GIO actually reads (confirmed:
-   genuinely absent anywhere on the system, `/boot/system/data/glib-2.0/schemas` being read-only
-   packagefs rules out compiling in place). Compiled it instead into the one directory confirmed to be
-   unconditionally searched regardless of setuid status - `g_get_user_data_dir()`'s own
-   `/boot/home/config/non-packaged/data/glib-2.0/schemas` - which a from-scratch `g_settings_schema_
-   source_get_default()` probe then confirmed resolves correctly.
+   (`/boot/system/data` only - confirmed directly with a minimal C probe) plus `g_get_user_data_dir()`
+   (`/boot/home/config/non-packaged/data`), additionally honoring `GSETTINGS_SCHEMA_DIR` only when not
+   running setuid. `/boot/system/data/glib-2.0/schemas` ships the schema *sources* but no compiled
+   `gschemas.compiled` cache (confirmed genuinely absent, and that directory is read-only packagefs,
+   ruling out compiling in place) - **this turns out to be an already-known, already-"fixed" HaikuPorts
+   packaging quirk, not a novel finding**: the real `gtk3` recipe (`haikuports/haikuports`,
+   `x11-libs/gtk3`) deliberately deletes any compiled cache in its own `INSTALL()`
+   (`rm -rf $dataDir/glib-2.0/schemas/gschemas.compiled`) and relies on a `POST_INSTALL_SCRIPTS` hook
+   (`compile-schemas.sh`) to regenerate it into `B_SYSTEM_NONPACKAGED_DATA_DIRECTORY`
+   (`/boot/system/non-packaged/data/glib-2.0/schemas` - *not* the read-only packaged one) immediately
+   after install - matching a real Haiku forum report that this exact post-install step "doesn't
+   always run on package install or update." It hadn't run on this machine. First attempt at manually
+   replicating that *exact* official script, mid-session, inexplicably still left
+   `g_settings_schema_source_get_default()` returning `NULL` (worked around at the time with a
+   per-user fallback at `g_get_user_data_dir()` instead, which did work) - but re-run fresh after the
+   full `pkgman update -y` + reboot below, the *official* `compile-schemas.sh` recipe (verbatim,
+   targeting the correct system non-packaged path) now works correctly and needs no per-user
+   workaround at all. Left as a loose end rather than re-investigated: something about the pre-update/
+   pre-reboot state specifically prevented it from taking effect that first time.
 
 3. **The real, still-fully-open one**: with both of the above fixed, the suite now runs its real
-   content and reliably SIGSEGVs anyway (confirmed 3/3 runs) - but at a seemingly arbitrary, different
-   "current" test case each time (`Menu building...`, `LoadImage loads a real file...`, `StatusBar`
+   content and reliably SIGSEGVs anyway (confirmed 4/4 runs, including after a full `pkgman update -y`
+   to the latest HaikuPorts repo state - hrev60192 to hrev60237 - plus a reboot, and reconfirming
+   `gtk3`/`wayland_server` were already at their latest available package versions both before and
+   after) - but at a seemingly arbitrary, different "current" test case each time (`Menu building...`,
+   `LoadImage loads a real file...`, `StatusBar`
    round-trip, observed across different runs), the exact "random order" symptom this investigation
    set out to explain. `gdb`'s own backtrace resolves it completely: the fault is in `WaylandWindow::
    FrameResized(float, float)` inside `/boot/system/lib/wayland-server-inproc.so`, on a *separate*,
@@ -3906,9 +3911,12 @@ external to this project:
    foreground test happens to be running at that exact moment gets blamed - fully explaining the
    "different, unrelated test fails each run" pattern that originally looked like heap corruption in
    this project's own code. Not a `pbcxx`/`easybasic` bug at all, and not fixable from this side of
-   the stack - genuinely external, upstream to Haiku's own Wayland compatibility layer. Every GUI slice
-   merged so far remains functionally unverified on real Haiku as a result, through no fault of its
-   own; revisiting this needs either an upstream fix to `wayland-server-inproc`, or a way to avoid
-   triggering it (unclear one exists, since window resizing is fundamental to placing any gadget at
-   all).
+   the stack - genuinely external, upstream to Haiku's own Wayland compatibility layer
+   (`dev-libs/wayland-server` in `haikuports/haikuports`, upstream `github.com/X547/wayland-server`,
+   package `wayland_server-0.1.20251004-1` - already the latest available, confirmed by the `pkgman
+   update` above pulling in no newer version). Every GUI slice merged so far remains functionally
+   unverified on real Haiku as a result, through no fault of its own; revisiting this needs either an
+   upstream fix (a report against `X547/wayland-server` itself would be the right venue, not filed as
+   part of this session), or a way to avoid triggering it (unclear one exists, since window resizing is
+   fundamental to placing any gadget at all).
 
