@@ -27,13 +27,35 @@ namespace {
 /// display at all; this dev environment does (a Wayland session plus a
 /// separate Xvfb :99 for GUI testing specifically - see the M7b roadmap
 /// notes on why `GDK_BACKEND=x11` has to be forced there).
+///
+/// Deliberately unconditionally `false` on Haiku, real display or not -
+/// this file's own ~90 `pbOpenWindow` calls across ~100 `TEST_CASE`s,
+/// all run back-to-back in one process, reliably crash Haiku's own
+/// GTK3-on-Wayland stack after a few hundred cumulative window create/
+/// destroy cycles (confirmed directly: a minimal, ~20-line GTK3-only
+/// reproducer using none of this project's own code crashes the same
+/// way within ~300-400 cycles) - see the M7b roadmap's own "Haiku GUI
+/// testing" notes for the full investigation (three distinct crash
+/// signatures found, one of them *inside* `app_server` itself, wedging
+/// the whole GUI session until a hard reboot) and
+/// github.com/X547/wayland-server's own issue tracker (filed from a
+/// fork at github.com/yann64/wayland-server/issues/1) for the upstream
+/// report. Not a case of "no display available" at all (a real one
+/// exists) - bypassed anyway, deliberately, until that's fixed upstream,
+/// rather than risk wedging the one self-hosted Haiku CI runner this
+/// project has. `SysTrayIcon`'s own much smaller test file (9 cases) is
+/// left running on Haiku - nowhere near the churn needed to trigger this.
 bool hasDisplay() {
+#if defined(__HAIKU__)
+    return false;
+#else
     static bool checked = [] {
         int argc = 0;
         char** argv = nullptr;
         return gtk_init_check(&argc, &argv) == TRUE;
     }();
     return checked;
+#endif
 }
 
 /// Drains whatever startup events a freshly-opened window generates
