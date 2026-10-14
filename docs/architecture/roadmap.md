@@ -3987,3 +3987,18 @@ against `X547/wayland-server` (and possibly Haiku's own `app_server`, for the do
 project's own side. Real Haiku GUI verification for every slice merged so far remains blocked on
 that upstream fix.
 
+**Filed upstream**: `github.com/yann64/wayland-server/issues/1` (a fork of `X547/wayland-server`,
+Issues enabled specifically to file this), with all three stack traces, the minimal reproducer, and
+the real-world-impact caveat above.
+
+**Bypassed on Haiku in the meantime** (`tests/unit/runtime_guilib_test.cpp`'s own `hasDisplay()`
+now returns `false` unconditionally there, `#if defined(__HAIKU__)`): rather than keep gambling on
+hitting the `app_server`-wedging signature on an unattended, self-hosted CI runner, the ~100
+`TEST_CASE`s gated on it now skip gracefully there, the same established path already used for "no
+display available." Verified end-to-end on the real machine: a full `ctest` run now completes in
+~215s with `app_server` staying healthy throughout (previously: random crashes, or a multi-hour hang
+needing manual SSH intervention and a reboot). `SysTrayIcon`'s own much smaller test file is left
+running on Haiku - nowhere near the window-churn volume needed to trigger this. One pre-existing,
+unrelated failure surfaced in the same run (`e2e_gui_systray`: Haiku has no `ayatana-appindicator3`
+package at all, a separate, already-known gap - not a crash, not touched by this change).
+
