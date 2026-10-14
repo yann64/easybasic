@@ -3920,3 +3920,70 @@ external to this project:
    part of this session), or a way to avoid triggering it (unclear one exists, since window resizing is
    fundamental to placing any gadget at all).
 
+### Follow-up: confirmed systemic (not `pbcxx`-specific) via a minimal, project-free reproducer
+
+Asked directly: do other real, HaikuDepot-distributed GTK3 apps hit the same crash? Investigated by
+(a) finding real candidates - a GitHub code search across `haikuports/haikuports` for recipes
+depending on `lib:libgtk_3` returns 60 hits (`geany`, `filezilla`, `abiword`, `dia`, `xournalpp`,
+`remmina`, `balsa`, `gtkmm3`, ...; `geany` was already installed on this machine) - and (b) writing a
+**minimal, ~20-line C program using nothing from this project at all**: `gtk_init()`, then a tight
+loop of `gtk_window_new()` / `show_all()` / `gtk_widget_destroy()` with no delay between iterations
+(saved for reference at `/boot/home/wayland_churn_repro.c` on the Haiku machine itself):
+
+```c
+#include <gtk/gtk.h>
+int main(int argc, char **argv) {
+    gtk_init(&argc, &argv);
+    for (int i = 0; i < 1000; i++) {
+        GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_default_size(GTK_WINDOW(win), 200, 100);
+        gtk_widget_show_all(win);
+        while (gtk_events_pending()) gtk_main_iteration();
+        gtk_widget_destroy(win);
+        while (gtk_events_pending()) gtk_main_iteration();
+    }
+    return 0;
+}
+```
+
+**This alone reliably crashes within ~300-400 iterations**, conclusively proving the bug lives in the
+shared Haiku GTK3/Wayland-shim stack itself, not in anything `pbcxx`/`easybasic` does. Across repeated
+runs today this surfaced **three distinct crash signatures**, all genuine heap-corruption ("bogus
+pointer (double free?)") or segfaults, all during window teardown:
+
+- Client-side, in the Wayland shim's own window-close path: `WaylandWindow::~WaylandWindow()` (via
+  `BWindow::Quit()` -> `BLooper::_QuitRequested()` -> `~BHandler()`) ends up double-freeing through
+  `BPrivate::BTokenSpace::RemoveToken()` -> `free()`.
+- Client-side, the originally-found one: `WaylandWindow::FrameResized(float, float)` SIGSEGV,
+  dispatched via `BWindow::DispatchMessage()` on the window's own looper thread - reproduced from the
+  *minimal* reproducer above too, not just this project's own test suite.
+- **Server-side, inside `app_server` itself** (not a client bug at all): a double-free in
+  `DrawingEngine::SetHWInterface()`'s own `BList::RemoveItem()`, reached via `~DrawingEngine()` ->
+  `~Window()` -> `~ServerWindow()` during that same window-teardown sequence. This one is especially
+  serious operationally: a crash *inside* `app_server` bypasses the `default_action kill` fix above
+  entirely (apparently special-cased by Haiku to always prompt interactively for system-critical
+  servers, reasonably enough) and drops straight into an interactive `Debugger --cli` session
+  attached to `app_server` itself - which, with no desktop session to click through it, wedges the
+  *entire* Haiku GUI stack indefinitely. Recovering needed a hard reboot (`shutdown -r` itself hung,
+  needing to be given time to complete rather than retried). This happened three separate times across
+  today's testing, confirmed via `/var/log/syslog`'s own kernel debugger stack traces.
+
+**Real-world apps don't visibly hit this at normal usage intensity** - a real, cautionary nuance, not
+just a footnote: launching and quitting the already-installed `geany` (a genuine HaikuDepot GTK3 app,
+not a synthetic test) 150 times with small (~0.3s) pauses between cycles, and then again 100 times
+back-to-back with no pauses at all, triggered *no* crash either way (the zero-delay run instead raced
+ahead of `geany`'s own slower startup and piled up several still-running instances rather than
+achieving tight churn - cleaned up afterward). The bug needs *sustained, rapid, many-windows-per-
+process* churn specifically - what a test suite (or this minimal reproducer) does, not normal
+single-session interactive use of one long-lived window. That almost certainly explains why this
+hasn't surfaced as a known issue already (confirmed via a web search turning up no existing report
+matching this signature) despite GTK3-on-Haiku having real users: ordinary desktop usage essentially
+never exercises the window-churn rate needed to hit it.
+
+**Bottom line for this project**: fully confirmed systemic and external, with a clean, minimal,
+project-free reproducer and three concrete crash signatures ready to hand to an upstream report
+against `X547/wayland-server` (and possibly Haiku's own `app_server`, for the double-free inside
+`DrawingEngine`/`ServerWindow` teardown specifically) - not something to keep chasing from this
+project's own side. Real Haiku GUI verification for every slice merged so far remains blocked on
+that upstream fix.
+
