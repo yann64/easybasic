@@ -4046,3 +4046,79 @@ running on Haiku - nowhere near the window-churn volume needed to trigger this. 
 unrelated failure surfaced in the same run (`e2e_gui_systray`: Haiku has no `ayatana-appindicator3`
 package at all, a separate, already-known gap - not a crash, not touched by this change).
 
+## M7b Implementation Notes (GUI core, eighteenth slice: `CalendarGadget`/`HyperLinkGadget`)
+
+**Scope landed**: both gadgets. `CalendarGadget` is a `GtkCalendar`; `HyperLinkGadget` is a
+`GtkLinkButton` built with an empty, never-navigated URI (its own `"activate-link"` handler always
+suppresses the default open-in-browser behavior - real PB's own `HyperLinkGadget` has no documented
+navigation behavior of its own, just a clickable, styled-as-a-link piece of text).
+
+**`CalendarGadget`'s own state is a real `Date()` value, truncated to midnight** - oracle-verified
+directly (`Hour`/`Minute`/`Second` on the round-tripped result all read back `0`). Deliberately
+reuses `datelib.hpp`'s own `detail::localTm`/`pbDate` directly for the epoch<->component
+conversion, rather than reimplementing it here, for one specific reason: self-consistency. This
+investigation's own oracle probing surfaced **a real, previously-undetected discrepancy in this
+project's own M4 Date library**, found as a pure byproduct of researching this gadget, not sought
+out: `Date(2020, 6, 15, 12, 30, 45)` on the real oracle (this specific Linux/GTK machine) compiles
+to `1592224245` - confirmed directly (`date -u -d @1592224245` → `2020-06-15 12:30:45 UTC`
+*exactly*) to be **UTC-based**, not the *local*-time interpretation `datelib.hpp`'s own doc comment
+documents as already oracle-verified (and `pbDate`/`pbYear`/`pbMonth`/etc. are implemented
+accordingly, via `std::mktime`/`std::localtime`). The M4 roadmap notes' own verification method -
+comparing a full *round-trip* (construct then extract) under two different system timezones and
+finding byte-identical output - genuinely cannot distinguish "really local, self-consistent
+regardless of host TZ" from "really UTC, TZ-independent by definition": **both** produce
+byte-identical round-trip output no matter the host's own timezone, since neither ever compares
+against an independently-known absolute epoch. This investigation's own probe did exactly that
+(printed the *raw* epoch and checked it against a concretely computed UTC reference) and found the
+oracle genuinely UTC-based on this machine. **Deliberately not fixed as part of this slice** - the
+blast radius (`pbDate`/`pbYear`/`pbMonth`/`pbDay`/`pbHour`/`pbMinute`/`pbSecond`/`pbAddDate`/
+`pbFormatDate`/anything else in `datelib.hpp` built on the same `localtime`/`mktime` pair) is a
+foundational, cross-cutting M4 library change far outside "two new gadgets," and - critically - the
+existing M4 e2e/e2e_diff tests, and this slice's own new ones, never print a raw epoch value either
+(by that same established, deliberate discipline), so they'd keep passing identically either way,
+giving no natural forcing function to catch a wrong fix. Flagged here as a real, concrete,
+independently-reproducible finding (not a guess) for whoever picks up the Date library next -
+`datelib.hpp`'s own doc comment itself would need a correction too, not just the implementation.
+
+**`HyperLinkGadget`'s own `Color` argument is oracle-verified *required*** - a plain 6-argument
+call without it is a real "Incorrect number of parameters" compile error, unlike every other
+trailing `Options`-style argument in this whole gadget family, which are all optional. Accepted but
+not applied (would need a per-widget CSS override with no PB-visible, `GetGadgetColor`-style
+accessor to verify it against) - the same deliberately deferred, purely-cosmetic gap `#PB_Image_
+Border` before it already is. `#PB_HyperLink_Underline`/`#PB_Calendar_Borderless` (oracle-verified
+values, both `1`) are registered the same way.
+
+**Explored but deliberately deferred, not implemented this slice**: `ExplorerListGadget`/
+`ExplorerComboGadget`. Real, concrete findings from this investigation, left here as a head start
+rather than silently dropped: (1) the `Directory$` argument is oracle-verified *trailing-slash-
+sensitive* - without one, the *last path component* is treated as a name filter against the
+*parent* directory instead of listing the given directory's own contents (confirmed directly: `"/
+tmp/pb_probe/expldir"` without a trailing slash showed only `".."` and `"expldir"` itself, as if
+browsing `/tmp/pb_probe/` filtered to that one name; adding the trailing slash fixed it). (2) Real
+entries are oracle-verified sorted **directories first, then files, each group independently sorted
+by modification time *descending*** (confirmed with explicit, unambiguous `touch -d` timestamps,
+ruling out alphabetical or creation-order sorting) - prefixed by a literal `".."` entry always at
+index `0`. (3) Entries are only reachable via `GetGadgetItemText(gadget, index)` - `GetGadgetState`/
+`SetGadgetState`/plain `GetGadgetText` all turned out to be red herrings for *selection* (oracle-
+verified: `GetGadgetText` on `ExplorerListGadget` always returns the *directory path* itself,
+identical to `ExplorerComboGadget`'s own behavior, never a selected item's name; `GetGadgetState`
+stays `-1` regardless of any `SetGadgetState` attempt). (4) `GetGadgetItemState` returned `2` for
+item `0` (the `".."` entry) in one probe - inconsistent with `ListIcon`'s own already-registered
+`#PB_ListIcon_Selected`(`=1`)/`Checked`(`=2`) constants in a way not yet understood (unclear whether
+Explorer gadgets reuse that same numbering at all, or have an entirely separate one). That last,
+unresolved ambiguity - not any one of the first three, all solidly nailed down - is specifically why
+this slice stops here rather than shipping a guessed implementation: this project's own established
+bar is "don't guess, verify, and when genuinely uncertain, defer rather than guess."
+
+**Testing**: four new `runtime_guilib_test.cpp` cases - `CalendarGadget`'s own Date round-trip
+(creation and `SetGadgetState`, both via `Year`/`Month`/`Day`/`Hour`, never a raw epoch value),
+`HyperLinkGadget`'s own text round-trip and always-`0` state, and a real click (driving
+`gtk_button_clicked` directly - confirmed empirically to cascade correctly into `GtkLinkButton`'s
+own distinct `"activate-link"` signal, the one this gadget's own click handler is actually connected
+to) confirming `#PB_Event_Gadget`/`#PB_EventType_LeftClick` fires the same way every other
+`GtkButton`-family gadget's own click already does. One new golden e2e case
+(`tests/e2e/gui_calendar_hyperlink`) exercises the same sequence end to end through `pbcxx` itself,
+confirmed line-for-line against the real oracle (modulo the established native-creation-handle
+divergence) before being pinned. 438 tests pass across `linux-gcc`/`linux-clang`, including the 434
+that predate this slice.
+

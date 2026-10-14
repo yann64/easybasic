@@ -13,6 +13,7 @@
 
 #include <gtk/gtk.h>
 
+#include "datelib.hpp"
 #include "pbstring.hpp"
 
 namespace easybasic::runtime {
@@ -377,6 +378,26 @@ inline void queueGadgetEvent(GtkWidget* widget, std::int64_t eventType) {
 /// `#PB_EventType_LeftClick` (`0`), not `#PB_EventType_Change`, as their
 /// `EventType()`.
 inline void onGadgetClicked(GtkWidget* widget, gpointer) { queueGadgetEvent(widget, 0); }
+
+/// M7b's eighteenth GUI slice: `HyperLinkGadget` - `GtkLinkButton`'s own
+/// `"activate-link"` signal fires on a real click (returning `TRUE`
+/// suppresses its default handler, which would otherwise try to actually
+/// open the button's own URI via `gtk_show_uri_on_window` - real PB's
+/// `HyperLinkGadget` has no documented navigation behavior of its own at
+/// all, just a clickable, styled-as-a-link piece of text, so this reuses
+/// `queueGadgetEvent` directly with the same `#PB_EventType_LeftClick`
+/// (`0`) every other `GtkButton`-based gadget's own click already fires -
+/// not independently oracle-verified (this project's own methodology
+/// deliberately avoids simulated-click probing against the real oracle),
+/// but a reasonable inference by analogy, the same as `ButtonImageGadget`'s
+/// own click handler before it. Unlike `onGadgetClicked`, this one's own
+/// signal signature is `gboolean(*)(GtkLinkButton*)` (no extra `uri`
+/// argument, unlike `GtkLabel`'s own distinct `"activate-link"` signal),
+/// so it needs its own small wrapper rather than reusing that one as-is.
+inline gboolean onHyperLinkActivateLink(GtkWidget* widget, gpointer) {
+    queueGadgetEvent(widget, 0);
+    return TRUE;
+}
 
 /// `GtkEditable::changed` (used by `GtkEntry`, i.e. `StringGadget`) fires on
 /// every content change - oracle-verified each keystroke queues its own
@@ -1861,6 +1882,65 @@ inline std::int64_t pbButtonImageGadget(std::int64_t gadgetId, std::int64_t x, s
     detail::setImageGadgetPixbuf(image, imageHandle);
     gtk_button_set_image(GTK_BUTTON(widget), image);
     g_signal_connect(widget, toggle ? "toggled" : "clicked", G_CALLBACK(detail::onGadgetClicked), nullptr);
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
+/// M7b's eighteenth GUI slice: `CalendarGadget` - a `GtkCalendar`. `Date`
+/// is a real PB `Date()` value - oracle-verified directly: `GetGadgetState`
+/// round-trips it at midnight (hour/minute/second truncated to `0`), via
+/// `gtk_calendar_get_date`'s own plain year/0-based-month/day triple.
+/// Deliberately reuses `datelib.hpp`'s own `detail::localTm`/`pbDate`
+/// directly rather than reimplementing epoch<->component conversion here -
+/// the exact same *local*-time convention `Date()`/`Year()`/`Month()`/
+/// `Day()` themselves already establish, keeping this gadget's own
+/// round-trip self-consistent with the rest of this project's own Date
+/// library (the same "never compare a raw epoch value directly, only
+/// round-tripped components" discipline the M4 Date library's own tests
+/// already use - see `docs/architecture/roadmap.md`'s own eighteenth-slice
+/// notes for a real, separately-tracked discrepancy this surfaced: real
+/// PB's own GTK backend oracle-verified as genuinely *UTC*-based instead,
+/// on this specific machine - not fixed here, to avoid widening this
+/// slice's own scope into the foundational M4 Date library). `GetGadgetText`
+/// is empty (oracle-verified: no text representation at all).
+/// `#PB_Calendar_Borderless` (oracle-verified value `1`) is registered for
+/// name-compiling completeness but not implemented - the same
+/// deliberately deferred, purely-cosmetic gap as `#PB_Image_Border`/
+/// `#PB_ProgressBar_Smooth` before it.
+inline std::int64_t pbCalendarGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                       std::int64_t height, std::int64_t date, std::int64_t /*flags*/ = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* widget = gtk_calendar_new();
+    std::tm tmVal = detail::localTm(date);
+    gtk_calendar_select_month(GTK_CALENDAR(widget), static_cast<guint>(tmVal.tm_mon),
+                               static_cast<guint>(tmVal.tm_year + 1900));
+    gtk_calendar_select_day(GTK_CALENDAR(widget), static_cast<guint>(tmVal.tm_mday));
+    g_signal_connect(widget, "day-selected", G_CALLBACK(detail::onGadgetChanged), nullptr);
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
+/// `HyperLinkGadget` - a `GtkLinkButton`, built with an empty URI (never
+/// actually navigated - its own `"activate-link"` handler always
+/// suppresses the default open-in-browser behavior, see
+/// `detail::onHyperLinkActivateLink`'s own doc comment) and real PB's own
+/// documented label text. `Color` is oracle-verified *required* (not
+/// optional - a 6-argument call without it is a real "Incorrect number of
+/// parameters" compile error), but applying it would need a per-widget
+/// CSS override with no PB-visible, Debug-testable accessor to verify
+/// against (no `GetGadgetColor` exists for this gadget type) - accepted
+/// for signature compatibility but not applied, the same kind of
+/// deliberately deferred, purely-cosmetic gap `#PB_Image_Border` before it
+/// already is. `#PB_HyperLink_Underline` (oracle-verified value `1`) is
+/// registered the same way. `GetGadgetState` is always `0` (oracle-
+/// verified: not a stateful toggle, just a styled, clickable label) -
+/// already exactly what the generic `GTK_IS_TOGGLE_BUTTON` fallback gives
+/// for free for a plain (non-toggle) `GtkButton`-family widget, no new
+/// branch needed.
+inline std::int64_t pbHyperLinkGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                        std::int64_t height, const PBString& text, std::int64_t /*color*/,
+                                        std::int64_t /*flags*/ = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* widget = gtk_link_button_new_with_label("", text.bytes().c_str());
+    g_signal_connect(widget, "activate-link", G_CALLBACK(detail::onHyperLinkActivateLink), nullptr);
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
@@ -3760,6 +3840,18 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     if (GTK_IS_NOTEBOOK(it->second) != 0) {
         return gtk_notebook_get_current_page(GTK_NOTEBOOK(it->second));
     }
+    // M7b's eighteenth GUI slice: `CalendarGadget` reports back a real
+    // `Date()` value (midnight local time) - see `pbCalendarGadget`'s
+    // own doc comment on reusing `datelib.hpp`'s own local-time
+    // convention directly for round-trip self-consistency.
+    if (GTK_IS_CALENDAR(it->second) != 0) {
+        guint year = 0;
+        guint month = 0;
+        guint day = 0;
+        gtk_calendar_get_date(GTK_CALENDAR(it->second), &year, &month, &day);
+        return pbDate(static_cast<std::int64_t>(year), static_cast<std::int64_t>(month) + 1,
+                      static_cast<std::int64_t>(day), 0, 0, 0);
+    }
     // M7b's seventeenth GUI slice: `ImageGadget` reports back whichever
     // `ImageID`-style handle it's currently displaying - oracle-verified
     // directly (see `pbImageGadget`'s own doc comment), not a plain
@@ -3878,6 +3970,17 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
         g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
         gtk_notebook_set_current_page(GTK_NOTEBOOK(it->second), static_cast<int>(state));
         g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
+        return 1;
+    }
+    // `CalendarGadget` - `state` is a real `Date()` value (see
+    // `pbGetGadgetState`'s own matching branch).
+    if (GTK_IS_CALENDAR(it->second) != 0) {
+        std::tm tmVal = detail::localTm(state);
+        g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onGadgetChanged), nullptr);
+        gtk_calendar_select_month(GTK_CALENDAR(it->second), static_cast<guint>(tmVal.tm_mon),
+                                   static_cast<guint>(tmVal.tm_year + 1900));
+        gtk_calendar_select_day(GTK_CALENDAR(it->second), static_cast<guint>(tmVal.tm_mday));
+        g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onGadgetChanged), nullptr);
         return 1;
     }
     // `ImageGadget` - `state` is an `ImageID`-style handle, not a

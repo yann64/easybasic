@@ -2630,3 +2630,84 @@ TEST_CASE("A real click (gtk_button_clicked) queues #PB_Event_Gadget with #PB_Ev
     pbFreeImage(464);
     pbCloseWindow(925);
 }
+
+TEST_CASE("CalendarGadget round-trips a real Date() value, at midnight, through GetGadgetState/"
+          "SetGadgetState",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: GetGadgetState truncates to midnight
+    // (Hour/Minute/Second all read back 0) and GetGadgetText is always
+    // empty - no text representation at all. Deliberately checks only
+    // round-tripped Year/Month/Day/Hour components, never a raw epoch
+    // value - the same discipline the M4 Date library's own tests
+    // already use (see pbCalendarGadget's own doc comment on why: real
+    // PB's own GTK backend is oracle-verified UTC-based on this specific
+    // machine, while this project's own Date library is local-time-based
+    // by established convention - a separate, tracked discrepancy, not
+    // fixed here).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(926, 10, 10, 300, 300, PBString("Test"));
+
+    std::int64_t initial = pbDate(2020, 6, 15, 0, 0, 0);
+    CHECK(pbCalendarGadget(0, 10, 10, 200, 150, initial) == 1);
+    std::int64_t state = pbGetGadgetState(0);
+    CHECK(pbYear(state) == 2020);
+    CHECK(pbMonth(state) == 6);
+    CHECK(pbDay(state) == 15);
+    CHECK(pbHour(state) == 0);
+    CHECK(pbGetGadgetText(0).bytes().empty());
+
+    std::int64_t updated = pbDate(2021, 3, 9, 0, 0, 0);
+    CHECK(pbSetGadgetState(0, updated) == 1);
+    state = pbGetGadgetState(0);
+    CHECK(pbYear(state) == 2021);
+    CHECK(pbMonth(state) == 3);
+    CHECK(pbDay(state) == 9);
+
+    pbCloseWindow(926);
+}
+
+TEST_CASE("HyperLinkGadget's text round-trips; its own state is always 0", "[runtime][guilib]") {
+    // Oracle-verified directly: a plain, clickable, styled-as-a-link
+    // label - not a stateful toggle (always GetGadgetState 0, unlike
+    // CheckBoxGadget's own plain on/off toggle).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(927, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbHyperLinkGadget(0, 10, 10, 200, 20, PBString("Click me"), pbRGB(0, 0, 255)) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "Click me");
+    CHECK(pbGetGadgetState(0) == 0);
+
+    CHECK(pbSetGadgetText(0, PBString("Renamed")) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "Renamed");
+    CHECK(pbGetGadgetState(0) == 0);
+
+    pbCloseWindow(927);
+}
+
+TEST_CASE("A real click (gtk_button_clicked) queues #PB_Event_Gadget with #PB_EventType_LeftClick "
+          "for a HyperLinkGadget",
+          "[runtime][guilib]") {
+    // Not independently oracle-verified (this project's own methodology
+    // deliberately avoids simulated-click probing against the real
+    // oracle) - a reasonable inference by analogy, the same as
+    // ButtonImageGadget's own equivalent test before it.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(928, 10, 10, 300, 300, PBString("Test"));
+    pbHyperLinkGadget(1, 10, 10, 200, 20, PBString("Click me"), pbRGB(0, 0, 255));
+    drainEvents();
+
+    GtkWidget* link = detail::gadgetTable().at(1);
+    gtk_button_clicked(GTK_BUTTON(link));
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 1);
+    CHECK(pbEventType() == 0); // #PB_EventType_LeftClick
+
+    pbCloseWindow(928);
+}

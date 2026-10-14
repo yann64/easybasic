@@ -557,6 +557,19 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
           TypeSuffix::Integer, TypeSuffix::Integer},
          6},
+        // M7b's eighteenth GUI slice: CalendarGadget/HyperLinkGadget.
+        // CalendarGadget's Date is an Integer (a real Date() value, not
+        // a separate type); HyperLinkGadget's Color is oracle-verified
+        // *required* (unlike every other optional trailing Options arg
+        // in this whole family).
+        {"calendargadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer},
+         6},
+        {"hyperlinkgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer},
+         7},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -701,7 +714,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "getgadgetitemdata", "setgadgetitemdata",
         "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
         "setgadgetitemattribute", "optiongadget", "progressbargadget", "spingadget", "trackbargadget",
-        "scrollbargadget", "imagegadget", "buttonimagegadget",
+        "scrollbargadget", "imagegadget", "buttonimagegadget", "calendargadget", "hyperlinkgadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -1022,6 +1035,10 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_button_toggle", 4},
         {"pb_button_default", 8},
         {"pb_button_multiline", 16},
+        // CalendarGadget/HyperLinkGadget (M7b's eighteenth GUI slice) -
+        // oracle-verified via a direct `Debug #PB_Xxx` probe.
+        {"pb_calendar_borderless", 1},
+        {"pb_hyperlink_underline", 1},
     };
     return table;
 }
