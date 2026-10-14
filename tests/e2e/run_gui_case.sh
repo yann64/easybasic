@@ -39,6 +39,14 @@ if ! "$PBCXX" "$INPUT" -o "$BIN" -d > "$WORKDIR/compile.log" 2>&1; then
         echo "SKIP: $CASE_DIR - GTK3 dev files not available"
         exit $SKIP_CODE
     fi
+    # A narrower dependency than plain GTK3 (see Sema::usesSysTrayLibrary's
+    # own doc comment) - Haiku has no ayatana-appindicator3 package at all
+    # (confirmed: absent from HaikuPorts entirely, not just uninstalled),
+    # so this skips there the same way the GTK3 check above does elsewhere.
+    if grep -q "pkg-config ayatana-appindicator3-0.1' failed" "$WORKDIR/compile.log"; then
+        echo "SKIP: $CASE_DIR - ayatana-appindicator3 dev files not available"
+        exit $SKIP_CODE
+    fi
     echo "FAIL: $CASE_DIR - pbcxx failed to compile"
     cat "$WORKDIR/compile.log"
     exit 1
