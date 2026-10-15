@@ -2711,3 +2711,109 @@ TEST_CASE("A real click (gtk_button_clicked) queues #PB_Event_Gadget with #PB_Ev
 
     pbCloseWindow(928);
 }
+
+TEST_CASE("EditorGadget's text round-trips multi-line content; state is always 0; Flags act for real",
+          "[runtime][guilib]") {
+    // Oracle-verified: GetGadgetText/SetGadgetText address the buffer's
+    // own full, Chr(10)-joined text; GetGadgetState is always 0 (not a
+    // stateful gadget, same as HyperLinkGadget's own). ReadOnly/WordWrap
+    // are acted on for real via GtkTextView's own editable/wrap-mode
+    // properties.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(929, 10, 10, 300, 300, PBString("Test"));
+
+    CHECK(pbEditorGadget(0, 10, 10, 200, 150) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "");
+    CHECK(pbGetGadgetState(0) == 0);
+
+    CHECK(pbSetGadgetText(0, PBString("Hello\nWorld")) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "Hello\nWorld");
+    CHECK(pbGetGadgetState(0) == 0);
+    pbSetGadgetState(0, 5);
+    CHECK(pbGetGadgetState(0) == 0);
+
+    CHECK(pbEditorGadget(1, 10, 170, 200, 20, 1) == 1); // #PB_Editor_ReadOnly
+    GtkWidget* readOnlyScrolled = detail::gadgetTable().at(1);
+    GtkWidget* readOnlyView = detail::editorTextView(readOnlyScrolled);
+    REQUIRE(readOnlyView != nullptr);
+    CHECK(gtk_text_view_get_editable(GTK_TEXT_VIEW(readOnlyView)) == FALSE);
+
+    CHECK(pbEditorGadget(2, 10, 200, 200, 20, 2) == 1); // #PB_Editor_WordWrap
+    GtkWidget* wrapScrolled = detail::gadgetTable().at(2);
+    GtkWidget* wrapView = detail::editorTextView(wrapScrolled);
+    REQUIRE(wrapView != nullptr);
+    CHECK(gtk_text_view_get_wrap_mode(GTK_TEXT_VIEW(wrapView)) == GTK_WRAP_WORD);
+
+    pbCloseWindow(929);
+}
+
+TEST_CASE("EditorGadget's Add/Count/Clear GadgetItem family treats the buffer as a list of lines",
+          "[runtime][guilib]") {
+    // Oracle-verified directly, including the one edge case that doesn't
+    // match a naive Chr(10)-split: a genuinely empty buffer reports
+    // CountGadgetItems 0, not 1 - see detail::editorLines's own doc
+    // comment.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(930, 10, 10, 300, 300, PBString("Test"));
+    pbEditorGadget(0, 10, 10, 200, 150);
+
+    CHECK(pbCountGadgetItems(0) == 0);
+    CHECK(pbGetGadgetItemText(0, 0).bytes() == "");
+
+    CHECK(pbAddGadgetItem(0, -1, PBString("Line 1")) == 1);
+    CHECK(pbAddGadgetItem(0, -1, PBString("Line 2")) == 1);
+    CHECK(pbAddGadgetItem(0, 0, PBString("Line 0")) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "Line 0\nLine 1\nLine 2");
+    CHECK(pbCountGadgetItems(0) == 3);
+    CHECK(pbGetGadgetItemText(0, 0).bytes() == "Line 0");
+    CHECK(pbGetGadgetItemText(0, 1).bytes() == "Line 1");
+    CHECK(pbGetGadgetItemText(0, 2).bytes() == "Line 2");
+    CHECK(pbGetGadgetItemText(0, 3).bytes() == "");
+
+    pbSetGadgetText(0, PBString("A\nB\nC"));
+    CHECK(pbAddGadgetItem(0, 1, PBString("Inserted")) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "A\nInserted\nB\nC");
+
+    CHECK(pbClearGadgetItems(0) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "");
+    CHECK(pbCountGadgetItems(0) == 0);
+
+    pbCloseWindow(930);
+}
+
+TEST_CASE("Real text entry (gtk_text_buffer_insert_at_cursor) queues #PB_Event_Gadget with "
+          "#PB_EventType_Change for an EditorGadget; SetGadgetText stays silent",
+          "[runtime][guilib]") {
+    // Not independently oracle-verified which #PB_EventType_* a real
+    // EditorGadget keystroke fires (this project's own methodology
+    // deliberately avoids simulated-typing probing against the real
+    // oracle) - reuses #PB_EventType_Change (768) by analogy with
+    // StringGadget's own identical "every keystroke" test above.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(931, 10, 10, 300, 300, PBString("Test"));
+    pbEditorGadget(0, 10, 10, 200, 150);
+    drainEvents();
+
+    pbSetGadgetText(0, PBString("no event"));
+    CHECK(pbWindowEvent() == 0);
+
+    GtkWidget* scrolled = detail::gadgetTable().at(0);
+    GtkWidget* textView = detail::editorTextView(scrolled);
+    REQUIRE(textView != nullptr);
+    GtkTextBuffer* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textView));
+    GtkTextIter end;
+    gtk_text_buffer_get_end_iter(buffer, &end);
+    gtk_text_buffer_insert(buffer, &end, "typed", -1);
+
+    CHECK(pbWindowEvent() == 3); // #PB_Event_Gadget
+    CHECK(pbEventGadget() == 0);
+    CHECK(pbEventType() == 768); // #PB_EventType_Change
+
+    pbCloseWindow(931);
+}

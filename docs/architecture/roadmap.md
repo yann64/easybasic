@@ -4122,3 +4122,46 @@ confirmed line-for-line against the real oracle (modulo the established native-c
 divergence) before being pinned. 438 tests pass across `linux-gcc`/`linux-clang`, including the 434
 that predate this slice.
 
+## M7b Implementation Notes (GUI core, nineteenth slice: `EditorGadget`)
+
+**Scope landed**: a `GtkTextView` wrapped in a `GtkScrolledWindow`, the same wrapping convention
+`ListViewGadget` (M7b's thirteenth slice) established and `ListIconGadget`/`TreeGadget` (fourteenth
+slice) reused - needed here too: a bare `GtkTextView` has no scrollbars or height-clipping of its
+own, growing to fit all its own content instead of respecting `Height`. `detail::editorTextView`
+digs the real view back out, the same role `listViewTreeView`/`listIconTreeView` already play for
+their own gadget families - no `gadgetKindKey` tagging needed to disambiguate it from anything else,
+since no other gadget type here wraps a bare `GtkTextView`.
+
+**`GetGadgetText`/`SetGadgetText` address the buffer's own full, `Chr(10)`-joined multi-line text**
+- oracle-verified directly (a round-tripped `"Hello"+Chr(10)+"World"` reads back byte-identical).
+`SetGadgetText` blocks `onEditorChanged` around its own write, the same "no spurious event for a
+programmatic change" convention every other text-setter here already follows.
+
+**`AddGadgetItem`/`CountGadgetItems`/`ClearGadgetItems`/`GetGadgetItemText` all treat the same
+buffer as a list of lines instead** - also oracle-verified, including one genuine edge case that
+does *not* match a naive `Chr(10)`-split: a truly empty buffer reports `CountGadgetItems` `0`, not
+the single empty-string element splitting `""` would naively give (confirmed directly: `"X"` → `1`,
+`"X"+Chr(10)` → `2`, a lone `Chr(10)` → `2`, but `""` → `0`). `detail::editorLines` special-cases
+exactly that one condition; every other case already falls out of the plain split. `AddGadgetItem`
+inserts a new line at the given 0-based index, pushing every following line down (`-1`, or any
+out-of-range index, clamps to appending at the end) - oracle-verified directly, including inserting
+into the *middle* of text that arrived via `SetGadgetText` rather than `AddGadgetItem` itself (the
+two are fully interchangeable views onto the one underlying buffer, not separate state).
+
+**`#PB_Editor_ReadOnly`(`=1`)/`#PB_Editor_WordWrap`(`=2`, both oracle-verified values) are both
+acted on for real**, unlike several `Options`-style flags earlier in this gadget family that turned
+out to be purely cosmetic with no PB-visible accessor to verify against - `GtkTextView`'s own
+`editable`/`wrap-mode` properties are an exact fit for both, so there was no reason to defer them.
+
+**Testing**: three new `runtime_guilib_test.cpp` cases - text/state round-trip plus both `Flags`
+checked directly against the real `GtkTextView`'s own properties, the full `AddGadgetItem`/
+`CountGadgetItems`/`ClearGadgetItems`/`GetGadgetItemText` family including the empty-buffer edge
+case, and a real text-entry test (driving `gtk_text_buffer_insert_at_cursor` directly, unblocked)
+confirming `#PB_Event_Gadget`/`#PB_EventType_Change` fires the same way `StringGadget`'s own
+identical "every keystroke" test already does (not independently oracle-verified which event type a
+real `EditorGadget` keystroke fires - this project's own methodology deliberately avoids simulated-
+typing probing against the real oracle - so this is a reasoned analogy, not a confirmed-faithful
+fact, same as that earlier test's own). One new golden e2e case (`tests/e2e/gui_editor`) exercises
+text/state/item round-tripping end to end through `pbcxx` itself, confirmed line-for-line against
+the real oracle (modulo the established native-creation-handle divergence) before being pinned.
+

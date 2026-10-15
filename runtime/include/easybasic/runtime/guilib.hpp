@@ -447,6 +447,19 @@ inline void onListViewSelectionChanged(GtkTreeSelection*, gpointer userData) {
     queueGadgetEvent(GTK_WIDGET(userData), 0);
 }
 
+/// `GtkTextBuffer::changed` (`EditorGadget`) fires on every text
+/// modification. `userData` carries the real `GtkScrolledWindow*` wrapper
+/// itself, the same established pattern `onListViewSelectionChanged`'s own
+/// doc comment just above already explains (the signal's own source is the
+/// *buffer*, not the gadget's own tagged widget). Not independently
+/// oracle-verified which `#PB_EventType_*` this fires (this project's own
+/// methodology deliberately avoids simulated-typing probing against the
+/// real oracle) - reuses `#PB_EventType_Change` (`768`) by analogy with
+/// `StringGadget`'s own identical "every keystroke" behavior.
+inline void onEditorChanged(GtkTextBuffer*, gpointer userData) {
+    queueGadgetEvent(GTK_WIDGET(userData), 768);
+}
+
 /// `GtkTreeView::row-activated` (a real double-click, or Enter/Return on
 /// the selected row) - oracle-verified `#PB_EventType_LeftDoubleClick`
 /// (`2`) via `ListViewGadget.html`'s own remarks.
@@ -923,6 +936,18 @@ inline GtkWidget* listViewTreeView(GtkWidget* stored) {
     return inner;
 }
 
+/// The real `GtkTextView` inside an `EditorGadget`'s own `GtkScrolledWindow`
+/// wrapper, or `nullptr` for anything else - no `gadgetKindKey` tagging
+/// needed to disambiguate (unlike `ListIcon`/`Tree`, no other gadget type
+/// here wraps a bare `GtkTextView`).
+inline GtkWidget* editorTextView(GtkWidget* stored) {
+    if (GTK_IS_SCROLLED_WINDOW(stored) == 0) {
+        return nullptr;
+    }
+    GtkWidget* inner = gtk_bin_get_child(GTK_BIN(stored));
+    return (inner != nullptr && GTK_IS_TEXT_VIEW(inner) != 0) ? inner : nullptr;
+}
+
 /// The real `GtkTreeView` inside a `ListIconGadget`'s own `GtkScrolledWindow`
 /// wrapper (tagged with `gadgetKindListIcon()` at creation), or `nullptr`
 /// for anything else.
@@ -1030,6 +1055,42 @@ inline std::vector<std::string> splitByNewline(const std::string& text) {
         start = pos + 1;
     }
     return parts;
+}
+
+/// `EditorGadget`'s own per-line view of its buffer, for `AddGadgetItem`/
+/// `CountGadgetItems`/`ClearGadgetItems`/`GetGadgetItemText`. Oracle-
+/// verified edge case: a genuinely empty buffer reports *zero* items, not
+/// the single empty-string element a naive `Chr(10)`-split would give -
+/// every other case (including a buffer holding just one lone `Chr(10)`,
+/// or text with a trailing one) matches the naive split exactly.
+inline std::vector<std::string> editorLines(GtkWidget* textView) {
+    GtkTextBuffer* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textView));
+    GtkTextIter start;
+    GtkTextIter end;
+    gtk_text_buffer_get_bounds(buffer, &start, &end);
+    gchar* text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+    std::string content = text != nullptr ? text : "";
+    g_free(text);
+    return content.empty() ? std::vector<std::string>() : splitByNewline(content);
+}
+
+/// Replaces `EditorGadget`'s own buffer with `lines` joined back by
+/// `Chr(10)` - blocked around `onEditorChanged` the same "no spurious
+/// event for a programmatic change" way `pbSetGadgetText`'s own Editor
+/// branch already is, since `AddGadgetItem`/`ClearGadgetItems` are a
+/// list-API operation here, not a real user edit.
+inline void setEditorLines(GtkWidget* scrolledWrapper, GtkWidget* textView, const std::vector<std::string>& lines) {
+    GtkTextBuffer* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textView));
+    std::string joined;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (i != 0) {
+            joined += '\n';
+        }
+        joined += lines[i];
+    }
+    g_signal_handlers_block_by_func(buffer, reinterpret_cast<gpointer>(onEditorChanged), scrolledWrapper);
+    gtk_text_buffer_set_text(buffer, joined.c_str(), -1);
+    g_signal_handlers_unblock_by_func(buffer, reinterpret_cast<gpointer>(onEditorChanged), scrolledWrapper);
 }
 
 /// `TreeGadget`'s own model: a two-column `GtkTreeStore` (`TEXT`, `DATA` -
@@ -1944,6 +2005,43 @@ inline std::int64_t pbHyperLinkGadget(std::int64_t gadgetId, std::int64_t x, std
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
+/// M7b's nineteenth GUI slice: `EditorGadget` - a `GtkTextView` wrapped in
+/// a `GtkScrolledWindow`, the same wrapping convention `ListViewGadget`'s
+/// own "fifth GUI slice" established (needed here too: a bare `GtkTextView`
+/// has no scrollbars or height-clipping of its own, growing to fit all its
+/// own content instead of respecting `Height`). `GetGadgetText`/
+/// `SetGadgetText` address the buffer's own full, multi-line text as one
+/// `Chr(10)`-joined String (oracle-verified directly); `AddGadgetItem`/
+/// `CountGadgetItems`/`ClearGadgetItems`/`GetGadgetItemText` all operate on
+/// it one *line* at a time instead (also oracle-verified: `AddGadgetItem`
+/// inserts a line at the given 0-based index, pushing every following
+/// line down - `-1` appends at the end; `GetGadgetItemText`/
+/// `CountGadgetItems` read the buffer back split the same way). `Flags`'
+/// `#PB_Editor_ReadOnly`(=1)/`WordWrap`(=2, oracle-verified values) are
+/// both acted on for real - `GtkTextView`'s own `editable`/`wrap-mode`
+/// properties are an exact fit, no deferral needed.
+inline std::int64_t pbEditorGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                     std::int64_t height, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* textView = gtk_text_view_new();
+    if ((flags & 1) != 0) { // #PB_Editor_ReadOnly
+        gtk_text_view_set_editable(GTK_TEXT_VIEW(textView), FALSE);
+    }
+    if ((flags & 2) != 0) { // #PB_Editor_WordWrap
+        gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(textView), GTK_WRAP_WORD);
+    }
+
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scrolled), textView);
+    gtk_widget_show(textView);
+
+    GtkTextBuffer* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textView));
+    g_signal_connect(buffer, "changed", G_CALLBACK(detail::onEditorChanged), scrolled);
+
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, scrolled) ? 1 : 0;
+}
+
 inline std::int64_t pbFrameGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
                                    std::int64_t height, const PBString& text, std::int64_t /*flags*/ = 0) {
     detail::ensureGtkInit();
@@ -2409,6 +2507,18 @@ inline std::int64_t pbAddGadgetItem(std::int64_t gadgetId, std::int64_t position
     if (it == detail::gadgetTable().end()) {
         return 0;
     }
+    // M7b's nineteenth GUI slice: EditorGadget - inserts a new *line* at
+    // the given 0-based index, pushing every following line down (`-1`,
+    // or any out-of-range index, appends at the end) - oracle-verified
+    // directly.
+    if (GtkWidget* textView = detail::editorTextView(it->second)) {
+        auto lines = detail::editorLines(textView);
+        int insertAt = position < 0 ? static_cast<int>(lines.size()) : static_cast<int>(position);
+        insertAt = std::clamp(insertAt, 0, static_cast<int>(lines.size()));
+        lines.insert(lines.begin() + insertAt, text.bytes());
+        detail::setEditorLines(it->second, textView, lines);
+        return 1;
+    }
     // M7b's thirteenth GUI slice: ListViewGadget/ComboBoxGadget - `ImageID`
     // isn't supported for either yet (`#PB_ComboBox_Image`'s own deferred
     // gap - see pbComboBoxGadget's own doc comment), only for Panel.
@@ -2479,6 +2589,9 @@ inline std::int64_t pbCountGadgetItems(std::int64_t gadgetId) {
     auto it = detail::gadgetTable().find(gadgetId);
     if (it == detail::gadgetTable().end()) {
         return 0;
+    }
+    if (GtkWidget* textView = detail::editorTextView(it->second)) {
+        return static_cast<std::int64_t>(detail::editorLines(textView).size());
     }
     if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
         return gtk_tree_model_iter_n_children(GTK_TREE_MODEL(store), nullptr);
@@ -2560,6 +2673,10 @@ inline std::int64_t pbClearGadgetItems(std::int64_t gadgetId) {
     if (it == detail::gadgetTable().end()) {
         return 0;
     }
+    if (GtkWidget* textView = detail::editorTextView(it->second)) {
+        detail::setEditorLines(it->second, textView, {});
+        return 1;
+    }
     if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
         gtk_list_store_clear(store);
         return 1;
@@ -2594,6 +2711,13 @@ inline PBString pbGetGadgetItemText(std::int64_t gadgetId, std::int64_t element,
     auto it = detail::gadgetTable().find(gadgetId);
     if (it == detail::gadgetTable().end()) {
         return PBString();
+    }
+    if (GtkWidget* textView = detail::editorTextView(it->second)) {
+        auto lines = detail::editorLines(textView);
+        if (element < 0 || static_cast<std::size_t>(element) >= lines.size()) {
+            return PBString();
+        }
+        return PBString(lines[static_cast<std::size_t>(element)]);
     }
     if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
         GtkTreeIter iter;
@@ -3601,6 +3725,18 @@ inline PBString pbGetGadgetText(std::int64_t gadgetId) {
     // with at least an empty-string label), but PBString(nullptr) would be
     // undefined behavior if one ever did, so guard defensively anyway.
     auto safe = [](const char* text) { return PBString(text != nullptr ? text : ""); };
+    // M7b's nineteenth GUI slice: `EditorGadget` - the buffer's own full,
+    // multi-line text.
+    if (GtkWidget* textView = detail::editorTextView(widget)) {
+        GtkTextBuffer* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textView));
+        GtkTextIter start;
+        GtkTextIter end;
+        gtk_text_buffer_get_bounds(buffer, &start, &end);
+        gchar* text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+        PBString result = safe(text);
+        g_free(text);
+        return result;
+    }
     // `ButtonImageGadget` - see `detail::imageButtonMarkerKey`'s own doc
     // comment: oracle-verified as a genuine no-op, checked ahead of the
     // generic `GTK_IS_BUTTON` branch below rather than relying on it.
@@ -3711,6 +3847,16 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
         return 0;
     }
     GtkWidget* widget = it->second;
+    // M7b's nineteenth GUI slice: `EditorGadget` - replaces the buffer's
+    // own full text, the same "no spurious event for a programmatic
+    // change" blocking every other text-setter here already uses.
+    if (GtkWidget* textView = detail::editorTextView(widget)) {
+        GtkTextBuffer* buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textView));
+        g_signal_handlers_block_by_func(buffer, reinterpret_cast<gpointer>(detail::onEditorChanged), widget);
+        gtk_text_buffer_set_text(buffer, text.bytes().c_str(), -1);
+        g_signal_handlers_unblock_by_func(buffer, reinterpret_cast<gpointer>(detail::onEditorChanged), widget);
+        return 1;
+    }
     // `ButtonImageGadget` - see `detail::imageButtonMarkerKey`'s own doc
     // comment: oracle-verified as a genuine no-op (the displayed image is
     // not disturbed) - checked ahead of the generic `GTK_IS_BUTTON`

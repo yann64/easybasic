@@ -570,6 +570,13 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
           TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer},
          7},
+        // M7b's nineteenth GUI slice: EditorGadget. Flags is optional
+        // (#PB_Editor_ReadOnly=1/#PB_Editor_WordWrap=2, both oracle-
+        // verified values).
+        {"editorgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         5},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -714,7 +721,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "getgadgetitemdata", "setgadgetitemdata",
         "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
         "setgadgetitemattribute", "optiongadget", "progressbargadget", "spingadget", "trackbargadget",
-        "scrollbargadget", "imagegadget", "buttonimagegadget", "calendargadget", "hyperlinkgadget",
+        "scrollbargadget", "imagegadget", "buttonimagegadget", "calendargadget", "hyperlinkgadget", "editorgadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -1039,6 +1046,10 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         // oracle-verified via a direct `Debug #PB_Xxx` probe.
         {"pb_calendar_borderless", 1},
         {"pb_hyperlink_underline", 1},
+        // EditorGadget (M7b's nineteenth GUI slice) - oracle-verified via
+        // a direct `Debug #PB_Xxx` probe.
+        {"pb_editor_readonly", 1},
+        {"pb_editor_wordwrap", 2},
     };
     return table;
 }
