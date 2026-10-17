@@ -182,7 +182,7 @@ jobs:
   haiku:
     runs-on: [self-hosted, haiku-bridge]
     env:
-      HAIKU_HOST: user@192.168.1.32
+      HAIKU_HOST: user@192.168.1.31
       HAIKU_SSH_KEY: /home/yann64/.ssh/id_ed25519_haiku
       HAIKU_REMOTE_DIR: /boot/home/ci/easybasic
     steps:
