@@ -3174,3 +3174,168 @@ TEST_CASE("DrawText paints an opaque BackColor background (defaulting to black, 
     pbStopDrawing();
     pbCloseWindow(941);
 }
+
+TEST_CASE("ExplorerListGadget lists a directory's own entries - directories always first, "
+          "each group in raw directory-entry order, prefixed by a fixed '..' - with "
+          "GetGadgetItemText/GetGadgetItemState (a plain file/directory type code, not a "
+          "selection bitmask) and no real selection querying at all",
+          "[runtime][guilib]") {
+    // Oracle-verified directly, across several independently-decoupled
+    // probes: "sort order" isn't a deliberate sort by name or
+    // modification time at all - it's whatever raw order the OS's own
+    // directory enumeration happens to return, grouped directories-
+    // first. GetGadgetText/GetGadgetState/SetGadgetState are all red
+    // herrings for selection (GetGadgetText always reports the browsed
+    // directory path itself; GetGadgetState stays a fixed -1 regardless
+    // of SetGadgetState). GetGadgetItemState's own "2"/"1" values are
+    // #PB_Explorer_Directory/#PB_Explorer_File - a plain, fixed type
+    // indicator, not a ListIconGadget-style Selected/Checked bitmask
+    // (despite the coincidentally-matching "2").
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "pbcxx_explorerlist_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "zzz_dir");
+    fs::create_directories(dir / "aaa_dir");
+    { std::ofstream(dir / "mmm_file.txt"); }
+    { std::ofstream(dir / "bbb_file.txt"); }
+    { std::ofstream(dir / ".hidden_file.txt"); }
+
+    pbOpenWindow(942, 10, 10, 320, 320, PBString("Test"));
+    CHECK(pbExplorerListGadget(0, 10, 10, 200, 150, PBString(dir.string() + "/")) == 1);
+
+    std::int64_t n = pbCountGadgetItems(0);
+    REQUIRE(n == 5); // ".." + 2 real dirs + 2 real (non-hidden) files
+    CHECK(pbGetGadgetItemText(0, 0).bytes() == "..");
+    CHECK(pbGetGadgetItemState(0, 0) == 2); // #PB_Explorer_Directory
+
+    // Directories always come before files - confirmed not to be a
+    // deliberate sort by name or modification time at all, just
+    // whatever raw order the OS's own directory enumeration happens to
+    // return (confirmed directly: the real oracle itself gives a
+    // *different* intra-group order on this project's own ext4-backed
+    // dev directory than it does right here, under /tmp's tmpfs - this
+    // test only asserts the one filesystem-independent invariant, not a
+    // specific intra-group order that would be a coincidence of
+    // whichever filesystem happens to back the test runner's own /tmp).
+    std::vector<std::string> names;
+    std::vector<std::int64_t> states;
+    for (std::int64_t i = 0; i < n; ++i) {
+        names.push_back(pbGetGadgetItemText(0, i).bytes());
+        states.push_back(pbGetGadgetItemState(0, i));
+    }
+    CHECK(names[0] == "..");
+    CHECK(states == std::vector<std::int64_t>{2, 2, 2, 1, 1}); // both dirs, then both files
+    std::vector<std::string> dirNames(names.begin() + 1, names.begin() + 3);
+    std::vector<std::string> fileNames(names.begin() + 3, names.end());
+    std::sort(dirNames.begin(), dirNames.end());
+    std::sort(fileNames.begin(), fileNames.end());
+    CHECK(dirNames == std::vector<std::string>{"aaa_dir", "zzz_dir"});
+    CHECK(fileNames == std::vector<std::string>{"bbb_file.txt", "mmm_file.txt"});
+
+    CHECK(pbGetGadgetText(0).bytes() == dir.string() + "/");
+    CHECK(pbGetGadgetState(0) == -1);
+    CHECK(pbSetGadgetState(0, 0) == 0);
+    CHECK(pbGetGadgetState(0) == -1); // still a dead end afterward
+    CHECK(pbSetGadgetItemState(0, 1, 99) == 0);
+    CHECK(pbGetGadgetItemState(0, 1) == 2); // unaffected
+
+    // #PB_Explorer_HiddenFiles (262144): the dotfile now shows up too.
+    CHECK(pbExplorerListGadget(1, 10, 170, 200, 100, PBString(dir.string() + "/"), 262144) == 1);
+    CHECK(pbCountGadgetItems(1) == 6);
+
+    // #PB_Explorer_NoFiles (2) / NoFolders (128) / NoParentFolder (64).
+    CHECK(pbExplorerListGadget(2, 10, 170, 200, 100, PBString(dir.string() + "/"), 2) == 1);
+    CHECK(pbCountGadgetItems(2) == 3); // ".." + 2 dirs, no files
+    CHECK(pbExplorerListGadget(3, 10, 170, 200, 100, PBString(dir.string() + "/"), 128) == 1);
+    CHECK(pbCountGadgetItems(3) == 3); // ".." + 2 files, no dirs
+    CHECK(pbExplorerListGadget(4, 10, 170, 200, 100, PBString(dir.string() + "/"), 64) == 1);
+    CHECK(pbCountGadgetItems(4) == 4); // no "..", 2 dirs + 2 files
+
+    // SetGadgetText re-browses to a new directory.
+    fs::path dir2 = fs::temp_directory_path() / "pbcxx_explorerlist_test2";
+    fs::remove_all(dir2);
+    fs::create_directories(dir2);
+    { std::ofstream(dir2 / "only_file.txt"); }
+    pbSetGadgetText(0, PBString(dir2.string() + "/"));
+    CHECK(pbGetGadgetText(0).bytes() == dir2.string() + "/");
+    CHECK(pbCountGadgetItems(0) == 2); // ".." + only_file.txt
+
+    pbCloseWindow(942);
+    fs::remove_all(dir);
+    fs::remove_all(dir2);
+}
+
+TEST_CASE("ExplorerListGadget's own trailing-slash sensitivity: without one, the parent is "
+          "listed with the last path component filtering only the file half, never directories",
+          "[runtime][guilib]") {
+    // Oracle-verified directly (three decoupled cases): a name matching
+    // a real directory, one matching nothing at all, and one matching a
+    // real file - every subdirectory of the parent is listed in full
+    // regardless, while files only ever show up if the given name
+    // matches one of them exactly.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "pbcxx_explorerlist_slash_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "subdir");
+    { std::ofstream(dir / "real_file.txt"); }
+    { std::ofstream(dir / "other_file.txt"); }
+
+    pbOpenWindow(943, 10, 10, 320, 320, PBString("Test"));
+
+    // No trailing slash, last component names a real directory.
+    CHECK(pbExplorerListGadget(0, 10, 10, 200, 150, PBString((dir / "subdir").string())) == 1);
+    CHECK(pbCountGadgetItems(0) == 2); // ".." + "subdir" - no files at all
+
+    // No trailing slash, last component matches nothing.
+    CHECK(pbExplorerListGadget(1, 10, 170, 200, 100, PBString((dir / "nope").string())) == 1);
+    CHECK(pbCountGadgetItems(1) == 2); // ".." + "subdir" - still no files
+
+    // No trailing slash, last component matches a real file exactly.
+    CHECK(pbExplorerListGadget(2, 10, 170, 200, 100, PBString((dir / "real_file.txt").string())) == 1);
+    CHECK(pbCountGadgetItems(2) == 3); // ".." + "subdir" + "real_file.txt" only
+
+    pbCloseWindow(943);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("ExplorerComboGadget is a plain text display of the browsed directory - no "
+          "PB-queryable item list at all, and its own GetGadgetState default differs from "
+          "ExplorerListGadget's own",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: CountGadgetItems/GetGadgetItemText/
+    // GetGadgetItemState all stay 0/empty/0 - real PB's own API can't
+    // query ExplorerComboGadget's own dropdown contents either.
+    // GetGadgetState is a fixed 0 - a *different* fixed value than
+    // ExplorerListGadget's own -1.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "pbcxx_explorercombo_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+
+    pbOpenWindow(944, 10, 10, 320, 320, PBString("Test"));
+    CHECK(pbExplorerComboGadget(0, 10, 10, 200, 25, PBString(dir.string() + "/")) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == dir.string() + "/");
+    CHECK(pbCountGadgetItems(0) == 0);
+    CHECK(pbGetGadgetItemText(0, 0).bytes() == "");
+    CHECK(pbGetGadgetItemState(0, 0) == 0);
+    CHECK(pbGetGadgetState(0) == 0);
+
+    fs::path dir2 = fs::temp_directory_path() / "pbcxx_explorercombo_test2";
+    fs::remove_all(dir2);
+    fs::create_directories(dir2);
+    pbSetGadgetText(0, PBString(dir2.string() + "/"));
+    CHECK(pbGetGadgetText(0).bytes() == dir2.string() + "/");
+
+    pbCloseWindow(944);
+    fs::remove_all(dir);
+    fs::remove_all(dir2);
+}

@@ -640,6 +640,19 @@ void Sema::registerGuiLibBuiltins() {
          3},
         {"textwidth", TypeSuffix::Double, {TypeSuffix::String}, 1},
         {"textheight", TypeSuffix::Double, {TypeSuffix::String}, 1},
+        // ExplorerListGadget/ExplorerComboGadget - oracle-verified. Flags
+        // is optional (both compile and run fine with only the first 6
+        // arguments). See pbExplorerListGadget's own doc comment in
+        // guilib.hpp for the full set of oracle findings this is based
+        // on.
+        {"explorerlistgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer},
+         6},
+        {"explorercombogadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer},
+         6},
         // M7b's twenty-fourth GUI slice: ShortcutGadget. All 6 arguments
         // required - oracle-verified (both a 5- and a 7-argument call are
         // real "Incorrect number of parameters" compile errors). See
@@ -801,6 +814,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "dategadget", "ipaddressgadget", "canvasgadget", "shortcutgadget",
         "canvasoutput", "startdrawing", "stopdrawing", "frontcolor", "backcolor", "box", "circle", "plot", "point",
         "line", "linexy", "drawtext", "textwidth", "textheight",
+        "explorerlistgadget", "explorercombogadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -1242,6 +1256,31 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_shortcut_capital", 0}, {"pb_shortcut_snapshot", 0}, {"pb_shortcut_menu", 0},
         {"pb_shortcut_apps", 93}, {"pb_shortcut_leftwindows", 91}, {"pb_shortcut_rightwindows", 92},
         {"pb_gadgettype_shortcut", 32},
+        // ExplorerListGadget/ExplorerComboGadget - oracle-verified via a
+        // direct `Debug #PB_Explorer_Xxx` probe. `#PB_Explorer_File`=1/
+        // `Directory`=2 are `GetGadgetItemState`'s own return values -
+        // confirmed directly (not a `ListIcon`-style Selected/Checked
+        // bitmask collision, despite `ListIcon`'s own `Checked` also
+        // being `2` - a coincidence of value, not a shared meaning. Only
+        // `NoFiles`/`NoFolders`/`NoParentFolder`/`HiddenFiles` are
+        // behaviorally implemented this slice (see pbExplorerListGadget's
+        // own doc comment) - the rest are registered for forward-compile
+        // compatibility only, consistent with every other gadget's own
+        // niche-Windows-flag precedent (e.g. `ListIconGadget`'s own
+        // `FullRowSelect`/`HeaderDragDrop`).
+        {"pb_explorer_file", 1}, {"pb_explorer_directory", 2},
+        {"pb_explorer_alwaysshowselection", 32}, {"pb_explorer_borderless", 16},
+        {"pb_explorer_nofiles", 2}, {"pb_explorer_nofolders", 128}, {"pb_explorer_noparentfolder", 64},
+        {"pb_explorer_nodirectorychange", 256}, {"pb_explorer_multiselect", 1024},
+        {"pb_explorer_editable", 131072}, {"pb_explorer_drivesonly", 65536},
+        {"pb_explorer_hiddenfiles", 262144}, {"pb_explorer_nosort", 512}, {"pb_explorer_autosort", 8},
+        {"pb_explorer_nodriverequester", 4}, {"pb_explorer_nomydocuments", 1},
+        {"pb_explorer_nobuttons", 32768}, {"pb_explorer_noheaders", 524288}, {"pb_explorer_gridlines", 2048},
+        {"pb_explorer_fullrowselect", 8192}, {"pb_explorer_headerdragdrop", 4096}, {"pb_explorer_nolines", 16384},
+        {"pb_explorer_displaymode", 2}, {"pb_explorer_report", 3}, {"pb_explorer_list", 2},
+        {"pb_explorer_smallicon", 1}, {"pb_explorer_largeicon", 0},
+        {"pb_gadgettype_explorerlist", 23}, {"pb_gadgettype_explorertree", 24},
+        {"pb_gadgettype_explorercombo", 25},
     };
     return table;
 }

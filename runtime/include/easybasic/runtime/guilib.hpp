@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -3066,6 +3067,227 @@ inline std::int64_t pbShortcutGadget(std::int64_t gadgetId, std::int64_t x, std:
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
+namespace detail {
+
+/// `ExplorerListGadget`/`ExplorerComboGadget` - oracle-verified directly
+/// (both this project's own earlier, deferred investigation and a fresh
+/// one picking it back up). Four real findings:
+///
+/// 1. **`Directory$` is trailing-slash-sensitive**: without one, the
+///    *parent* directory is listed instead, with the last path component
+///    read as an exact-name filter - but **only against files, never
+///    directories** - confirmed directly across three cases: a name
+///    matching a real directory, one matching nothing at all, and one
+///    matching a real *file* - every subdirectory of the parent is
+///    listed in full regardless, while files only ever show up if the
+///    given name matches one of them exactly. Reproduced the same way:
+///    split off the last component and filter only the file half of the
+///    listing by it when no trailing slash is given.
+/// 2. **"Sort order" is really just directories-first-then-files, each
+///    group in whatever raw order the OS's own directory enumeration
+///    happens to return** - not a deliberate sort by modification time
+///    at all (this project's own *earlier* investigation concluded
+///    "modification time descending" from a single, confounded test
+///    where creation order and mtime order happened to coincide;
+///    several independently-decoupled probes this time - distinct
+///    creation order, mtime order, *and* alphabetical order on every
+///    entry - ruled mtime out entirely; the earlier note's own
+///    correction is recorded here, not silently dropped). Directly
+///    reproduced by iterating with `std::filesystem::directory_iterator`
+///    and keeping its own natural enumeration order as-is (no sorting
+///    applied at all) - confirmed to match the real oracle's own
+///    listing exactly across every differently-ordered test directory
+///    tried, since both run on the same underlying filesystem/`readdir()`
+///    order. `".."` is always prepended at index `0` (unless
+///    `#PB_Explorer_NoParentFolder`).
+/// 3. **Items are only reachable via `GetGadgetItemText`** -
+///    `GetGadgetState`/`SetGadgetState`/plain `GetGadgetText` are all
+///    red herrings for selection, confirmed directly: `GetGadgetText`
+///    always returns the directory path itself (identical to
+///    `ExplorerComboGadget`'s own), `GetGadgetState` stays `-1`
+///    regardless of any `SetGadgetState` attempt, and
+///    `SetGadgetItemState` has no observable effect either.
+/// 4. **`GetGadgetItemState`'s own "ambiguity" is fully resolved**: it's
+///    not a `ListIconGadget`-style `Selected`/`Checked` bitmask
+///    collision at all (despite `2` coincidentally matching
+///    `ListIconGadget`'s own `#PB_ListIcon_Checked`) - it's a plain,
+///    fixed, read-only type indicator, confirmed directly against real
+///    PB's own distinctly-named constants: `#PB_Explorer_File`=`1` for
+///    every file, `#PB_Explorer_Directory`=`2` for every directory *and*
+///    the `".."` entry itself, regardless of selection.
+///
+/// **`Flags`**: `#PB_Explorer_NoFiles`/`NoFolders`/`NoParentFolder`/
+/// `HiddenFiles` are oracle-verified and implemented (dotfiles/dot-
+/// directories are hidden by default, shown with `HiddenFiles` set).
+/// Every other real constant (`BorderLess`/`AlwaysShowSelection`/
+/// `MultiSelect`/`Editable`/`DrivesOnly`/`NoDriveRequester`/
+/// `NoMyDocuments`/`NoDirectoryChange`/`NoSort`/`AutoSort`/`NoButtons`/
+/// `NoHeaders`/`GridLines`/`FullRowSelect`/`HeaderDragDrop`/`NoLines`/
+/// `DisplayMode` and its `Report`/`List`/`SmallIcon`/`LargeIcon` values)
+/// is registered for forward-compile compatibility only - mostly
+/// Windows-specific chrome (drive-letter browsing, Explorer-style
+/// Report/Icon view modes) with no natural GTK equivalent, or simply not
+/// independently verified this slice - the same "register but defer"
+/// treatment every other gadget's own niche flags already get.
+///
+/// **`ExplorerComboGadget` turned out to need no new dispatch code at
+/// all**, once its own real behavior was understood: `CountGadgetItems`
+/// stays `0`, `GetGadgetItemText`/`GetGadgetItemState` stay empty/`0`,
+/// and `GetGadgetState` stays `0` (a *different* fixed value than
+/// `ExplorerListGadget`'s own `-1`, confirmed directly) - all of this
+/// *already* falls out of a plain, untagged `GtkEntry`'s own existing
+/// fallthrough default in every one of those functions' own dispatch
+/// chains (confirmed by reading each one), the same way `GetGadgetText`/
+/// `SetGadgetText`'s own existing `GTK_IS_ENTRY` branches already give
+/// the right "directory path, mutable via `SetGadgetText`" behavior for
+/// free. So it's implemented as a bare `GtkEntry`, the same minimal-
+/// widget pattern `DateGadget`/`IPAddressGadget` already use - no real,
+/// PB-queryable dropdown of entries is populated, since real PB's own
+/// API can't query one either.
+inline const char* gadgetKindExplorerList() { return "explorerlist"; }
+
+struct ExplorerListState {
+    std::string directory;
+    std::int64_t flags = 0;
+};
+
+inline const char* explorerListStateKey() { return "pbcxx-explorerlist-state"; }
+
+inline GtkWidget* explorerListTreeView(GtkWidget* stored) {
+    if (GTK_IS_SCROLLED_WINDOW(stored) == 0) {
+        return nullptr;
+    }
+    GtkWidget* inner = gtk_bin_get_child(GTK_BIN(stored));
+    if (inner == nullptr || GTK_IS_TREE_VIEW(inner) == 0) {
+        return nullptr;
+    }
+    auto* kind = static_cast<const char*>(g_object_get_data(G_OBJECT(inner), gadgetKindKey()));
+    return (kind != nullptr && g_strcmp0(kind, gadgetKindExplorerList()) == 0) ? inner : nullptr;
+}
+
+inline ExplorerListState* explorerListState(GtkWidget* treeView) {
+    return static_cast<ExplorerListState*>(g_object_get_data(G_OBJECT(treeView), explorerListStateKey()));
+}
+
+/// Shared directory-scan/sort/filter/populate logic for both
+/// `ExplorerListGadget`'s own real `GtkListStore` and (not currently
+/// used for a real dropdown, kept here only for `ExplorerListGadget`
+/// itself) a future `ExplorerComboGadget` enhancement. See this
+/// namespace's own doc comment above for the oracle-verified sort rule
+/// and `Flags` semantics this implements.
+inline void populateExplorerList(GtkListStore* store, const std::string& directoryArg, std::int64_t flags) {
+    gtk_list_store_clear(store);
+    namespace fs = std::filesystem;
+    std::string directory = directoryArg;
+    std::string nameFilter;
+    bool hasFilter = false;
+    if (!directory.empty() && directory.back() != '/') {
+        // Oracle-verified: no trailing slash means the last path
+        // component is an exact-name filter against the parent.
+        std::size_t slash = directory.find_last_of('/');
+        if (slash == std::string::npos) {
+            nameFilter = directory;
+            directory = ".";
+        } else {
+            nameFilter = directory.substr(slash + 1);
+            directory.resize(slash + 1);
+        }
+        hasFilter = true;
+    }
+    if ((flags & 64) == 0) { // #PB_Explorer_NoParentFolder
+        GtkTreeIter iter;
+        gtk_list_store_append(store, &iter);
+        gtk_list_store_set(store, &iter, itemTextColumn(), "..", itemDataColumn(),
+                            static_cast<gint64>(2), -1); // #PB_Explorer_Directory
+    }
+    std::vector<std::string> dirNames;
+    std::vector<std::string> fileNames;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(directory, fs::directory_options::skip_permission_denied, ec)) {
+        std::string name = entry.path().filename().string();
+        if (!name.empty() && name.front() == '.' && (flags & 262144) == 0) { // #PB_Explorer_HiddenFiles
+            continue;
+        }
+        bool isDir = entry.is_directory(ec);
+        if (isDir) {
+            // Oracle-verified: the no-trailing-slash name filter applies
+            // only to files, never to directories - a bare, nonexistent,
+            // or unrelated last component still lists every real
+            // subdirectory of the parent unfiltered (confirmed directly:
+            // a path ending in a name matching no file at all, and one
+            // matching a real *file*'s own name, both still show every
+            // sibling directory in full either way).
+            if ((flags & 128) != 0) { // #PB_Explorer_NoFolders
+                continue;
+            }
+            dirNames.push_back(name);
+        } else {
+            if (hasFilter && name != nameFilter) {
+                continue;
+            }
+            if ((flags & 2) != 0) { // #PB_Explorer_NoFiles
+                continue;
+            }
+            fileNames.push_back(name);
+        }
+    }
+    for (const auto& name : dirNames) {
+        GtkTreeIter iter;
+        gtk_list_store_append(store, &iter);
+        gtk_list_store_set(store, &iter, itemTextColumn(), name.c_str(), itemDataColumn(), static_cast<gint64>(2),
+                            -1); // #PB_Explorer_Directory
+    }
+    for (const auto& name : fileNames) {
+        GtkTreeIter iter;
+        gtk_list_store_append(store, &iter);
+        gtk_list_store_set(store, &iter, itemTextColumn(), name.c_str(), itemDataColumn(), static_cast<gint64>(1),
+                            -1); // #PB_Explorer_File
+    }
+}
+
+} // namespace detail
+
+inline std::int64_t pbExplorerListGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                           std::int64_t height, const PBString& directory, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkListStore* store = gtk_list_store_new(2, G_TYPE_STRING, G_TYPE_INT64);
+    GtkWidget* treeView = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    g_object_unref(store);
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(treeView), FALSE);
+    GtkTreeViewColumn* column =
+        gtk_tree_view_column_new_with_attributes("", gtk_cell_renderer_text_new(), "text", detail::itemTextColumn(), nullptr);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(treeView), column);
+    g_object_set_data(G_OBJECT(treeView), detail::gadgetKindKey(),
+                       const_cast<gpointer>(static_cast<const void*>(detail::gadgetKindExplorerList())));
+
+    auto* state = new detail::ExplorerListState();
+    state->directory = directory.bytes();
+    state->flags = flags;
+    g_object_set_data_full(G_OBJECT(treeView), detail::explorerListStateKey(), state,
+                            [](gpointer p) { delete static_cast<detail::ExplorerListState*>(p); });
+    detail::populateExplorerList(store, state->directory, flags);
+
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scrolled), treeView);
+    gtk_widget_show(treeView);
+
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, scrolled) ? 1 : 0;
+}
+
+/// See `detail::gadgetKindExplorerList()`'s own doc comment for the full
+/// set of oracle findings this is based on - `ExplorerComboGadget` is a
+/// bare `GtkEntry` holding `Directory$`, needing no dispatch code of its
+/// own anywhere else.
+inline std::int64_t pbExplorerComboGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                            std::int64_t height, const PBString& directory,
+                                            std::int64_t /*flags*/ = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* widget = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(widget), directory.bytes().c_str());
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
 inline std::int64_t pbFrameGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
                                    std::int64_t height, const PBString& text, std::int64_t /*flags*/ = 0) {
     detail::ensureGtkInit();
@@ -3617,6 +3839,9 @@ inline std::int64_t pbCountGadgetItems(std::int64_t gadgetId) {
     if (GtkWidget* textView = detail::editorTextView(it->second)) {
         return static_cast<std::int64_t>(detail::editorLines(textView).size());
     }
+    if (GtkWidget* treeView = detail::explorerListTreeView(it->second)) {
+        return gtk_tree_model_iter_n_children(gtk_tree_view_get_model(GTK_TREE_VIEW(treeView)), nullptr);
+    }
     if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
         return gtk_tree_model_iter_n_children(GTK_TREE_MODEL(store), nullptr);
     }
@@ -3742,6 +3967,18 @@ inline PBString pbGetGadgetItemText(std::int64_t gadgetId, std::int64_t element,
             return PBString();
         }
         return PBString(lines[static_cast<std::size_t>(element)]);
+    }
+    if (GtkWidget* treeView = detail::explorerListTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(treeView));
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(model, &iter, nullptr, static_cast<int>(element)) == 0) {
+            return PBString();
+        }
+        gchar* text = nullptr;
+        gtk_tree_model_get(model, &iter, detail::itemTextColumn(), &text, -1);
+        PBString result(text != nullptr ? text : "");
+        g_free(text);
+        return result;
     }
     if (GtkListStore* store = detail::itemListStoreFor(it->second)) {
         GtkTreeIter iter;
@@ -3880,6 +4117,22 @@ inline std::int64_t pbGetGadgetItemState(std::int64_t gadgetId, std::int64_t ele
     if (it == detail::gadgetTable().end()) {
         return 0;
     }
+    // `ExplorerListGadget` - a plain, fixed, read-only type indicator
+    // read straight back from the data column `populateExplorerList`
+    // already stored it in at population time - see
+    // `detail::gadgetKindExplorerList()`'s own doc comment for why this
+    // isn't a `ListIconGadget`-style Selected/Checked bitmask at all,
+    // despite a coincidentally-matching value.
+    if (GtkWidget* explorerView = detail::explorerListTreeView(it->second)) {
+        auto* model = gtk_tree_view_get_model(GTK_TREE_VIEW(explorerView));
+        GtkTreeIter iter;
+        if (gtk_tree_model_iter_nth_child(model, &iter, nullptr, static_cast<int>(element)) == 0) {
+            return 0;
+        }
+        gint64 type = 0;
+        gtk_tree_model_get(model, &iter, detail::itemDataColumn(), &type, -1);
+        return static_cast<std::int64_t>(type);
+    }
     // `ListIconGadget`'s own bitmask - oracle-verified values
     // `#PB_ListIcon_Selected`=1, `Checked`=2, `Inbetween`=4 (the latter
     // unreachable here - `#PB_ListIcon_ThreeState` is a deliberately
@@ -3956,6 +4209,12 @@ inline std::int64_t pbGetGadgetItemState(std::int64_t gadgetId, std::int64_t ele
 inline std::int64_t pbSetGadgetItemState(std::int64_t gadgetId, std::int64_t element, std::int64_t state) {
     auto it = detail::gadgetTable().find(gadgetId);
     if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    // `ExplorerListGadget` - oracle-verified directly as a genuine no-op
+    // (the item's own `GetGadgetItemState` reading is unchanged
+    // afterward).
+    if (detail::explorerListTreeView(it->second) != nullptr) {
         return 0;
     }
     if (GtkWidget* iconView = detail::listIconTreeView(it->second)) {
@@ -4775,6 +5034,15 @@ inline PBString pbGetGadgetText(std::int64_t gadgetId) {
     // with at least an empty-string label), but PBString(nullptr) would be
     // undefined behavior if one ever did, so guard defensively anyway.
     auto safe = [](const char* text) { return PBString(text != nullptr ? text : ""); };
+    // `ExplorerListGadget` - oracle-verified directly: always the
+    // directory path itself, never a selected item's own text (the same
+    // behavior `ExplorerComboGadget`'s own bare `GtkEntry` already gets
+    // for free from the generic `GTK_IS_ENTRY` branch below).
+    if (GtkWidget* explorerView = detail::explorerListTreeView(widget)) {
+        if (const auto* state = detail::explorerListState(explorerView)) {
+            return PBString(state->directory);
+        }
+    }
     // M7b's nineteenth GUI slice: `EditorGadget` - the buffer's own full,
     // multi-line text.
     if (GtkWidget* textView = detail::editorTextView(widget)) {
@@ -4897,6 +5165,17 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
         return 0;
     }
     GtkWidget* widget = it->second;
+    // `ExplorerListGadget` - oracle-verified directly: `SetGadgetText`
+    // re-browses to the given directory (confirmed: the item count and
+    // listing both change to match the new directory's own contents).
+    if (GtkWidget* explorerView = detail::explorerListTreeView(widget)) {
+        if (auto* state = detail::explorerListState(explorerView)) {
+            state->directory = text.bytes();
+            auto* store = GTK_LIST_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(explorerView)));
+            detail::populateExplorerList(store, state->directory, state->flags);
+        }
+        return 1;
+    }
     // M7b's twenty-first GUI slice: `IPAddressGadget` - re-parses the
     // given text with the real character-by-character field-entry rule
     // (see `detail::parseIPAddressText`'s own doc comment) and displays
@@ -5057,6 +5336,15 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     if (GTK_IS_NOTEBOOK(it->second) != 0) {
         return gtk_notebook_get_current_page(GTK_NOTEBOOK(it->second));
     }
+    // `ExplorerListGadget` - oracle-verified directly: stays a fixed
+    // `-1` regardless of any `SetGadgetState` attempt - a real dead end
+    // for selection, not replicated as anything smarter. (`ExplorerCombo
+    // Gadget`'s own distinctly-different fixed `0` already falls out of
+    // its bare `GtkEntry`'s own existing fallthrough default below, with
+    // no branch of its own needed here.)
+    if (detail::explorerListTreeView(it->second) != nullptr) {
+        return -1;
+    }
     // M7b's twenty-first GUI slice: `IPAddressGadget` re-parses its own
     // currently displayed (always already-canonical) text and packs the
     // result - see `detail::packIPAddressState`'s own doc comment for
@@ -5204,6 +5492,11 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
         gtk_notebook_set_current_page(GTK_NOTEBOOK(it->second), static_cast<int>(state));
         g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
         return 1;
+    }
+    // `ExplorerListGadget` - oracle-verified directly as a genuine no-op
+    // (`GetGadgetState` stays `-1` afterward regardless).
+    if (detail::explorerListTreeView(it->second) != nullptr) {
+        return 0;
     }
     // `IPAddressGadget` - `state` unpacks into all 4 octets (always
     // fully "populated", unlike a partially-typed `SetGadgetText` -

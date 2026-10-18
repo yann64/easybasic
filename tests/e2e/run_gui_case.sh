@@ -21,14 +21,18 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 BIN="$WORKDIR/case_bin"
 
-# Copy over any extra fixture files a case ships alongside input.pb/
-# expected.stdout (e.g. gui_image's own test.bmp for LoadImage) - run from
-# $WORKDIR, not $CASE_DIR, the same reason run_case.sh's own comment gives,
-# so a case can reference one by a plain relative filename.
+# Copy over any extra fixture files (or whole fixture directories, e.g.
+# gui_explorerlist_explorercombo's own browsed-directory tree) a case
+# ships alongside input.pb/expected.stdout (e.g. gui_image's own
+# test.bmp for LoadImage) - run from $WORKDIR, not $CASE_DIR, the same
+# reason run_case.sh's own comment gives, so a case can reference one by
+# a plain relative filename. `-r` is needed for a fixture directory
+# (plain `cp` errors on one, silently skipping it since this script has
+# no `set -e`) and is a no-op for a plain file.
 for extra in "$CASE_DIR"/*; do
     base=$(basename "$extra")
     if [ "$base" != "input.pb" ] && [ "$base" != "expected.stdout" ]; then
-        cp "$extra" "$WORKDIR/"
+        cp -r "$extra" "$WORKDIR/"
     fi
 done
 

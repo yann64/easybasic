@@ -1,0 +1,39 @@
+[Debugger]  1
+[Debugger]  3
+[Debugger]  .. 2
+[Debugger]  subdir 2
+[Debugger]  file.txt 1
+[Debugger]  [browsedir/]
+[Debugger]  -1
+[Debugger]  -1
+[Debugger]  0
+[Debugger]  2
+[Debugger]  --- #PB_Explorer_HiddenFiles ---
+[Debugger]  1
+[Debugger]  3
+[Debugger]  --- #PB_Explorer_NoFiles ---
+[Debugger]  1
+[Debugger]  2
+[Debugger]  --- #PB_Explorer_NoFolders ---
+[Debugger]  1
+[Debugger]  2
+[Debugger]  --- #PB_Explorer_NoParentFolder ---
+[Debugger]  1
+[Debugger]  2
+[Debugger]  --- no trailing slash ---
+[Debugger]  1
+[Debugger]  2
+[Debugger]  ..
+[Debugger]  subdir
+[Debugger]  --- SetGadgetText re-browses ---
+[Debugger]  [browsedir/subdir/]
+[Debugger]  1
+[Debugger]  --- ExplorerComboGadget ---
+[Debugger]  1
+[Debugger]  [browsedir/]
+[Debugger]  0
+[Debugger]  []
+[Debugger]  0
+[Debugger]  0
+[Debugger]  [browsedir/subdir/]
+[Debugger]  done

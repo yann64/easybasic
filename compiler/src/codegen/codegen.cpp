@@ -208,6 +208,7 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"plot", "pbPlot"}, {"point", "pbPoint"}, {"shortcutgadget", "pbShortcutGadget"},
         {"line", "pbLine"}, {"linexy", "pbLineXY"}, {"drawtext", "pbDrawText"},
         {"textwidth", "pbTextWidth"}, {"textheight", "pbTextHeight"},
+        {"explorerlistgadget", "pbExplorerListGadget"}, {"explorercombogadget", "pbExplorerComboGadget"},
         {"messagerequester", "pbMessageRequester"},
         {"colorrequester", "pbColorRequester"}, {"fontrequester", "pbFontRequester"},
         {"selectedfontname", "pbSelectedFontName"}, {"selectedfontsize", "pbSelectedFontSize"},

@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight`), `ShortcutGadget` (creation/constants only - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-five slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -4633,4 +4633,85 @@ own independent-of-the-ambient-color black defaults, its opaque background fill,
 exercises the same full sequence end to end through `pbcxx`, confirmed line-for-line against the
 real oracle before being pinned - via the plain `run_gui_case.sh`, since none of this needed
 synthetic input either.
+
+## M7b Implementation Notes (`ExplorerListGadget`/`ExplorerComboGadget`)
+
+**Scope landed**: both gadgets' own creation, `GetGadgetItemText`/`GetGadgetItemState`,
+`GetGadgetText`/`SetGadgetText` (re-browsing), and `#PB_Explorer_NoFiles`/`NoFolders`/
+`NoParentFolder`/`HiddenFiles`. These were explored once already (see the eighteenth slice's own
+notes above) and deliberately deferred over one unresolved `GetGadgetItemState` finding - picked
+back up and fully resolved this time, along with a real correction to an *earlier* finding that
+turned out to be wrong.
+
+**The `GetGadgetItemState` "ambiguity" is fully resolved: it was never a `ListIconGadget`-style
+bitmask collision at all.** It's a plain, fixed, read-only type indicator with its own distinctly-
+named real constants - confirmed directly: `#PB_Explorer_File`=`1`, `#PB_Explorer_Directory`=`2`,
+and `GetGadgetItemState` returns exactly one of those two for every item, always, regardless of
+selection. The earlier investigation's own "`2` on the `..` entry, coincidentally matching
+`ListIconGadget`'s own `Checked`" was a real coincidence of *value*, not of *meaning* - the two
+gadgets don't share any numbering scheme at all.
+
+**A real correction to the earlier investigation's own "sort order" finding**: it is *not* sorted
+by modification time, descending or otherwise - that earlier conclusion came from a single,
+confounded test where creation order and modification-time order happened to coincide. Multiple
+freshly-run, independently-decoupled probes this time (distinct creation order, distinct mtime
+order, *and* distinct alphabetical order, all on the same entries) rule mtime out entirely. The
+real rule is simpler and, in a sense, not really a "sort" at all: **directories always come before
+files, and each group appears in whatever raw order the underlying filesystem's own directory
+enumeration returns** - confirmed to vary (correctly, on *both* sides) between `ext4` and `tmpfs`
+during this project's own test-writing: the exact same real oracle gives a *different* intra-group
+order depending on which filesystem backs the directory being browsed, and this project's own
+`std::filesystem::directory_iterator`-based implementation (no sorting applied at all) tracks it
+exactly either way, since both are really just reflecting whatever `readdir()` itself returns on
+that filesystem. (Lesson for next time: a "sort order" finding confirmed on only one filesystem,
+with creation order and another candidate key correlated in the test data, isn't actually confirmed
+at all - worth an independently-decoupled retest before trusting it.)
+
+**The no-trailing-slash behavior is also more precise than the earlier note had it**: `Directory$`
+without a trailing slash lists the *parent* directory, with the last path component filtering only
+the *file* half of the listing (by exact name) - **directories are never filtered by it at all**,
+confirmed directly across three cases: a name matching a real subdirectory, one matching nothing at
+all, and one matching a real file - every real subdirectory of the parent shows up in full in every
+case, while files only ever appear if the given name matches one of them exactly.
+
+**Everything else already oracle-verified holds up unchanged**: items are only reachable via
+`GetGadgetItemText` - `GetGadgetState`/`SetGadgetState`/plain `GetGadgetText` are all red herrings
+for selection (`GetGadgetText` always returns the directory path itself; `GetGadgetState` stays a
+fixed `-1` for `ExplorerListGadget` regardless of `SetGadgetState`, a *different* fixed `0` for
+`ExplorerComboGadget`; `SetGadgetItemState` has no observable effect either). `SetGadgetText`
+*does* re-browse to a new directory - confirmed directly (item count and listing both change to
+match).
+
+**`ExplorerComboGadget` needed no new dispatch code anywhere except its own creation function**,
+once its real behavior was understood: `CountGadgetItems` stays `0`, `GetGadgetItemText`/
+`GetGadgetItemState` stay empty/`0` - real PB's own API can't query its dropdown's contents at all,
+so it's implemented as a bare `GtkEntry` holding `Directory$` (the same minimal-widget pattern
+`DateGadget`/`IPAddressGadget` already use) - every one of those "stays empty/0" behaviors, and
+`GetGadgetText`/`SetGadgetText`'s own "directory path, mutable" behavior, already falls out of a
+bare `GtkEntry`'s own existing fallthrough default in each function's own dispatch chain (confirmed
+by reading each one before writing any new code) - no real, PB-queryable dropdown of entries is
+populated, since real PB's own API couldn't expose one either.
+
+**`Flags`**: a much larger family of real constants exists than either gadget's own docs suggested
+at a glance (`BorderLess`/`AlwaysShowSelection`/`MultiSelect`/`Editable`/`DrivesOnly`/
+`NoDriveRequester`/`NoMyDocuments`/`NoDirectoryChange`/`NoSort`/`AutoSort`/`NoButtons`/`NoHeaders`/
+`GridLines`/`FullRowSelect`/`HeaderDragDrop`/`NoLines`/`DisplayMode` and its `Report`/`List`/
+`SmallIcon`/`LargeIcon` values) - all oracle-verified to exist and registered for forward-compile
+compatibility, but mostly Windows-specific chrome (drive-letter browsing, Explorer-style Report/Icon
+view modes) with no natural GTK equivalent, or simply not independently verified this slice - the
+same "register but defer" treatment every other gadget's own niche flags already get.
+
+**A shared-infrastructure fix needed along the way**: `run_gui_case.sh`'s own fixture-copying loop
+used plain `cp`, which silently drops a fixture *directory* (this slice's own browsed-directory
+tree) with no error (the script has no `set -e`) - changed to `cp -r`, a safe superset for every
+existing plain-file fixture too.
+
+**Testing**: three new `runtime_guilib_test.cpp` cases, each creating and cleaning up its own real
+temporary directory (`std::filesystem`) rather than depending on the test runner's own working
+directory contents - deliberately asserting only the filesystem-independent invariant (directories
+before files) for intra-group ordering, not a specific order, given the above finding about it
+varying by filesystem. One new golden e2e case (`tests/e2e/gui_explorerlist_explorercombo`), with
+its own fixture directory (a single file and a single subdirectory - deliberately one of each, to
+side-step any intra-group ordering ambiguity in a byte-exact golden comparison), confirmed line-for-
+line against the real oracle before being pinned.
 
