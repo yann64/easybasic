@@ -640,6 +640,24 @@ void Sema::registerGuiLibBuiltins() {
          3},
         {"textwidth", TypeSuffix::Double, {TypeSuffix::String}, 1},
         {"textheight", TypeSuffix::Double, {TypeSuffix::String}, 1},
+        // 2D Drawing library extension: Ellipse/RoundBox/FillArea -
+        // oracle-verified. Ellipse's/RoundBox's trailing Color is
+        // optional (defaults to FrontColor, like Box/Circle/Plot/Line/
+        // LineXY). FillArea(x, y, BorderColor [, FillColor]) - oracle-
+        // verified argument order directly (a 4-argument call with the
+        // *other* order floods well past any intended boundary) -
+        // FillColor is the one that's optional, defaulting to
+        // FrontColor; BorderColor is always required.
+        {"ellipse", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         4},
+        {"roundbox", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer, TypeSuffix::Integer},
+         6},
+        {"fillarea", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         3},
         // ExplorerListGadget/ExplorerComboGadget - oracle-verified. Flags
         // is optional (both compile and run fine with only the first 6
         // arguments). See pbExplorerListGadget's own doc comment in
@@ -823,6 +841,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "dategadget", "ipaddressgadget", "canvasgadget", "shortcutgadget",
         "canvasoutput", "startdrawing", "stopdrawing", "frontcolor", "backcolor", "box", "circle", "plot", "point",
         "line", "linexy", "drawtext", "textwidth", "textheight",
+        "ellipse", "roundbox", "fillarea",
         "explorerlistgadget", "explorercombogadget", "explorertreegadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",

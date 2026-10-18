@@ -3175,6 +3175,98 @@ TEST_CASE("DrawText paints an opaque BackColor background (defaulting to black, 
     pbCloseWindow(941);
 }
 
+TEST_CASE("Ellipse/RoundBox: filled curves with a crisp, oracle-matched boundary at the confirmed "
+          "axis extent, both defaulting their own trailing Color to the ambient FrontColor",
+          "[runtime][guilib]") {
+    // Oracle-verified directly, along both axes independently: Ellipse's
+    // own exact boundary pixel at x +/- xRadius and y +/- yRadius is
+    // itself still filled, one pixel further out is not - confirmed
+    // with a perfectly crisp edge (no blended pixel at all, unlike an
+    // earlier Cairo-arc-based attempt at this). RoundBox cuts its own 4
+    // corners away by a quarter-ellipse of the given corner dimensions
+    // - confirmed a corner pixel reads back as untouched background,
+    // while the flat portions of every edge (including the degenerate
+    // case where a corner dimension is exactly half the box's own
+    // width/height, where an earlier version of this had a real 1-pixel
+    // seam bug) are filled solidly, the same as a plain Box.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(946, 10, 10, 320, 320, PBString("Test"));
+    pbCanvasGadget(0, 10, 10, 200, 150);
+    pbStartDrawing(pbCanvasOutput(0));
+
+    pbEllipse(50, 50, 30, 20, pbRGB(1, 2, 3));
+    CHECK(pbPoint(50, 50) == pbRGB(1, 2, 3)); // center
+    CHECK(pbPoint(80, 50) == pbRGB(1, 2, 3)); // exact right-edge boundary - still filled
+    CHECK(pbPoint(81, 50) == 16777215); // one pixel further out - not filled
+    CHECK(pbPoint(50, 70) == pbRGB(1, 2, 3)); // exact bottom-edge boundary - still filled
+    CHECK(pbPoint(50, 71) == 16777215); // one pixel further out - not filled
+    CHECK(pbPoint(10, 10) == 16777215); // well outside - untouched
+
+    pbFrontColor(pbRGB(11, 12, 13));
+    pbEllipse(150, 50, 20, 20);
+    CHECK(pbPoint(150, 50) == pbRGB(11, 12, 13)); // defaults to ambient FrontColor
+
+    CHECK(pbEllipse(1000, 1000, 10, 10, pbRGB(2, 2, 2)) == 0); // clips silently off-canvas
+
+    // A degenerate RoundBox where CornerHeight is exactly half the
+    // box's own Height - the exact case the earlier 1-pixel seam bug
+    // needed to tile its own corner/flat bands without a gap.
+    pbRoundBox(10, 10, 40, 20, 10, 10, pbRGB(4, 5, 6));
+    CHECK(pbPoint(30, 20) == pbRGB(4, 5, 6)); // center
+    CHECK(pbPoint(10, 10) == 16777215); // top-left corner, cut away
+    CHECK(pbPoint(49, 29) == 16777215); // bottom-right corner, cut away
+    CHECK(pbPoint(25, 10) == pbRGB(4, 5, 6)); // top edge, flat region
+    CHECK(pbPoint(10, 20) == pbRGB(4, 5, 6)); // left edge, right at the degenerate seam
+    CHECK(pbPoint(50, 10) == 16777215); // just outside the box entirely
+
+    pbFrontColor(pbRGB(21, 22, 23));
+    pbRoundBox(70, 10, 40, 20, 10, 10);
+    CHECK(pbPoint(90, 20) == pbRGB(21, 22, 23)); // defaults to ambient FrontColor
+
+    CHECK(pbRoundBox(1000, 1000, 10, 10, 2, 2, pbRGB(3, 3, 3)) == 0); // clips silently off-canvas
+
+    pbStopDrawing();
+    pbCloseWindow(946);
+}
+
+TEST_CASE("FillArea is a raster-level boundary fill (replacing every reachable pixel regardless "
+          "of its own original color), not a classic start-color-matching flood fill, stopping "
+          "only at a pixel that already matches BorderColor",
+          "[runtime][guilib]") {
+    // Oracle-verified directly, with the argument order confirmed the
+    // hard way: a first attempt at this with the two trailing color
+    // arguments the other way around (FillColor before BorderColor)
+    // flooded the *entire* reachable canvas with the "FillColor"
+    // argument, since nothing on the canvas ever matched that
+    // argument's own real role (the border/stop color) - the real
+    // signature is FillArea(x, y, BorderColor [, FillColor]), FillColor
+    // defaulting to the ambient FrontColor when omitted (BorderColor
+    // has no default - a 2-argument call is a real compile error).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(947, 10, 10, 320, 320, PBString("Test"));
+    pbCanvasGadget(0, 10, 10, 200, 150);
+    pbStartDrawing(pbCanvasOutput(0));
+
+    pbBox(10, 10, 50, 50, pbRGB(0, 0, 0)); // black outer box acts as the boundary
+    pbBox(20, 20, 20, 20, pbRGB(255, 255, 255)); // white inner region to fill
+    CHECK(pbFillArea(25, 25, pbRGB(0, 0, 0), pbRGB(9, 8, 7)) == 0);
+    CHECK(pbPoint(25, 25) == pbRGB(9, 8, 7)); // filled
+    CHECK(pbPoint(39, 39) == pbRGB(9, 8, 7)); // filled, near the inner region's own edge
+    CHECK(pbPoint(15, 15) == 0); // the black boundary itself - untouched
+    CHECK(pbPoint(100, 100) == 16777215); // far outside everything - untouched background
+
+    pbFrontColor(pbRGB(31, 32, 33));
+    pbFillArea(25, 25, pbRGB(0, 0, 0)); // FillColor omitted - defaults to ambient FrontColor
+    CHECK(pbPoint(25, 25) == pbRGB(31, 32, 33));
+
+    pbStopDrawing();
+    pbCloseWindow(947);
+}
+
 TEST_CASE("ExplorerListGadget lists a directory's own entries - directories always first, "
           "each group in raw directory-entry order, prefixed by a fixed '..' - with "
           "GetGadgetItemText/GetGadgetItemState (a plain file/directory type code, not a "

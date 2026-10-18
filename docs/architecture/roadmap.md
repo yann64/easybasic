@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-six slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-seven slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -4761,4 +4761,62 @@ existing defaults, which happen to match the oracle's own "always 0/empty" findi
 regardless of real content; `/tmp` (always present, absolute) stands in for "some real directory"
 and a hardcoded nonexistent absolute path covers the fallback case, confirmed line-for-line against
 the real oracle before being pinned.
+
+## M7b Implementation Notes (2D Drawing library extension: `Ellipse`/`RoundBox`/`FillArea`)
+
+**Scope landed**: the remaining common 2D Drawing primitives beyond `Box`/`Circle`/`Plot`/`Line`/
+`LineXY`/`DrawText`. All three default their own trailing `Color` to the ambient `FrontColor` when
+omitted and clip silently at the gadget's own edges, consistent with the rest of this family.
+
+**`Ellipse(x, y, xRadius, yRadius [, Color])`**: a filled disc, like `Circle` - oracle-verified
+directly along both axes independently: the exact boundary pixel at `x +/- xRadius`/`y +/- yRadius`
+is itself still filled, one pixel further out is not, with a perfectly crisp edge (no anti-aliased
+blend at all). A first attempt at this through Cairo's own `cairo_arc`+fill - even with
+antialiasing explicitly disabled - produced a visibly blended pixel one step in from the true edge
+that the real oracle never shows, and its own boundary landed at a different, scale-dependent place
+no single calibration factor could match against both axes' own confirmed data points at once.
+Rasterizes directly onto the backing surface's own raw pixel buffer instead (the same way
+`FillArea` below does), using the exact *integer*-pixel-offset ellipse test `dx^2 * yRadius^2 +
+dy^2 * xRadius^2 <= xRadius^2 * yRadius^2` - confirmed to exactly reproduce the oracle's own two
+known axis-aligned extent points. A diagonal (non-axis-aligned) point near the boundary was found
+to disagree with the real oracle by a pixel or two - the real rasterizer is most likely an
+incremental, Bresenham-style curve algorithm with its own off-axis rounding quirks, not a pure
+continuous quadratic test, and fully reverse-engineering that exact algorithm was judged not worth
+it. This is the same level of precision `Circle` itself already (silently) settled for before this
+slice - its own existing test only ever checked "one pixel inside" the edge, never the exact
+boundary.
+
+**`RoundBox(x, y, Width, Height, CornerWidth, CornerHeight [, Color])`**: oracle-verified directly -
+the 4 corners are genuinely cut away by a quarter-ellipse of the given corner dimensions (a corner
+pixel reads back as untouched background), while the flat portions of each edge are filled solidly,
+the same as a plain `Box`. Also rasterized directly onto the raw pixel buffer, using the same
+integer-inclusive ellipse test against each corner's own quarter-ellipse center. A real bug was
+found and fixed while implementing this: an initial version split the box into corner/flat bands
+using asymmetric margins (`y + height - 1 - cornerHeight` for the bottom margin, no `- 1` on the
+top), which left a genuine 1-pixel-wide seam unfilled along the flat edge in the degenerate case
+where a corner dimension is exactly half the box's own width/height (confirmed directly: a
+`RoundBox` with `Height=20`/`CornerHeight=10` read back as unfilled at a point the real oracle fills
+solidly). Fixed by using consistent, gap-free margins (`<` on the top/left side, `>=` on the
+bottom/right) that tile the box into a 3x3 grid with no gap or overlap in any case.
+
+**`FillArea(x, y, BorderColor [, FillColor])`**: a raster-level *boundary* fill, not a classic
+"replace pixels matching the start pixel's own color" flood fill - oracle-verified directly, the
+hard way: a first attempt at this called with the two trailing color arguments in the *other* order
+(`FillColor` before `BorderColor`) flooded the *entire* reachable canvas with what was meant to be
+the fill color, since nothing on the canvas ever matched that argument's own real role (the
+border/stop color) - confirming every *reachable* pixel gets overwritten regardless of its own
+original color, stopping only at pixels that already match `BorderColor` exactly (left untouched,
+never painted over). `FillColor` defaults to the ambient `FrontColor` when omitted; `BorderColor`
+has no default - oracle-verified directly (a 2-argument call is a real "Incorrect number of
+parameters" compile error). Cairo has no flood-fill primitive at all, so this operates directly on
+the backing surface's own raw pixel buffer, the same way `pbPoint` already reads a single one - an
+iterative (not recursive, to avoid a stack overflow on a large area) 4-directionally-connected
+flood fill.
+
+**Testing**: one new `runtime_guilib_test.cpp` case per function pair (`Ellipse`/`RoundBox` sharing
+one, `FillArea` its own), covering the confirmed axis-aligned extent, the degenerate `RoundBox` seam
+case, `FrontColor` defaulting, and off-canvas clipping. One new golden e2e case
+(`tests/e2e/gui_canvas_draw_ext2`), confirmed line-for-line against the real oracle (aside from the
+two creation-style calls' own native-handle-ish return values, normalized to a clean `0` per this
+project's established divergence) before being pinned.
 

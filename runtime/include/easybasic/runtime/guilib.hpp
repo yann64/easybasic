@@ -2664,6 +2664,17 @@ inline void cairoSetSourceFromColor(cairo_t* cr, std::int64_t color) {
     cairo_set_source_rgb(cr, r, g, b);
 }
 
+/// Converts this project's own `0x00BBGGRR` `RGB` packing to the backing
+/// surface's native `CAIRO_FORMAT_ARGB32` pixel layout (native-endian
+/// `0xAARRGGBB`, always fully opaque here) - the inverse of `pbPoint`'s
+/// own unpacking.
+inline std::uint32_t colorToArgb(std::int64_t color) {
+    std::uint32_t r = static_cast<std::uint32_t>(color & 0xff);
+    std::uint32_t g = static_cast<std::uint32_t>((color >> 8) & 0xff);
+    std::uint32_t b = static_cast<std::uint32_t>((color >> 16) & 0xff);
+    return 0xFF000000U | (r << 16) | (g << 8) | b;
+}
+
 } // namespace detail
 
 /// See `detail::canvasGadgetStateKey()`'s own doc comment for the full set
@@ -2825,6 +2836,198 @@ inline std::int64_t pbPlot(std::int64_t x, std::int64_t y, std::int64_t color = 
     detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
     cairo_rectangle(drawing.cr, static_cast<double>(x), static_cast<double>(y), 1.0, 1.0);
     cairo_fill(drawing.cr);
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+/// 2D Drawing library extension: `Ellipse`/`RoundBox`. Both default
+/// their own trailing `Color` to the ambient `FrontColor` when omitted,
+/// and clip silently at the gadget's own edges (like `Box`/`Circle`),
+/// consistent with the rest of this family. No return value (like every
+/// other drawing command here).
+///
+/// `Ellipse(x, y, xRadius, yRadius [, Color])` is a filled disc (like
+/// `Circle`, not an outline) - oracle-verified directly along both
+/// axes: the exact boundary pixel at `x + xRadius`/`y + yRadius` is
+/// itself still filled, but one pixel further out is not - i.e. it
+/// spans `[x - xRadius, x + xRadius]`/`[y - yRadius, y + yRadius]`
+/// *inclusive* on every side, with a perfectly crisp edge (no blended/
+/// anti-aliased pixel at the boundary at all - confirmed directly: an
+/// earlier attempt at this through Cairo's own `cairo_arc`+fill, even
+/// with antialiasing disabled, produced a visibly blended pixel one
+/// step in from the true edge that the real oracle never does, and its
+/// own boundary itself landed at a different, scale-dependent place
+/// that no simple, single correction factor could calibrate against
+/// both axes' own confirmed data points at once). Rasterizes directly
+/// onto the backing surface's own raw pixel buffer instead, the same
+/// way `pbFillArea` already does, using the exact *integer*-pixel-
+/// offset ellipse test `dx^2 * yRadius^2 + dy^2 * xRadius^2 <=
+/// xRadius^2 * yRadius^2` - confirmed to exactly reproduce the oracle's
+/// own two known axis-aligned extent points above. **Scope note**: a
+/// diagonal (non-axis-aligned) point near the boundary was found to
+/// disagree with the real oracle by a pixel or two - the real
+/// rasterizer is most likely an incremental, Bresenham-style curve
+/// algorithm with its own rounding quirks off-axis, not a pure
+/// continuous quadratic test, and fully reverse-engineering that exact
+/// algorithm was judged not worth it here. This is the same level of
+/// precision `Circle` itself already (silently) settled for, before
+/// this slice - exact at the confirmed extent, a close approximation
+/// elsewhere along the curve.
+inline std::int64_t pbEllipse(std::int64_t x, std::int64_t y, std::int64_t xRadius, std::int64_t yRadius,
+                               std::int64_t color = -1) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0;
+    }
+    cairo_surface_t* backing = detail::canvasBackingSurface(drawing.drawingArea);
+    int w = cairo_image_surface_get_width(backing);
+    int h = cairo_image_surface_get_height(backing);
+    cairo_surface_flush(backing);
+    auto* data = cairo_image_surface_get_data(backing);
+    int stride = cairo_image_surface_get_stride(backing);
+    std::uint32_t argb = detail::colorToArgb(color == -1 ? drawing.frontColor : color);
+    std::int64_t xr2 = xRadius * xRadius;
+    std::int64_t yr2 = yRadius * yRadius;
+    std::int64_t limit = xr2 * yr2;
+    std::int64_t minPx = std::max<std::int64_t>(0, x - xRadius);
+    std::int64_t maxPx = std::min<std::int64_t>(w - 1, x + xRadius);
+    std::int64_t minPy = std::max<std::int64_t>(0, y - yRadius);
+    std::int64_t maxPy = std::min<std::int64_t>(h - 1, y + yRadius);
+    for (std::int64_t py = minPy; py <= maxPy; ++py) {
+        std::int64_t dy = py - y;
+        auto* row = reinterpret_cast<std::uint32_t*>(data + py * stride);
+        for (std::int64_t px = minPx; px <= maxPx; ++px) {
+            std::int64_t dx = px - x;
+            if (dx * dx * yr2 + dy * dy * xr2 <= limit) {
+                row[px] = argb;
+            }
+        }
+    }
+    cairo_surface_mark_dirty(backing);
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+/// `RoundBox(x, y, Width, Height, CornerWidth, CornerHeight [, Color])` -
+/// oracle-verified directly: the 4 corners are genuinely cut away by a
+/// quarter-ellipse of the given corner dimensions (a corner pixel reads
+/// back as untouched background, not the fill color), while the flat
+/// portions of each edge (away from the corners) are filled solidly,
+/// the same as a plain `Box`. Rasterized directly onto the raw pixel
+/// buffer, the same way `Ellipse` now is, for the same crisp-corner
+/// reason - each corner quadrant uses the exact same integer-inclusive
+/// ellipse test `Ellipse` itself does, against its own quarter-ellipse
+/// center.
+inline std::int64_t pbRoundBox(std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height,
+                                std::int64_t cornerWidth, std::int64_t cornerHeight, std::int64_t color = -1) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0;
+    }
+    cairo_surface_t* backing = detail::canvasBackingSurface(drawing.drawingArea);
+    int w = cairo_image_surface_get_width(backing);
+    int h = cairo_image_surface_get_height(backing);
+    cairo_surface_flush(backing);
+    auto* data = cairo_image_surface_get_data(backing);
+    int stride = cairo_image_surface_get_stride(backing);
+    std::uint32_t argb = detail::colorToArgb(color == -1 ? drawing.frontColor : color);
+    std::int64_t cw2 = cornerWidth * cornerWidth;
+    std::int64_t ch2 = cornerHeight * cornerHeight;
+    std::int64_t cornerLimit = cw2 * ch2;
+    std::int64_t minPx = std::max<std::int64_t>(0, x);
+    std::int64_t maxPx = std::min<std::int64_t>(w - 1, x + width - 1);
+    std::int64_t minPy = std::max<std::int64_t>(0, y);
+    std::int64_t maxPy = std::min<std::int64_t>(h - 1, y + height - 1);
+    // Margins tile the box into a 3x3 grid with no gap or overlap
+    // between the "corner" and "flat" bands, even in the degenerate
+    // case where a corner dimension is exactly half the box's own
+    // width/height (confirmed necessary: an earlier version of this
+    // split, using an asymmetric `-1` on the bottom/right margins
+    // only, left a 1-pixel-wide seam unfilled along the flat edge in
+    // exactly that case).
+    std::int64_t leftMargin = x + cornerWidth;
+    std::int64_t rightMargin = x + width - cornerWidth;
+    std::int64_t topMargin = y + cornerHeight;
+    std::int64_t bottomMargin = y + height - cornerHeight;
+    for (std::int64_t py = minPy; py <= maxPy; ++py) {
+        bool inTopBand = py < topMargin;
+        bool inBottomBand = py >= bottomMargin;
+        auto* row = reinterpret_cast<std::uint32_t*>(data + py * stride);
+        for (std::int64_t px = minPx; px <= maxPx; ++px) {
+            if (inTopBand || inBottomBand) {
+                bool inLeftBand = px < leftMargin;
+                bool inRightBand = px >= rightMargin;
+                if (inLeftBand || inRightBand) {
+                    std::int64_t cx = inLeftBand ? leftMargin : rightMargin;
+                    std::int64_t cy = inTopBand ? topMargin : bottomMargin;
+                    std::int64_t dx = px - cx;
+                    std::int64_t dy = py - cy;
+                    if (dx * dx * ch2 + dy * dy * cw2 > cornerLimit) {
+                        continue;
+                    }
+                }
+            }
+            row[px] = argb;
+        }
+    }
+    cairo_surface_mark_dirty(backing);
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+/// `FillArea(x, y, BorderColor [, FillColor])` - a raster-level boundary
+/// fill, not a classic "replace pixels matching the start pixel's own
+/// color" flood fill - oracle-verified directly: starting from a pixel
+/// of one color, every *reachable* pixel gets overwritten with
+/// `FillColor` regardless of its own original color, stopping only at
+/// pixels that already match `BorderColor` exactly (which are left
+/// untouched, never painted over). `FillColor` defaults to the ambient
+/// `FrontColor` when omitted; `BorderColor` has no default - oracle-
+/// verified directly (a 2-argument call is a real "Incorrect number of
+/// parameters" compile error). Cairo has no flood-fill primitive at
+/// all, so this operates directly on the backing surface's own raw
+/// pixel buffer, the same way `pbPoint` already reads a single one -
+/// an iterative (not recursive, to avoid a stack overflow on a large
+/// area), 4-directionally-connected flood fill.
+inline std::int64_t pbFillArea(std::int64_t x, std::int64_t y, std::int64_t borderColor, std::int64_t fillColor = -1) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0;
+    }
+    cairo_surface_t* backing = detail::canvasBackingSurface(drawing.drawingArea);
+    int w = cairo_image_surface_get_width(backing);
+    int h = cairo_image_surface_get_height(backing);
+    if (x < 0 || y < 0 || x >= w || y >= h) {
+        return 0; // Oracle-verified fatal "outside the drawing area" error - not replicated.
+    }
+    std::int64_t fill = fillColor == -1 ? drawing.frontColor : fillColor;
+    std::uint32_t borderArgb = detail::colorToArgb(borderColor);
+    std::uint32_t fillArgb = detail::colorToArgb(fill);
+    cairo_surface_flush(backing);
+    auto* data = cairo_image_surface_get_data(backing);
+    int stride = cairo_image_surface_get_stride(backing);
+    auto pixelAt = [&](int px, int py) -> std::uint32_t* {
+        return reinterpret_cast<std::uint32_t*>(data + static_cast<std::ptrdiff_t>(py) * stride) + px;
+    };
+    if (*pixelAt(static_cast<int>(x), static_cast<int>(y)) == borderArgb) {
+        return 0; // Starting pixel already matches BorderColor - nothing to fill.
+    }
+    std::vector<std::pair<int, int>> stack;
+    stack.emplace_back(static_cast<int>(x), static_cast<int>(y));
+    while (!stack.empty()) {
+        auto [px, py] = stack.back();
+        stack.pop_back();
+        if (px < 0 || py < 0 || px >= w || py >= h) {
+            continue;
+        }
+        std::uint32_t* pixel = pixelAt(px, py);
+        if (*pixel == borderArgb || *pixel == fillArgb) {
+            continue;
+        }
+        *pixel = fillArgb;
+        stack.emplace_back(px + 1, py);
+        stack.emplace_back(px - 1, py);
+        stack.emplace_back(px, py + 1);
+        stack.emplace_back(px, py - 1);
+    }
+    cairo_surface_mark_dirty(backing);
     return 0; // Oracle-verified no return value ("Aucune").
 }
 
