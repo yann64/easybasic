@@ -3288,6 +3288,140 @@ inline std::int64_t pbExplorerComboGadget(std::int64_t gadgetId, std::int64_t x,
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
+namespace detail {
+
+/// `ExplorerTreeGadget` - oracle-verified directly. Its own PB-level API
+/// surface is almost entirely a dead end, the same way
+/// `ExplorerComboGadget`'s own is: `CountGadgetItems`/`GetGadgetItemText`/
+/// `GetGadgetItemState` all stay `0`/empty/`0` *regardless of the
+/// browsed directory's own real content* (confirmed directly against
+/// several different real, populated directories, not just an empty
+/// one) - real PB's own API can't query this gadget's own tree contents
+/// at all, the same situation `ExplorerComboGadget`'s own dropdown is
+/// in. `GetGadgetState` is a plain fixed `2` - confirmed unaffected by
+/// any `SetGadgetState` attempt, and the same regardless of the browsed
+/// directory too (a *different* fixed value than `ExplorerListGadget`'s
+/// own `-1` or `ExplorerComboGadget`'s own `0` - all three gadgets in
+/// this family have their own distinct fixed `GetGadgetState`).
+///
+/// **`GetGadgetText`/`SetGadgetText` have their own normalization rule,
+/// simpler than `ExplorerListGadget`'s own**: the given directory always
+/// gets a trailing slash appended if missing (confirmed: creating one
+/// with a real, existing directory but no trailing slash still reads
+/// back with one) - no `ExplorerListGadget`-style "treat the last
+/// component as a file-name filter against the parent" at all. If the
+/// resulting path isn't a real, *absolute*, existing directory, it
+/// falls all the way back to `"/"` instead - confirmed directly with a
+/// deliberately nonexistent absolute path (reads back as `"/"`, not the
+/// given path's own parent either). **A relative `Directory$` has its
+/// own separate, quirky real behavior, deliberately not replicated
+/// here**: confirmed directly it reads back as *empty* (not `"/"`) when
+/// given with no trailing slash, but still falls back to `"/"` (not the
+/// real, resolved directory) *even when it names a real, existing
+/// directory* once a trailing slash is added - i.e. real PB's own
+/// directory-validation here appears to only ever succeed for an
+/// absolute path, full stop, regardless of whether a relative one
+/// actually exists. This implementation instead resolves a relative
+/// path the same way every other filesystem-facing function already
+/// does (relative to the real process working directory, via
+/// `std::filesystem`) - a deliberate, narrow divergence rather than
+/// reverse-engineering that specific asymmetry further, since a
+/// relative path isn't a realistic way to drive a filesystem-browsing
+/// gadget in the first place.
+///
+/// Since no PB-level API can ever actually see this gadget's own tree
+/// contents, this is implemented as a real `GtkTreeStore` populated
+/// with the browsed directory's own top-level *subdirectories only*
+/// (no files, no recursive/lazy sub-expansion) - genuinely useful for
+/// real interactive use without the complexity of a lazy-expansion
+/// implementation that no oracle probe could ever verify either way; a
+/// deliberately narrow, documented scope decision, not an oracle
+/// finding.
+inline const char* gadgetKindExplorerTree() { return "explorertree"; }
+
+struct ExplorerTreeState {
+    std::string directory;
+};
+
+inline const char* explorerTreeStateKey() { return "pbcxx-explorertree-state"; }
+
+inline GtkWidget* explorerTreeTreeView(GtkWidget* stored) {
+    if (GTK_IS_SCROLLED_WINDOW(stored) == 0) {
+        return nullptr;
+    }
+    GtkWidget* inner = gtk_bin_get_child(GTK_BIN(stored));
+    if (inner == nullptr || GTK_IS_TREE_VIEW(inner) == 0) {
+        return nullptr;
+    }
+    auto* kind = static_cast<const char*>(g_object_get_data(G_OBJECT(inner), gadgetKindKey()));
+    return (kind != nullptr && g_strcmp0(kind, gadgetKindExplorerTree()) == 0) ? inner : nullptr;
+}
+
+inline ExplorerTreeState* explorerTreeState(GtkWidget* treeView) {
+    return static_cast<ExplorerTreeState*>(g_object_get_data(G_OBJECT(treeView), explorerTreeStateKey()));
+}
+
+/// See `gadgetKindExplorerTree()`'s own doc comment for the oracle-
+/// verified normalization rule this implements.
+inline std::string normalizeExplorerTreeDirectory(const std::string& input) {
+    std::string directory = input;
+    if (directory.empty() || directory.back() != '/') {
+        directory += '/';
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec)) {
+        directory = "/";
+    }
+    return directory;
+}
+
+inline void populateExplorerTreeTopLevel(GtkTreeStore* store, const std::string& directory) {
+    gtk_tree_store_clear(store);
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(directory, fs::directory_options::skip_permission_denied, ec)) {
+        std::string name = entry.path().filename().string();
+        if (!name.empty() && name.front() == '.') {
+            continue;
+        }
+        if (!entry.is_directory(ec)) {
+            continue;
+        }
+        GtkTreeIter iter;
+        gtk_tree_store_append(store, &iter, nullptr);
+        gtk_tree_store_set(store, &iter, 0, name.c_str(), -1);
+    }
+}
+
+} // namespace detail
+
+inline std::int64_t pbExplorerTreeGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                           std::int64_t height, const PBString& directory,
+                                           std::int64_t /*flags*/ = 0) {
+    detail::ensureGtkInit();
+    GtkTreeStore* store = gtk_tree_store_new(1, G_TYPE_STRING);
+    GtkWidget* treeView = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    g_object_unref(store);
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(treeView), FALSE);
+    GtkTreeViewColumn* column = gtk_tree_view_column_new_with_attributes("", gtk_cell_renderer_text_new(), "text", 0, nullptr);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(treeView), column);
+    g_object_set_data(G_OBJECT(treeView), detail::gadgetKindKey(),
+                       const_cast<gpointer>(static_cast<const void*>(detail::gadgetKindExplorerTree())));
+
+    auto* state = new detail::ExplorerTreeState();
+    state->directory = detail::normalizeExplorerTreeDirectory(directory.bytes());
+    g_object_set_data_full(G_OBJECT(treeView), detail::explorerTreeStateKey(), state,
+                            [](gpointer p) { delete static_cast<detail::ExplorerTreeState*>(p); });
+    detail::populateExplorerTreeTopLevel(store, state->directory);
+
+    GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scrolled), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(scrolled), treeView);
+    gtk_widget_show(treeView);
+
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, scrolled) ? 1 : 0;
+}
+
 inline std::int64_t pbFrameGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
                                    std::int64_t height, const PBString& text, std::int64_t /*flags*/ = 0) {
     detail::ensureGtkInit();
@@ -5038,6 +5172,15 @@ inline PBString pbGetGadgetText(std::int64_t gadgetId) {
     // directory path itself, never a selected item's own text (the same
     // behavior `ExplorerComboGadget`'s own bare `GtkEntry` already gets
     // for free from the generic `GTK_IS_ENTRY` branch below).
+    // `ExplorerTreeGadget` - oracle-verified directly: the browsed
+    // directory, already normalized (a trailing slash always present,
+    // falling back to "/" for a nonexistent path) at the time it was
+    // set.
+    if (GtkWidget* explorerTreeView = detail::explorerTreeTreeView(widget)) {
+        if (const auto* state = detail::explorerTreeState(explorerTreeView)) {
+            return PBString(state->directory);
+        }
+    }
     if (GtkWidget* explorerView = detail::explorerListTreeView(widget)) {
         if (const auto* state = detail::explorerListState(explorerView)) {
             return PBString(state->directory);
@@ -5165,6 +5308,18 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
         return 0;
     }
     GtkWidget* widget = it->second;
+    // `ExplorerTreeGadget` - oracle-verified directly: `SetGadgetText`
+    // re-browses to the given directory, through the same
+    // normalization rule (trailing slash added, falls back to "/" for
+    // a nonexistent path) its own creation already uses.
+    if (GtkWidget* explorerTreeView = detail::explorerTreeTreeView(widget)) {
+        if (auto* state = detail::explorerTreeState(explorerTreeView)) {
+            state->directory = detail::normalizeExplorerTreeDirectory(text.bytes());
+            auto* store = GTK_TREE_STORE(gtk_tree_view_get_model(GTK_TREE_VIEW(explorerTreeView)));
+            detail::populateExplorerTreeTopLevel(store, state->directory);
+        }
+        return 1;
+    }
     // `ExplorerListGadget` - oracle-verified directly: `SetGadgetText`
     // re-browses to the given directory (confirmed: the item count and
     // listing both change to match the new directory's own contents).
@@ -5344,6 +5499,13 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     // no branch of its own needed here.)
     if (detail::explorerListTreeView(it->second) != nullptr) {
         return -1;
+    }
+    // `ExplorerTreeGadget` - oracle-verified directly: stays a fixed
+    // `2` regardless of any `SetGadgetState` attempt or the browsed
+    // directory's own content - a third, distinct fixed value from its
+    // own two siblings' own (`-1`/`0`).
+    if (detail::explorerTreeTreeView(it->second) != nullptr) {
+        return 2;
     }
     // M7b's twenty-first GUI slice: `IPAddressGadget` re-parses its own
     // currently displayed (always already-canonical) text and packs the

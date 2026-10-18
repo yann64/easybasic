@@ -3339,3 +3339,56 @@ TEST_CASE("ExplorerComboGadget is a plain text display of the browsed directory 
     fs::remove_all(dir);
     fs::remove_all(dir2);
 }
+
+TEST_CASE("ExplorerTreeGadget's own PB-level API surface is almost entirely a dead end - "
+          "CountGadgetItems/GetGadgetItemText/GetGadgetItemState stay 0/empty/0 regardless of "
+          "real content, and GetGadgetState is a fixed 2, distinct from its two siblings' own",
+          "[runtime][guilib]") {
+    // Oracle-verified directly, against several different real,
+    // populated directories, not just an empty one. GetGadgetText/
+    // SetGadgetText have their own simpler normalization rule than
+    // ExplorerListGadget's own: always ensure a trailing slash, and
+    // fall back to "/" (not the given path's own parent) if the
+    // resulting path isn't a real, existing directory.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    namespace fs = std::filesystem;
+    fs::path dir = fs::temp_directory_path() / "pbcxx_explorertree_test";
+    fs::remove_all(dir);
+    fs::create_directories(dir / "subdir_a");
+    fs::create_directories(dir / "subdir_b");
+    { std::ofstream(dir / "a_file.txt"); }
+
+    pbOpenWindow(945, 10, 10, 320, 320, PBString("Test"));
+    CHECK(pbExplorerTreeGadget(0, 10, 10, 200, 150, PBString(dir.string())) == 1);
+
+    // Trailing slash added even though it was omitted above.
+    CHECK(pbGetGadgetText(0).bytes() == dir.string() + "/");
+    CHECK(pbGetGadgetState(0) == 2);
+    CHECK(pbSetGadgetState(0, 0) == 0);
+    CHECK(pbGetGadgetState(0) == 2); // unaffected
+
+    // A real, populated directory still reports no items via the
+    // generic item-access API at all.
+    CHECK(pbCountGadgetItems(0) == 0);
+    CHECK(pbGetGadgetItemText(0, 0).bytes() == "");
+    CHECK(pbGetGadgetItemState(0, 0) == 0);
+
+    // A nonexistent directory falls back to "/", not its own parent.
+    CHECK(pbExplorerTreeGadget(1, 10, 170, 200, 100, PBString("/nonexistent/path/at/all/")) == 1);
+    CHECK(pbGetGadgetText(1).bytes() == "/");
+
+    // SetGadgetText re-browses through the same normalization rule.
+    fs::path dir2 = fs::temp_directory_path() / "pbcxx_explorertree_test2";
+    fs::remove_all(dir2);
+    fs::create_directories(dir2);
+    pbSetGadgetText(0, PBString(dir2.string()));
+    CHECK(pbGetGadgetText(0).bytes() == dir2.string() + "/");
+    pbSetGadgetText(0, PBString("/nonexistent/again/"));
+    CHECK(pbGetGadgetText(0).bytes() == "/");
+
+    pbCloseWindow(945);
+    fs::remove_all(dir);
+    fs::remove_all(dir2);
+}

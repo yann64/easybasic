@@ -1,0 +1,14 @@
+[Debugger]  1
+[Debugger]  [/tmp/]
+[Debugger]  2
+[Debugger]  2
+[Debugger]  0
+[Debugger]  []
+[Debugger]  0
+[Debugger]  --- nonexistent absolute path ---
+[Debugger]  1
+[Debugger]  [/]
+[Debugger]  --- SetGadgetText re-browses ---
+[Debugger]  [/tmp/]
+[Debugger]  [/]
+[Debugger]  done

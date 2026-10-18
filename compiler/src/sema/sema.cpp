@@ -653,6 +653,15 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
           TypeSuffix::String, TypeSuffix::Integer},
          6},
+        // `ExplorerTreeGadget` - oracle-verified same 6-required-arg
+        // shape as its two siblings above. See pbExplorerTreeGadget's
+        // own doc comment in guilib.hpp: its own PB-level API surface is
+        // almost entirely a dead end, the same way `ExplorerComboGadget`'s
+        // own is.
+        {"explorertreegadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer},
+         6},
         // M7b's twenty-fourth GUI slice: ShortcutGadget. All 6 arguments
         // required - oracle-verified (both a 5- and a 7-argument call are
         // real "Incorrect number of parameters" compile errors). See
@@ -814,7 +823,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "dategadget", "ipaddressgadget", "canvasgadget", "shortcutgadget",
         "canvasoutput", "startdrawing", "stopdrawing", "frontcolor", "backcolor", "box", "circle", "plot", "point",
         "line", "linexy", "drawtext", "textwidth", "textheight",
-        "explorerlistgadget", "explorercombogadget",
+        "explorerlistgadget", "explorercombogadget", "explorertreegadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
