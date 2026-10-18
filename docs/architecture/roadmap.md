@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-two slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core - see M7b notes); the 2D Drawing library, further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library, `ShortcutGadget` (creation/constants only - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -4472,4 +4472,79 @@ vanishingly unlikely that specific literal is in real code.
 new golden e2e case (`tests/e2e/gui_canvas_draw`) exercises the same full sequence end to end
 through `pbcxx`, confirmed line-for-line against the real oracle before being pinned - via the
 plain `run_gui_case.sh`, not the interactive runner, since none of this needed synthetic input.
+
+## M7b Implementation Notes (GUI core, twenty-fourth slice: `ShortcutGadget`)
+
+**Scope landed**: creation (`ShortcutGadget(#Gadget, x, y, Width, Height, Shortcut)`, all 6
+arguments required - oracle-verified: both a 5- and a 7-argument call are real "Incorrect number of
+parameters" compile errors) and every `#PB_Shortcut_*`/`#PB_GadgetType_Shortcut` constant.
+**Deliberately not landed: the shortcut itself ever actually activating** - see below.
+
+**A brand-new command, first appearing in this PureBasic 6.50 beta** - no prior mention anywhere in
+this project's own oracle-testing history, and no local documentation exists for it either (this
+dev machine's own PureBasic install has no help files, only a binary IDE "resident" file used for
+autocomplete, which has every `#PB_Shortcut_*` constant name but not `ShortcutGadget`'s own
+signature - confirmed by searching it directly).
+
+**Constants are oracle-verified via a direct `Debug #PB_Shortcut_Xxx` probe, covering a
+representative sample of every category** (letter, digit, F-key, numpad digit, named key,
+modifier): the key codes are plain raw GDK keysyms (letters/digits are their own ASCII codes) -
+confirmed directly for `F1`/`A`/`Z`/`0`/`9`/`Escape`/`Return`/`Tab`/`Delete`/the four arrow keys/
+`Space`/`Back`/`Pad0`/`Multiply`/`Home`/`End`/`Insert`/`PageUp`/`PageDown`/`Numlock`/`Scroll`/
+`Print`/`Pause`/`Clear`/`Select`/`Execute`/`Help`/the five numpad operators/`B`/`1`/`5`/`F10`/`F13`/
+`F20`/`F24`/`Pad1`/`Pad9` - the rest of each sequential family (the untested letters, digits,
+F-keys, numpad digits) is filled in from that same confirmed pattern, not individually re-probed.
+Genuine exceptions, also oracle-confirmed: `#PB_Shortcut_Capital`/`Snapshot`/`Menu` are really `0`
+on this oracle's own Linux build (the same "real PB constant, no Linux equivalent" situation
+`#PB_Font_StrikeOut`/`Underline` already have), and `Apps`/`LeftWindows`/`RightWindows` are small,
+non-keysym-shaped values (`93`/`91`/`92`) with no real `GDK_KEY_Super_L`-style mapping backing
+them. `#PB_Shortcut_Command` equals `#PB_Shortcut_Control` exactly (both `131072`, confirmed, not a
+typo - `Command` is a macOS-only concept, aliased to `Control` elsewhere). `#PB_Shortcut_All`=`-1`.
+
+**The shortcut was never observed to actually activate, despite an unusually thorough
+investigation** - this is the real story of this slice. In order:
+  - Window-manager/active-window-state issues, tested on a private `Xvfb` display both with and
+    without a real window manager (`fluxbox`) running on it.
+  - A competing focused widget stealing the key event - tested bare, and with a `StringGadget`
+    holding focus via `SetActiveGadget`.
+  - A real `xdotool` bug found and worked around along the way: `xdotool key F1` silently sends
+    **Alt+F1**, not plain F1, on this setup (confirmed directly via `xev`) - every later probe used
+    raw keycodes (`xdotool keydown`/`keyup <code>`) instead, bypassing that entirely.
+  - A hand-rolled, plain `GtkAccelGroup` test program (no PureBasic involved at all) *does* fire
+    correctly under the exact same real-X-focus conditions - ruling out a general GTK/Xvfb
+    accelerator limitation.
+  - Most conclusively: on this project's own **real desktop display** (not a virtual one), with
+    confirmed real X keyboard focus on the gadget's own window (verified via `xdotool
+    getwindowfocus` immediately before each attempt), a genuine **physical keypress on real
+    hardware** - not synthetic input of any kind - still produced no event at all.
+
+Given this is a brand-new command in a beta compiler release, this project's own working theory is
+a genuine bug or incomplete feature in this specific version's Linux backend - but this is
+deliberately recorded as an open question, not a confirmed root cause, consistent with this
+project's own "never guess when genuinely uncertain" methodology. Event-firing support is left
+unimplemented rather than guessed at.
+
+**Implementation**: a plain, inert, invisible `GtkDrawingArea` (nothing drawn on it, no signal
+connected at all) placed the usual way via `placeGadget` - `IsGadget`/`FreeGadget`/`GadgetX`/`Y`/
+`Width`/`Height` all work for free via the same shared infrastructure every other gadget already
+uses.
+
+**A real, pre-existing bug found and fixed along the way, unrelated to `ShortcutGadget` itself**:
+`pbFreeGadget` on a plain (non-container-nested) gadget numbered exactly `0` crashed with a stack
+overflow. Root cause: `placeGadget` tagged every *top-level* gadget's own "which container is this
+nested inside" marker with `0` as the "not nested in anything" sentinel - genuinely indistinguishable
+from a *real* container gadget whose own `#Gadget` id happens to be `0`. `pruneContainerGadgets(0)`
+(called by `pbFreeGadget(0)`) then misread that gadget's own sentinel as "this gadget is nested
+inside container `0`" - including *itself* - and recursed into itself forever; the same bug would
+have just as wrongly swept up *any other* unrelated top-level gadget too, had the recursion not
+crashed first. Fixed by using `-1` instead of `0` as the "not nested" sentinel (a real container's
+own id is conventionally always `>= 0` in idiomatic PB code, so this can't collide) - caught by this
+slice's own unit test, the first one anywhere in this project to call `FreeGadget` on a plain gadget
+numbered `0`.
+
+**Testing**: one new `runtime_guilib_test.cpp` case (creation, `IsGadget`, `FreeGadget` - the parts
+that work), plus the `pbFreeGadget` sentinel-bug regression it incidentally caught. One new golden
+e2e case (`tests/e2e/gui_shortcut`) exercises creation/`IsGadget`/`FreeGadget` and every constant,
+confirmed line-for-line against the real oracle before being pinned - no interactive case was added
+at all, since there's nothing interactive to regression-test yet.
 

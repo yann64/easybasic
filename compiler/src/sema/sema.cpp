@@ -612,6 +612,19 @@ void Sema::registerGuiLibBuiltins() {
          3},
         {"plot", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"point", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        // M7b's twenty-fourth GUI slice: ShortcutGadget. All 6 arguments
+        // required - oracle-verified (both a 5- and a 7-argument call are
+        // real "Incorrect number of parameters" compile errors). See
+        // pbShortcutGadget's own doc comment in guilib.hpp: creation and
+        // every #PB_Shortcut_*/#PB_GadgetType_Shortcut constant are
+        // oracle-verified, but the shortcut itself never activates in
+        // this project's own testing - not even via real physical
+        // keyboard input - so firing support is deliberately not
+        // implemented.
+        {"shortcutgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         6},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -757,7 +770,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
         "setgadgetitemattribute", "optiongadget", "progressbargadget", "spingadget", "trackbargadget",
         "scrollbargadget", "imagegadget", "buttonimagegadget", "calendargadget", "hyperlinkgadget", "editorgadget",
-        "dategadget", "ipaddressgadget", "canvasgadget",
+        "dategadget", "ipaddressgadget", "canvasgadget", "shortcutgadget",
         "canvasoutput", "startdrawing", "stopdrawing", "frontcolor", "backcolor", "box", "circle", "plot", "point",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
@@ -1139,6 +1152,67 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         // shift-state-aware character-decoding logic, a narrower,
         // deliberately deferred gap).
         {"pb_eventtype_input", 65549},
+        // ShortcutGadget (M7b's twenty-fourth GUI slice) - oracle-verified
+        // via a direct `Debug #PB_Shortcut_Xxx` probe, covering every
+        // category (letter, digit, F-key, numpad key, named key,
+        // modifier) - the key codes are plain raw GDK keysyms (letters/
+        // digits are ASCII), confirmed directly for a representative
+        // sample of each category; the rest of each sequential family
+        // (the untested letters/digits/F-keys/numpad digits) is filled in
+        // from that same confirmed pattern, not individually re-probed.
+        // `#PB_Shortcut_Capital`/`Snapshot`/`Menu` are genuinely `0` on
+        // this oracle's own Linux build (confirmed, not a probe mistake -
+        // the same "real PB constant, no Linux equivalent" situation
+        // `#PB_Font_StrikeOut`/`Underline` already have). `Apps`/
+        // `LeftWindows`/`RightWindows` are small, non-keysym-shaped
+        // values (`93`/`91`/`92`) - confirmed real, but not independently
+        // meaningful (no real GDK_KEY_Super_L-style mapping backs them).
+        // `#PB_Shortcut_Command`=`#PB_Shortcut_Control` (both `131072`) -
+        // confirmed the same value, not a typo. `#PB_Shortcut_All`=`-1`.
+        //
+        // Despite all of this, the shortcut itself was never observed to
+        // actually activate in this project's own testing - see
+        // pbShortcutGadget's own doc comment in guilib.hpp.
+        {"pb_shortcut_control", 131072},
+        {"pb_shortcut_shift", 65536},
+        {"pb_shortcut_alt", 262144},
+        {"pb_shortcut_command", 131072},
+        {"pb_shortcut_all", -1},
+        {"pb_shortcut_a", 65}, {"pb_shortcut_b", 66}, {"pb_shortcut_c", 67}, {"pb_shortcut_d", 68},
+        {"pb_shortcut_e", 69}, {"pb_shortcut_f", 70}, {"pb_shortcut_g", 71}, {"pb_shortcut_h", 72},
+        {"pb_shortcut_i", 73}, {"pb_shortcut_j", 74}, {"pb_shortcut_k", 75}, {"pb_shortcut_l", 76},
+        {"pb_shortcut_m", 77}, {"pb_shortcut_n", 78}, {"pb_shortcut_o", 79}, {"pb_shortcut_p", 80},
+        {"pb_shortcut_q", 81}, {"pb_shortcut_r", 82}, {"pb_shortcut_s", 83}, {"pb_shortcut_t", 84},
+        {"pb_shortcut_u", 85}, {"pb_shortcut_v", 86}, {"pb_shortcut_w", 87}, {"pb_shortcut_x", 88},
+        {"pb_shortcut_y", 89}, {"pb_shortcut_z", 90},
+        {"pb_shortcut_0", 48}, {"pb_shortcut_1", 49}, {"pb_shortcut_2", 50}, {"pb_shortcut_3", 51},
+        {"pb_shortcut_4", 52}, {"pb_shortcut_5", 53}, {"pb_shortcut_6", 54}, {"pb_shortcut_7", 55},
+        {"pb_shortcut_8", 56}, {"pb_shortcut_9", 57},
+        {"pb_shortcut_f1", 65470}, {"pb_shortcut_f2", 65471}, {"pb_shortcut_f3", 65472},
+        {"pb_shortcut_f4", 65473}, {"pb_shortcut_f5", 65474}, {"pb_shortcut_f6", 65475},
+        {"pb_shortcut_f7", 65476}, {"pb_shortcut_f8", 65477}, {"pb_shortcut_f9", 65478},
+        {"pb_shortcut_f10", 65479}, {"pb_shortcut_f11", 65480}, {"pb_shortcut_f12", 65481},
+        {"pb_shortcut_f13", 65482}, {"pb_shortcut_f14", 65483}, {"pb_shortcut_f15", 65484},
+        {"pb_shortcut_f16", 65485}, {"pb_shortcut_f17", 65486}, {"pb_shortcut_f18", 65487},
+        {"pb_shortcut_f19", 65488}, {"pb_shortcut_f20", 65489}, {"pb_shortcut_f21", 65490},
+        {"pb_shortcut_f22", 65491}, {"pb_shortcut_f23", 65492}, {"pb_shortcut_f24", 65493},
+        {"pb_shortcut_pad0", 65456}, {"pb_shortcut_pad1", 65457}, {"pb_shortcut_pad2", 65458},
+        {"pb_shortcut_pad3", 65459}, {"pb_shortcut_pad4", 65460}, {"pb_shortcut_pad5", 65461},
+        {"pb_shortcut_pad6", 65462}, {"pb_shortcut_pad7", 65463}, {"pb_shortcut_pad8", 65464},
+        {"pb_shortcut_pad9", 65465},
+        {"pb_shortcut_escape", 65307}, {"pb_shortcut_return", 65293}, {"pb_shortcut_tab", 65289},
+        {"pb_shortcut_delete", 65535}, {"pb_shortcut_up", 65362}, {"pb_shortcut_down", 65364},
+        {"pb_shortcut_left", 65361}, {"pb_shortcut_right", 65363}, {"pb_shortcut_space", 32},
+        {"pb_shortcut_back", 65288}, {"pb_shortcut_multiply", 65450}, {"pb_shortcut_home", 65360},
+        {"pb_shortcut_end", 65367}, {"pb_shortcut_insert", 65379}, {"pb_shortcut_pageup", 65365},
+        {"pb_shortcut_pagedown", 65366}, {"pb_shortcut_numlock", 65407}, {"pb_shortcut_scroll", 65300},
+        {"pb_shortcut_print", 65377}, {"pb_shortcut_pause", 65299}, {"pb_shortcut_clear", 65291},
+        {"pb_shortcut_select", 65376}, {"pb_shortcut_execute", 65378}, {"pb_shortcut_help", 65386},
+        {"pb_shortcut_separator", 65452}, {"pb_shortcut_decimal", 65454}, {"pb_shortcut_subtract", 65453},
+        {"pb_shortcut_add", 65451}, {"pb_shortcut_divide", 65455},
+        {"pb_shortcut_capital", 0}, {"pb_shortcut_snapshot", 0}, {"pb_shortcut_menu", 0},
+        {"pb_shortcut_apps", 93}, {"pb_shortcut_leftwindows", 91}, {"pb_shortcut_rightwindows", 92},
+        {"pb_gadgettype_shortcut", 32},
     };
     return table;
 }

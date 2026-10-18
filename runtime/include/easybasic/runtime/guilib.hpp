@@ -743,7 +743,17 @@ inline GtkWidget*& optionGroupAnchor() {
 inline bool placeGadget(std::int64_t windowId, std::int64_t gadgetId, std::int64_t x, std::int64_t y,
                          std::int64_t width, std::int64_t height, GtkWidget* widget) {
     GtkWidget* fixed = nullptr;
-    std::int64_t containerId = 0;
+    // `-1`, not `0`: a real container's own `#Gadget` id is conventionally
+    // always `>= 0` in idiomatic PB code, so this can't collide with one -
+    // unlike `0`, which this bug once *did* collide with directly. Found
+    // via `pbFreeGadget(0)` on a plain (non-nested) gadget actually
+    // numbered `0`: `pruneContainerGadgets(0)` misread that gadget's own
+    // "not nested in anything" tag (also `0`, the old sentinel) as "nested
+    // inside container `0`", including *itself*, and recursed into itself
+    // forever (a real stack-overflow crash, not just a logic bug) - and
+    // would have just as wrongly swept up *any other* unrelated top-level
+    // gadget too, had the recursion not crashed first.
+    std::int64_t containerId = -1;
     if (!gadgetListStack().empty()) {
         fixed = gadgetListStack().back().fixed;
         containerId = gadgetListStack().back().containerId;
@@ -2841,6 +2851,52 @@ inline std::int64_t pbPoint(std::int64_t x, std::int64_t y) {
     std::int64_t g = (argb >> 8) & 0xff;
     std::int64_t b = argb & 0xff;
     return r | (g << 8) | (b << 16);
+}
+
+/// M7b's twenty-fourth GUI slice: `ShortcutGadget(#Gadget, x, y, Width,
+/// Height, Shortcut)` - a new-in-this-beta command (first appeared in
+/// PureBasic 6.50 beta; no mention anywhere in this project's own prior
+/// oracle-testing history). Creation, geometry (`GadgetX`/`Y`/`Width`/
+/// `Height` all just echo the given values, like every other gadget),
+/// and every `#PB_Shortcut_*`/`#PB_GadgetType_Shortcut` constant are
+/// oracle-verified (all 6 arguments required - a 5- or 7-argument call
+/// is a real "Incorrect number of parameters" compile error, so
+/// `Shortcut`, a single combined bitmask of one `#PB_Shortcut_*` key
+/// code ORed with any of `#PB_Shortcut_Control`/`Shift`/`Alt`/`Command`,
+/// is not optional).
+///
+/// **The shortcut itself was never observed to actually activate**,
+/// despite extensive testing - oracle probing ruled out, in order:
+/// window-manager/active-state issues (tested both with and without a
+/// real window manager on a private `Xvfb` display); a competing
+/// focused widget stealing the key event (tested bare, and with a
+/// `StringGadget` holding focus); every argument-count/order variant
+/// this project could construct that still compiles. A hand-rolled,
+/// plain `GtkAccelGroup` (no PureBasic involved at all) *does* fire
+/// correctly under the exact same real-X-focus conditions, ruling out a
+/// general GTK/Xvfb accelerator limitation too. Most conclusively: on
+/// this project's own real desktop display (not a virtual one), with
+/// confirmed real X keyboard focus on the gadget's own window, a
+/// genuine *physical* keypress on real hardware - not synthetic input of
+/// any kind - still produced no event. Given this is a brand new command
+/// in a beta compiler release, this project's own working theory is a
+/// genuine bug or incomplete feature in this specific version's Linux
+/// backend, not something a different test methodology would uncover -
+/// but this is deliberately recorded as an open question, not a
+/// confirmed root cause, consistent with this project's own "never guess
+/// when genuinely uncertain" methodology.
+///
+/// Implemented as a plain, inert, invisible `GtkDrawingArea` (nothing is
+/// ever drawn on it, and no signal is connected at all) placed the usual
+/// way via `placeGadget` - gets `IsGadget`/`FreeGadget`/`GadgetX`/`Y`/
+/// `Width`/`Height` working for free via the same shared infrastructure
+/// every other gadget already uses, with no event-firing support
+/// claimed or attempted.
+inline std::int64_t pbShortcutGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                       std::int64_t height, std::int64_t /*shortcut*/) {
+    detail::ensureGtkInit();
+    GtkWidget* widget = gtk_drawing_area_new();
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
 inline std::int64_t pbFrameGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,

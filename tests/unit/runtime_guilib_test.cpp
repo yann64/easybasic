@@ -3071,3 +3071,24 @@ TEST_CASE("The 2D Drawing library's real fatal-error cases (nested StartDrawing,
 
     pbCloseWindow(938);
 }
+
+TEST_CASE("ShortcutGadget creates cleanly, matching every real GTK/gadget-table convention - "
+          "its own shortcut activation is not implemented (see pbShortcutGadget's own doc "
+          "comment for why)",
+          "[runtime][guilib]") {
+    // Oracle-verified: creation itself, and IsGadget/FreeGadget via the
+    // same shared gadgetTable() every other gadget already uses, both
+    // work. Every #PB_Shortcut_*/#PB_GadgetType_Shortcut constant is
+    // also oracle-verified (checked separately, in sema's own constant
+    // table tests) - this case is about the gadget itself.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(939, 10, 10, 320, 320, PBString("Test"));
+    CHECK(pbShortcutGadget(0, 50, 60, 70, 80, 65470 /* #PB_Shortcut_F1 */) == 1);
+    CHECK(pbIsGadget(0) == 1);
+    pbFreeGadget(0);
+    CHECK(pbIsGadget(0) == 0);
+
+    pbCloseWindow(939);
+}
