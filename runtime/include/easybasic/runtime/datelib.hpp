@@ -62,10 +62,14 @@ inline std::int64_t pbSecond(std::int64_t date) { return detail::localTm(date).t
 /// already uses this exact convention, so no translation is needed.
 inline std::int64_t pbDayOfWeek(std::int64_t date) { return detail::localTm(date).tm_wday; }
 
-/// Supports the oracle-verified placeholder set `%yyyy`/`%mm`/`%dd`/`%hh`/
-/// `%ii`/`%ss` (4-digit year, 2-digit month/day/hour/minute/second) -
-/// PB's own `FormatDate` supports more (short-year, month/weekday names,
-/// AM/PM), not yet implemented.
+/// Supports the oracle-verified placeholder set `%yyyy`/`%yy`/`%mm`/`%dd`/
+/// `%hh`/`%ii`/`%ss` (4-digit year, 2-digit year/month/day/hour/minute/
+/// second) - PB's own `FormatDate` supports more (month/weekday names,
+/// AM/PM), not yet implemented. `%yy` is handled *after* `%yyyy` - oracle-
+/// verified order-safe (`FormatDate("%yyyy-%yy", d)` → `"2020-20"`, not a
+/// corrupted `"20-20"`), since `%yyyy` is replaced first and `%yy` alone
+/// never appears as a leftover substring of an already-substituted
+/// 4-digit year.
 inline PBString pbFormatDate(const PBString& mask, std::int64_t date) {
     std::tm value = detail::localTm(date);
     std::string result = mask.bytes();
@@ -84,6 +88,8 @@ inline PBString pbFormatDate(const PBString& mask, std::int64_t date) {
     char buf[16];
     std::snprintf(buf, sizeof(buf), "%04d", value.tm_year + 1900);
     replaceAll("%yyyy", buf);
+    std::snprintf(buf, sizeof(buf), "%02d", (value.tm_year + 1900) % 100);
+    replaceAll("%yy", buf);
     std::snprintf(buf, sizeof(buf), "%02d", value.tm_mon + 1);
     replaceAll("%mm", buf);
     std::snprintf(buf, sizeof(buf), "%02d", value.tm_mday);

@@ -16,6 +16,8 @@ Debug Minute(d)
 Debug Second(d)
 Debug DayOfWeek(d)
 Debug FormatDate("%yyyy-%mm-%dd %hh:%ii:%ss", d)
+Debug FormatDate("%yy/%mm/%dd", d)
+Debug FormatDate("%yyyy-%yy", d)
 
 tomorrow.i = AddDate(d, #PB_Date_Day, 1)
 Debug Day(tomorrow)

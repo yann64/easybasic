@@ -35,6 +35,16 @@ TEST_CASE("pbFormatDate substitutes the oracle-verified placeholder set", "[runt
     CHECK(pbFormatDate(PBString("%yyyy-%mm-%dd %hh:%ii:%ss"), d).bytes() == "2024-03-05 09:08:07");
 }
 
+TEST_CASE("pbFormatDate's %yy (2-digit year) substitutes without corrupting an adjacent %yyyy",
+          "[runtime][datelib]") {
+    // Oracle-verified: FormatDate("%yy/%mm/%dd", d) == "20/06/15" for
+    // 2020-06-15, and FormatDate("%yyyy-%yy", d) == "2020-20", not a
+    // corrupted "20-20" - %yyyy must be substituted first.
+    std::int64_t d = pbDate(2020, 6, 15, 10, 30, 45);
+    CHECK(pbFormatDate(PBString("%yy/%mm/%dd"), d).bytes() == "20/06/15");
+    CHECK(pbFormatDate(PBString("%yyyy-%yy"), d).bytes() == "2020-20");
+}
+
 TEST_CASE("pbAddDate's Day/Hour/Minute/Second units are plain second arithmetic", "[runtime][datelib]") {
     std::int64_t d = pbDate(2024, 3, 15, 10, 30, 45);
     CHECK(pbAddDate(d, 3, 1) == d + 86400);   // Day
