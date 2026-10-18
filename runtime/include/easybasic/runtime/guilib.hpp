@@ -2560,6 +2560,99 @@ inline gboolean onCanvasKeyRelease(GtkWidget* widget, GdkEventKey* event, gpoint
     return FALSE;
 }
 
+/// M7b's twenty-third GUI slice: the 2D Drawing library, scoped to the
+/// `CanvasOutput` target only (`ImageOutput`/`SpriteOutput`/`ScreenOutput`
+/// stay future work - this project had *no* Drawing-library code at all
+/// before this slice). A persistent `cairo_surface_t` (`CAIRO_FORMAT_ARGB32`,
+/// sized to the gadget at creation time, not re-read from GTK's own async
+/// size allocation - avoids any dependency on a main-loop iteration having
+/// already happened) is attached to the `GtkDrawingArea` itself, filled
+/// white up front (oracle-verified: `Point(x,y)` on a freshly created,
+/// never-drawn-on Canvas reads back `16777215` - `RGB(255,255,255)`, not
+/// black or transparent). `StartDrawing`/`Box`/`Circle`/`Plot`/`Point`/
+/// `FrontColor`/`BackColor` all draw into (or read from) this same surface
+/// directly - a separate `"draw"` signal handler just blits it onto the
+/// widget's own real `cairo_t` whenever GTK actually repaints, so nothing
+/// drawn is lost between `StopDrawing()` and the next repaint.
+///
+/// Oracle-verified directly, via `Debug Point(...)` read-backs after
+/// drawing (no synthetic input needed at all for any of this, unlike
+/// `CanvasGadget`'s own events - this project's own `RGB`/`Point` packing
+/// already round-trips byte-for-byte through a plain `Debug` probe):
+///   - `Box(x, y, w, h [, Color])` uses `FrontColor` when `Color` is
+///     omitted - confirmed by setting `FrontColor` then calling `Box`
+///     with no `Color` argument and reading the fill back unchanged.
+///   - `Circle(x, y, radius [, Color])` is a **filled disc**, not an
+///     outline - confirmed: a point one pixel inside the circle's own
+///     top edge reads the fill color, not the background.
+///   - `BackColor` has **no effect** on `Box`/`Circle`/`Plot` at all -
+///     confirmed: setting it to a third, distinct color just before a
+///     `Box` call with an explicit `Color` argument still reads back
+///     that explicit color, unaffected.
+///   - `Box`/`Circle` clip silently at the gadget's own edges, even when
+///     *entirely* off-canvas - confirmed: neither raises any error.
+///     `Plot`/`Point`, by contrast, raise a real, fatal "is outside the
+///     drawing area" debugger error for an out-of-bounds coordinate -
+///     not replicated here (this project's own established stance), a
+///     harmless no-op (`Plot`) / `0` (`Point`) instead.
+///   - A *nested* `StartDrawing()` call (before the matching
+///     `StopDrawing()`) is also a real, fatal debugger error - not
+///     replicated either; `pbStartDrawing` just returns `0`.
+///
+/// `CanvasOutput(#Gadget)`'s own return value is documented as an opaque
+/// selector `StartDrawing` alone is meant to consume, never a value a PB
+/// program itself is expected to inspect - this project's own internal
+/// encoding (`(gadgetId << 2) | 1`, tag bit `1` reserved for a future
+/// `ImageOutput`/`SpriteOutput`/`ScreenOutput`) doesn't need to match any
+/// particular real PB representation, only to round-trip correctly
+/// through `StartDrawing` itself.
+///
+/// `Box`/`Circle`/`Plot`'s own optional trailing `Color` (meaning "use
+/// `FrontColor`" when omitted) is implemented via a `-1` sentinel default
+/// parameter value, not a real oracle-confirmed encoding (PB's own actual
+/// internal convention for "omitted" isn't independently knowable from
+/// outside) - a program that deliberately passes the literal color `-1`
+/// itself (a fully-opaque-alpha `RGBA` value with every other bit set
+/// too) would be misread as "omitted" instead; considered an acceptable,
+/// narrow gap given how vanishingly unlikely that specific literal is in
+/// practice.
+inline const char* canvasBackingSurfaceKey() { return "pbcxx-canvas-backing-surface"; }
+
+struct DrawingState {
+    GtkWidget* drawingArea = nullptr;
+    cairo_t* cr = nullptr;
+    std::int64_t frontColor = 0;
+    std::int64_t backColor = 0;
+};
+
+inline DrawingState& activeDrawing() {
+    static DrawingState state;
+    return state;
+}
+
+inline cairo_surface_t* canvasBackingSurface(GtkWidget* drawingArea) {
+    return static_cast<cairo_surface_t*>(g_object_get_data(G_OBJECT(drawingArea), canvasBackingSurfaceKey()));
+}
+
+inline gboolean onCanvasDraw(GtkWidget* widget, cairo_t* cr, gpointer) {
+    cairo_surface_t* backing = canvasBackingSurface(widget);
+    if (backing != nullptr) {
+        cairo_set_source_surface(cr, backing, 0, 0);
+        cairo_paint(cr);
+    }
+    return TRUE;
+}
+
+/// Converts this project's own `RGB`/`RGBA` packing (`mathlib.hpp`'s
+/// `pbRGB`/`pbRGBA`, oracle-verified `0x00BBGGRR`/`0xAABBGGRR`) to Cairo's
+/// own `[0, 1]`-per-channel convention.
+inline void cairoSetSourceFromColor(cairo_t* cr, std::int64_t color) {
+    double r = static_cast<double>(color & 0xff) / 255.0;
+    double g = static_cast<double>((color >> 8) & 0xff) / 255.0;
+    double b = static_cast<double>((color >> 16) & 0xff) / 255.0;
+    cairo_set_source_rgb(cr, r, g, b);
+}
+
 } // namespace detail
 
 /// See `detail::canvasGadgetStateKey()`'s own doc comment for the full set
@@ -2587,6 +2680,20 @@ inline std::int64_t pbCanvasGadget(std::int64_t gadgetId, std::int64_t x, std::i
     g_signal_connect(drawingArea, "key-release-event", G_CALLBACK(detail::onCanvasKeyRelease), nullptr);
     g_signal_connect(drawingArea, "focus-in-event", G_CALLBACK(detail::onCanvasFocusIn), nullptr);
     g_signal_connect(drawingArea, "focus-out-event", G_CALLBACK(detail::onCanvasFocusOut), nullptr);
+    g_signal_connect(drawingArea, "draw", G_CALLBACK(detail::onCanvasDraw), nullptr);
+
+    // The 2D Drawing library's own backing store (M7b's twenty-third GUI
+    // slice) - sized now, from the arguments already in hand, rather than
+    // waiting on GTK's own async size allocation (see pbStartDrawing's own
+    // doc comment). Filled white up front, oracle-verified.
+    cairo_surface_t* backing =
+        cairo_image_surface_create(CAIRO_FORMAT_ARGB32, static_cast<int>(width), static_cast<int>(height));
+    cairo_t* fillCr = cairo_create(backing);
+    cairo_set_source_rgb(fillCr, 1.0, 1.0, 1.0);
+    cairo_paint(fillCr);
+    cairo_destroy(fillCr);
+    g_object_set_data_full(G_OBJECT(drawingArea), detail::canvasBackingSurfaceKey(), backing,
+                            [](gpointer p) { cairo_surface_destroy(static_cast<cairo_surface_t*>(p)); });
 
     GtkWidget* placed = drawingArea;
     if ((flags & 32) != 0) { // #PB_Canvas_Container
@@ -2612,6 +2719,128 @@ inline std::int64_t pbCanvasGadget(std::int64_t gadgetId, std::int64_t x, std::i
     }
     detail::canvasDrawingAreaTable()[gadgetId] = drawingArea;
     return 1;
+}
+
+/// See `detail::canvasBackingSurfaceKey()`'s own doc comment for the full
+/// set of oracle-verified findings behind this whole family.
+inline std::int64_t pbCanvasOutput(std::int64_t gadgetId) { return (gadgetId << 2) | 1; }
+
+inline std::int64_t pbStartDrawing(std::int64_t output) {
+    if (detail::activeDrawing().cr != nullptr) {
+        return 0; // A real nested StartDrawing() is a fatal error - not replicated.
+    }
+    if ((output & 3) != 1) {
+        return 0; // Not a CanvasOutput() value at all.
+    }
+    std::int64_t gadgetId = output >> 2;
+    auto it = detail::canvasDrawingAreaTable().find(gadgetId);
+    if (it == detail::canvasDrawingAreaTable().end()) {
+        return 0;
+    }
+    cairo_surface_t* backing = detail::canvasBackingSurface(it->second);
+    if (backing == nullptr) {
+        return 0;
+    }
+    detail::activeDrawing().drawingArea = it->second;
+    detail::activeDrawing().cr = cairo_create(backing);
+    detail::activeDrawing().frontColor = 0;
+    detail::activeDrawing().backColor = 0;
+    return 1;
+}
+
+inline std::int64_t pbStopDrawing() {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0;
+    }
+    cairo_destroy(drawing.cr);
+    gtk_widget_queue_draw(drawing.drawingArea);
+    drawing = detail::DrawingState();
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+inline std::int64_t pbFrontColor(std::int64_t color) {
+    if (detail::activeDrawing().cr == nullptr) {
+        return 0;
+    }
+    detail::activeDrawing().frontColor = color;
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+inline std::int64_t pbBackColor(std::int64_t color) {
+    if (detail::activeDrawing().cr == nullptr) {
+        return 0;
+    }
+    detail::activeDrawing().backColor = color;
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+inline std::int64_t pbBox(std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height,
+                           std::int64_t color = -1) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0;
+    }
+    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
+    cairo_rectangle(drawing.cr, static_cast<double>(x), static_cast<double>(y), static_cast<double>(width),
+                     static_cast<double>(height));
+    cairo_fill(drawing.cr);
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+inline std::int64_t pbCircle(std::int64_t x, std::int64_t y, std::int64_t radius, std::int64_t color = -1) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0;
+    }
+    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
+    cairo_arc(drawing.cr, static_cast<double>(x), static_cast<double>(y), static_cast<double>(radius), 0,
+               2 * 3.14159265358979323846);
+    cairo_fill(drawing.cr);
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+inline std::int64_t pbPlot(std::int64_t x, std::int64_t y, std::int64_t color = -1) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0;
+    }
+    cairo_surface_t* backing = detail::canvasBackingSurface(drawing.drawingArea);
+    int w = cairo_image_surface_get_width(backing);
+    int h = cairo_image_surface_get_height(backing);
+    if (x < 0 || y < 0 || x >= w || y >= h) {
+        return 0; // Oracle-verified fatal "outside the drawing area" error - not replicated.
+    }
+    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
+    cairo_rectangle(drawing.cr, static_cast<double>(x), static_cast<double>(y), 1.0, 1.0);
+    cairo_fill(drawing.cr);
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+inline std::int64_t pbPoint(std::int64_t x, std::int64_t y) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0; // Oracle-verified fatal error outside an active StartDrawing - not replicated.
+    }
+    cairo_surface_t* backing = detail::canvasBackingSurface(drawing.drawingArea);
+    int w = cairo_image_surface_get_width(backing);
+    int h = cairo_image_surface_get_height(backing);
+    if (x < 0 || y < 0 || x >= w || y >= h) {
+        return 0; // Oracle-verified fatal "outside the drawing area" error - not replicated.
+    }
+    // The backing surface is only ever drawn into through this same
+    // Cairo context (never shared/aliased), so flushing the context here
+    // guarantees any pending draw op is visible before reading the pixel
+    // straight out of the surface's own memory.
+    cairo_surface_flush(backing);
+    auto* data = cairo_image_surface_get_data(backing);
+    int stride = cairo_image_surface_get_stride(backing);
+    const auto* pixel = reinterpret_cast<const std::uint32_t*>(data + static_cast<std::ptrdiff_t>(y) * stride) + x;
+    std::uint32_t argb = *pixel; // CAIRO_FORMAT_ARGB32 is premultiplied, native-endian 0xAARRGGBB.
+    std::int64_t r = (argb >> 16) & 0xff;
+    std::int64_t g = (argb >> 8) & 0xff;
+    std::int64_t b = argb & 0xff;
+    return r | (g << 8) | (b << 16);
 }
 
 inline std::int64_t pbFrameGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,

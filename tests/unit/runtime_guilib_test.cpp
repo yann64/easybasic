@@ -2992,3 +2992,82 @@ TEST_CASE("CanvasGadget creates cleanly, defaults every attribute to 0, and auto
 
     pbCloseWindow(936);
 }
+
+TEST_CASE("The 2D Drawing library (CanvasOutput target): Box/Circle/Plot/Point round-trip through "
+          "FrontColor, and BackColor has no effect on any of them",
+          "[runtime][guilib]") {
+    // Oracle-verified: a freshly-created Canvas reads back RGB(255,255,255)
+    // (white) everywhere via Point() before anything is drawn on it;
+    // Box() defaults to FrontColor when its own trailing Color is omitted;
+    // Circle() is a filled disc (a point one pixel inside its own top
+    // edge still reads the fill color, not the background); BackColor
+    // has no effect on any of the three drawing commands, even when set
+    // immediately before a call that itself omits Color entirely.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(937, 10, 10, 320, 320, PBString("Test"));
+    pbCanvasGadget(0, 10, 10, 200, 150);
+    std::int64_t output = pbCanvasOutput(0);
+
+    CHECK(pbStartDrawing(output) == 1);
+    CHECK(pbPoint(0, 0) == 16777215); // RGB(255, 255, 255)
+
+    pbFrontColor(pbRGB(0, 255, 0));
+    pbBox(10, 10, 20, 20);
+    CHECK(pbPoint(15, 15) == pbRGB(0, 255, 0));
+
+    pbCircle(100, 75, 15, pbRGB(0, 0, 255));
+    CHECK(pbPoint(100, 75) == pbRGB(0, 0, 255)); // center
+    CHECK(pbPoint(100, 61) == pbRGB(0, 0, 255)); // one pixel inside the top edge - still filled
+    CHECK(pbPoint(100, 50) == 16777215); // well outside - untouched
+
+    pbBackColor(pbRGB(123, 45, 67));
+    pbBox(150, 10, 10, 10, pbRGB(9, 9, 9));
+    CHECK(pbPoint(155, 15) == pbRGB(9, 9, 9)); // BackColor had no effect
+
+    pbPlot(5, 5, pbRGB(1, 2, 3));
+    CHECK(pbPoint(5, 5) == pbRGB(1, 2, 3));
+
+    pbStopDrawing();
+    pbCloseWindow(937);
+}
+
+TEST_CASE("The 2D Drawing library's real fatal-error cases (nested StartDrawing, a drawing "
+          "command with no active StartDrawing, an out-of-bounds Plot/Point) are harmless no-ops "
+          "here instead",
+          "[runtime][guilib]") {
+    // Oracle-verified fatal debugger errors, none replicated here,
+    // consistent with this project's established stance elsewhere:
+    // a *nested* StartDrawing() (before the matching StopDrawing());
+    // Box/Circle/Plot/Point/FrontColor/BackColor called with no drawing
+    // active at all; Plot/Point (unlike Box/Circle, which clip silently
+    // even when entirely off-canvas) given an out-of-bounds coordinate.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(938, 10, 10, 320, 320, PBString("Test"));
+    pbCanvasGadget(0, 10, 10, 200, 150);
+    std::int64_t output = pbCanvasOutput(0);
+
+    CHECK(pbBox(0, 0, 10, 10) == 0);
+    CHECK(pbFrontColor(0) == 0);
+    CHECK(pbPoint(0, 0) == 0);
+
+    CHECK(pbStartDrawing(output) == 1);
+    CHECK(pbStartDrawing(output) == 0); // nested
+
+    CHECK(pbPlot(-5, -5) == 0);
+    CHECK(pbPlot(1000, 1000) == 0);
+    CHECK(pbPoint(-5, -5) == 0);
+    CHECK(pbPoint(1000, 1000) == 0);
+
+    // Box/Circle, by contrast, clip silently even when entirely off-canvas.
+    CHECK(pbBox(1000, 1000, 30, 30, pbRGB(10, 20, 30)) == 0);
+    CHECK(pbCircle(1000, 1000, 15, pbRGB(1, 2, 3)) == 0);
+
+    pbStopDrawing();
+    CHECK(pbStopDrawing() == 0); // already stopped
+
+    pbCloseWindow(938);
+}

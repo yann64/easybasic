@@ -4408,3 +4408,68 @@ key combination this section documents - via a new `run_gui_interactive_case.sh`
 fixture, skipping gracefully when `Xvfb`/`xdotool` aren't installed the same way `run_gui_case.sh`
 already does for a missing display).
 
+## M7b Implementation Notes (GUI core, twenty-third slice: the 2D Drawing library)
+
+**Scope landed**: `CanvasOutput`/`StartDrawing`/`StopDrawing`/`Box`/`Circle`/`Plot`/`Point`/
+`FrontColor`/`BackColor` - the 2D Drawing library's first commands, scoped to the `CanvasOutput`
+target only. This project had **no** Drawing-library code at all before this slice (confirmed: zero
+matches anywhere for `StartDrawing`/`Box(`/`Circle(` as drawing commands). `ImageOutput`/
+`SpriteOutput`/`ScreenOutput` stay future work, along with `Line`/`LinePack`/`LineXY`/`Ellipse`/
+`RoundBox`/`DrawText`/`DrawingMode`/`DrawingFont`/`FillArea`/`DrawingBuffer` - all explicitly
+deferred, consistent with the roadmap's own standing note that 2D/vector drawing is "scoped
+incrementally as real need comes up."
+
+**The whole slice turned out *not* to need the new Xvfb+`xdotool` synthetic-input methodology
+`CanvasGadget`'s own events needed one slice earlier** - the first and most important thing
+verified here, before anything else: a real oracle program can `StartDrawing`/`Box`/`StopDrawing`
+then `Point(x,y)`-read-back the exact pixel it just drew, with the window never shown on screen at
+all (only ever needing *a* display to exist, the same baseline every other GUI gadget already
+needs - not that the window be *visible*/unobscured). That makes every finding below a plain,
+deterministic `Debug` probe - `pbcompilerc -d -o` plus run, hand-diffed - the same proven
+methodology used for every non-interactive gadget so far, no synthetic input anywhere in this
+slice.
+
+**Persistent backing store**: a `cairo_surface_t` (`CAIRO_FORMAT_ARGB32`), sized to the gadget's own
+`Width`/`Height` *at creation time* (not re-read from GTK's own async size allocation later, which
+could still be unset at that point - avoids any dependency on a main-loop iteration having already
+run) and filled white up front - oracle-verified: `Point(x,y)` on a freshly-created, never-drawn-on
+Canvas reads back `16777215` (`RGB(255,255,255)`), not black or transparent. `StartDrawing`/
+drawing commands/`Point` all operate on this same surface directly; a separate `"draw"` signal
+handler blits it onto the widget's own real `cairo_t` whenever GTK actually repaints, so nothing
+drawn is ever lost between `StopDrawing()` and the next repaint.
+
+**`Box(x, y, w, h [, Color])` defaults to `FrontColor` when `Color` is omitted** - oracle-verified
+directly. **`Circle(x, y, radius [, Color])` is a filled disc, not an outline** - confirmed: a point
+one pixel inside the circle's own top edge still reads the fill color, not the background.
+**`BackColor` has no effect on `Box`/`Circle`/`Plot` at all** - confirmed by setting it to a third,
+distinct color immediately before a call with its own explicit `Color` argument, which still reads
+back unaffected (real PB's own docs describe `BackColor` for text background/`Clear`, not these
+three). `Plot(x, y [, Color])`/`FrontColor`/`BackColor` follow the same optional-`Color`-defaults-to-
+`FrontColor` shape as `Box`/`Circle` where relevant.
+
+**Fatal-error cases, none replicated** (this project's own established stance elsewhere): a *nested*
+`StartDrawing()` call before the matching `StopDrawing()`; any drawing command called with no
+`StartDrawing` currently active at all; `Plot`/`Point` given an out-of-bounds coordinate (a real,
+fatal "is outside the drawing area" debugger error - oracle-verified directly). **`Box`/`Circle`, by
+contrast, clip silently even when *entirely* off-canvas** - confirmed neither one errors at all,
+consistent with letting Cairo's own natural surface-clipping handle it with no special-casing in
+this project's own code. Every one of these returns a harmless `0` here instead of crashing.
+
+**`CanvasOutput(#Gadget)`'s own return value is this project's own internal encoding**
+(`(gadgetId << 2) | 1`, tag bit `1` reserved for a future `ImageOutput`/`SpriteOutput`/
+`ScreenOutput`) - real PB documents it as an opaque selector `StartDrawing` alone is meant to
+consume, never a value a PB program itself inspects, so there's nothing to oracle-verify about the
+specific encoding itself, only that it round-trips correctly through `StartDrawing`.
+
+**`Box`/`Circle`/`Plot`'s own "omitted `Color`" is a `-1` sentinel default parameter**, not an
+oracle-confirmed encoding (PB's own actual internal convention for "omitted" isn't independently
+knowable from outside this project) - a program that deliberately passes the literal color `-1`
+itself would be misread as "omitted" instead of that literal value; a narrow, accepted gap given how
+vanishingly unlikely that specific literal is in real code.
+
+**Testing**: two new `runtime_guilib_test.cpp` cases (the full `Box`/`Circle`/`Plot`/`Point`/
+`FrontColor`/`BackColor` round-trip, and every fatal-error-turned-harmless-no-op case above). One
+new golden e2e case (`tests/e2e/gui_canvas_draw`) exercises the same full sequence end to end
+through `pbcxx`, confirmed line-for-line against the real oracle before being pinned - via the
+plain `run_gui_case.sh`, not the interactive runner, since none of this needed synthetic input.
+

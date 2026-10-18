@@ -596,6 +596,22 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
           TypeSuffix::Integer},
          5},
+        // M7b's twenty-third GUI slice: the 2D Drawing library, scoped to
+        // the CanvasOutput target only. Box/Circle/Plot's trailing Color
+        // is optional (oracle-verified: defaults to FrontColor).
+        {"canvasoutput", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"startdrawing", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"stopdrawing", TypeSuffix::Integer, {}, 0},
+        {"frontcolor", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"backcolor", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"box", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         4},
+        {"circle", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         3},
+        {"plot", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"point", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -742,6 +758,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "setgadgetitemattribute", "optiongadget", "progressbargadget", "spingadget", "trackbargadget",
         "scrollbargadget", "imagegadget", "buttonimagegadget", "calendargadget", "hyperlinkgadget", "editorgadget",
         "dategadget", "ipaddressgadget", "canvasgadget",
+        "canvasoutput", "startdrawing", "stopdrawing", "frontcolor", "backcolor", "box", "circle", "plot", "point",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
