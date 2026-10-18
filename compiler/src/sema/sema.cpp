@@ -589,6 +589,13 @@ void Sema::registerGuiLibBuiltins() {
         {"ipaddressgadget", TypeSuffix::Integer,
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
          5},
+        // M7b's twenty-second GUI slice: CanvasGadget. Flags is optional
+        // (oracle-verified: #PB_Canvas_Border=1, Container=32, Keyboard=4,
+        // ClipMouse=2 - a plain 5-argument call defaults to none of them).
+        {"canvasgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         5},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -734,7 +741,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
         "setgadgetitemattribute", "optiongadget", "progressbargadget", "spingadget", "trackbargadget",
         "scrollbargadget", "imagegadget", "buttonimagegadget", "calendargadget", "hyperlinkgadget", "editorgadget",
-        "dategadget", "ipaddressgadget",
+        "dategadget", "ipaddressgadget", "canvasgadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -1066,6 +1073,55 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         // DateGadget (M7b's twentieth GUI slice) - oracle-verified via a
         // direct `Debug #PB_Xxx` probe.
         {"pb_date_checkbox", 2},
+        // CanvasGadget (M7b's twenty-second GUI slice) - oracle-verified via
+        // a direct `Debug #PB_Xxx` probe (including a live Xvfb+xdotool
+        // synthetic-input session for the interactive `EventType()`/
+        // `GetGadgetAttribute()` values below - see pbCanvasGadget's own
+        // doc comment in guilib.hpp for the full methodology). `Flags`'
+        // own bits are independent of each other.
+        {"pb_canvas_border", 1},
+        {"pb_canvas_clipmouse", 2},
+        {"pb_canvas_keyboard", 4},
+        {"pb_canvas_container", 32},
+        // `GetGadgetAttribute`/`SetGadgetAttribute` constants - their own
+        // separate numbering, like Splitter's/ScrollArea's own.
+        // `#PB_Canvas_Image`=1 is registered for forward-compile
+        // compatibility only - not implemented (see pbCanvasGadget's own
+        // doc comment for the reasoning).
+        {"pb_canvas_image", 1},
+        {"pb_canvas_mousex", 2},
+        {"pb_canvas_mousey", 3},
+        {"pb_canvas_buttons", 4},
+        {"pb_canvas_key", 5},
+        {"pb_canvas_modifiers", 6},
+        {"pb_canvas_cursor", 7},
+        {"pb_canvas_wheeldelta", 8},
+        // New `#PB_EventType_*` values Canvas is the first gadget to use -
+        // oracle-verified the same way as the Flags/attributes above.
+        // `#PB_EventType_Resize`=6 is registered for forward-compile
+        // compatibility only - not wired to actually fire for this gadget
+        // yet (see pbCanvasGadget's own doc comment: real PB only fires it
+        // via a gadget-anchoring/auto-resize mechanism this project hasn't
+        // built at all yet, a separate, broader gap than this slice).
+        {"pb_eventtype_resize", 6},
+        {"pb_eventtype_mouseenter", 65537},
+        {"pb_eventtype_mouseleave", 65538},
+        {"pb_eventtype_mousemove", 65539},
+        {"pb_eventtype_leftbuttondown", 65540},
+        {"pb_eventtype_leftbuttonup", 65541},
+        {"pb_eventtype_rightbuttondown", 65542},
+        {"pb_eventtype_rightbuttonup", 65543},
+        {"pb_eventtype_middlebuttondown", 65544},
+        {"pb_eventtype_middlebuttonup", 65545},
+        {"pb_eventtype_mousewheel", 65546},
+        {"pb_eventtype_keydown", 65547},
+        {"pb_eventtype_keyup", 65548},
+        // `#PB_EventType_Input`=65549 is registered for forward-compile
+        // compatibility only - not wired to actually fire yet (see
+        // pbCanvasGadget's own doc comment: it needs its own
+        // shift-state-aware character-decoding logic, a narrower,
+        // deliberately deferred gap).
+        {"pb_eventtype_input", 65549},
     };
     return table;
 }

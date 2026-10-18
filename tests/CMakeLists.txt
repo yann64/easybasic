@@ -15,12 +15,19 @@ add_subdirectory(unit)
 # run_case.sh - it skips gracefully (SKIP_RETURN_CODE) rather than failing
 # when this environment has no GTK3 dev files or no usable display, the
 # same way e2e_diff cases skip when pbcompilerc isn't installed.
-set(EASYBASIC_GUI_E2E_CASES gui_window_core gui_basic_gadgets gui_menu_statusbar gui_image gui_toolbar gui_systray gui_container gui_panel gui_splitter gui_scrollarea gui_listview_combobox gui_listicon_tree gui_option_progressbar gui_spin_trackbar_scrollbar gui_image_gadgets gui_calendar_hyperlink gui_editor gui_date gui_ipaddress)
+set(EASYBASIC_GUI_E2E_CASES gui_window_core gui_basic_gadgets gui_menu_statusbar gui_image gui_toolbar gui_systray gui_container gui_panel gui_splitter gui_scrollarea gui_listview_combobox gui_listicon_tree gui_option_progressbar gui_spin_trackbar_scrollbar gui_image_gadgets gui_calendar_hyperlink gui_editor gui_date gui_ipaddress gui_canvas)
+# Cases needing real synthetic mouse/keyboard input (CanvasGadget's own
+# genuinely interactive events - see run_gui_interactive_case.sh's own
+# comment) - run via that script instead, which also skips gracefully
+# (same SKIP_RETURN_CODE convention) when Xvfb/xdotool aren't installed.
+set(EASYBASIC_GUI_INTERACTIVE_E2E_CASES gui_canvas_events)
 file(GLOB EASYBASIC_E2E_CASES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/e2e ${CMAKE_CURRENT_SOURCE_DIR}/e2e/*)
 foreach(case ${EASYBASIC_E2E_CASES})
     set(case_dir ${CMAKE_CURRENT_SOURCE_DIR}/e2e/${case})
     if(EXISTS ${case_dir}/input.pb)
-        if(case IN_LIST EASYBASIC_GUI_E2E_CASES)
+        if(case IN_LIST EASYBASIC_GUI_INTERACTIVE_E2E_CASES)
+            set(runner run_gui_interactive_case.sh)
+        elseif(case IN_LIST EASYBASIC_GUI_E2E_CASES)
             set(runner run_gui_case.sh)
         else()
             set(runner run_case.sh)
@@ -29,7 +36,7 @@ foreach(case ${EASYBASIC_E2E_CASES})
             NAME e2e_${case}
             COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/e2e/${runner} $<TARGET_FILE:pbcxx> ${case_dir}
         )
-        if(case IN_LIST EASYBASIC_GUI_E2E_CASES)
+        if(case IN_LIST EASYBASIC_GUI_E2E_CASES OR case IN_LIST EASYBASIC_GUI_INTERACTIVE_E2E_CASES)
             set_tests_properties(e2e_${case} PROPERTIES SKIP_RETURN_CODE 125)
         endif()
     endif()

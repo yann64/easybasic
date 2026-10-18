@@ -1,0 +1,25 @@
+# Drives the CanvasGadget at window-local (10,10)-(210,160) - run by
+# run_gui_interactive_case.sh with $DISPLAY and $WID already set.
+# Real (non---window) clicks/keys are deliberately used for the clicks
+# and the key press themselves - xdotool's `--window` flag on `click`/
+# `key` sends a synthetic X SendEvent, which GTK silently ignores; only
+# `mousemove --window` (a real pointer warp) and `windowfocus` (a real
+# XSetInputFocus, not relying on a window manager) reliably reach the
+# application the same way genuine user input would.
+xdotool windowfocus --sync "$WID"
+xdotool mousemove --window "$WID" --sync 50 50
+xdotool click 1
+sleep 0.15
+xdotool click 1
+sleep 0.15
+xdotool click 3
+sleep 0.15
+xdotool click 2
+sleep 0.15
+xdotool click 4
+sleep 0.15
+xdotool click 5
+sleep 0.15
+xdotool windowfocus --sync "$WID"
+xdotool key --clearmodifiers a
+sleep 0.15

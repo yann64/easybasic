@@ -2957,3 +2957,38 @@ TEST_CASE("IPAddressGadget's SetGadgetState packs/unpacks all 4 octets as a sign
 
     pbCloseWindow(935);
 }
+
+TEST_CASE("CanvasGadget creates cleanly, defaults every attribute to 0, and auto-opens its own "
+          "gadget list only when #PB_Canvas_Container is set",
+          "[runtime][guilib]") {
+    // Oracle-verified: every `#PB_Canvas_Xxx` attribute reads 0 before any
+    // interaction, and `SetGadgetAttribute` has no effect on any of them
+    // (all seven are get-only). `#PB_Canvas_Container`'s own auto-open
+    // behavior is oracle-verified too (an un-flagged Canvas's own
+    // `CloseGadgetList()` raises the usual "can only be called after..."
+    // fatal debugger error in real PB - not replicated here, consistent
+    // with this project's own established "unsupported combination
+    // harmlessly returns 0" stance elsewhere, so this only checks the
+    // *positive*, flagged case).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(936, 10, 10, 300, 300, PBString("Test"));
+    CHECK(pbCanvasGadget(0, 10, 10, 200, 150) == 1);
+    CHECK(pbGetGadgetAttribute(0, 2) == 0); // #PB_Canvas_MouseX
+    CHECK(pbGetGadgetAttribute(0, 3) == 0); // #PB_Canvas_MouseY
+    CHECK(pbGetGadgetAttribute(0, 4) == 0); // #PB_Canvas_Buttons
+    CHECK(pbGetGadgetAttribute(0, 5) == 0); // #PB_Canvas_Key
+    CHECK(pbGetGadgetAttribute(0, 6) == 0); // #PB_Canvas_Modifiers
+    CHECK(pbGetGadgetAttribute(0, 8) == 0); // #PB_Canvas_WheelDelta
+    CHECK(pbSetGadgetAttribute(0, 2, 50) == 0);
+    CHECK(pbGetGadgetAttribute(0, 2) == 0);
+    CHECK(pbGetGadgetAttribute(999, 2) == 0); // non-existent gadget
+
+    CHECK(pbCanvasGadget(1, 10, 170, 200, 100, 32) == 1); // #PB_Canvas_Container
+    CHECK(pbCloseGadgetList() == 1);
+    CHECK(pbButtonGadget(2, 10, 10, 80, 25, PBString("inside?")) == 1);
+    CHECK(pbIsGadget(2) == 1);
+
+    pbCloseWindow(936);
+}

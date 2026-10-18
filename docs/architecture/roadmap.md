@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Fifteen slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-two slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core - see M7b notes); the 2D Drawing library, further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -4282,4 +4282,129 @@ partial octet) and the `SetGadgetState` pack/unpack round-trip including the sig
 new golden e2e case (`tests/e2e/gui_ipaddress`) exercises the same sequence end to end through
 `pbcxx` itself, confirmed line-for-line against the real oracle (modulo the established native-
 creation-handle divergence) before being pinned.
+
+## M7b Implementation Notes (GUI core, twenty-second slice: `CanvasGadget` core)
+
+**Scope landed**: `CanvasGadget`'s own creation, `Flags`, mouse/keyboard/focus events, and
+`GetGadgetAttribute` for its own seven attributes - deliberately *not* the 2D Drawing library
+(`StartDrawing`/`StopDrawing`/`Box`/`Circle`/`Plot`/...), which is its own, separate, twenty-third
+slice (real PB treats these as two genuinely separable features bundled under one gadget name).
+
+**New methodology: synthetic-input oracle probing.** Every gadget before this one was oracle-
+verified with a plain `Debug` probe - compile with the real `pbcompilerc`, run it, read the output.
+That doesn't work for *interactive* behavior: confirming which real mouse click/move/key-press
+produces which `EventType()`/`GetGadgetAttribute()` reading needs input actually happening while
+the oracle binary runs. Built for this: a private `Xvfb` display plus `xdotool` driving real
+synthetic X11 input at the running oracle binary, with its own `Debug`-ed event trace as ground
+truth - then the *identical* input script replayed against `pbcxx`'s own compiled binary on the
+same kind of display, diffed line for line. A few sharp edges worth recording for next time this
+comes up:
+  - `xdotool click --window X`/`key --window X` send a synthetic X `SendEvent`, which GTK silently
+    ignores - real input needs a real pointer warp (`mousemove --window X --sync`, which *does*
+    work) followed by a plain `click`/`key` with no `--window` at all, landing wherever the real
+    pointer currently is.
+  - With no window manager running on a bare `Xvfb` display, `xdotool windowfocus` on a window
+    that technically exists but isn't *viewable* yet fails with a real `BadMatch` on
+    `X_SetInputFocus` - transient, but genuinely flaky if the very next thing is a keyboard event
+    that depends on it; retried in a loop until it succeeds, rather than once.
+  - A test program that waits on a *fixed, known* event count (so it exits deterministically on
+    its own, with no reliance on ever closing the window) must not count `MouseEnter`/`MouseMove`/
+    `MouseLeave` if its own expected output needs to be pinned byte-for-byte - real X11 motion-event
+    coalescing is inherently timing-dependent (confirmed directly: replaying the exact same
+    `xdotool` script against the exact same binary twice did not always produce the same number of
+    incidental motion events). Every other event used here (buttons, wheel, keys, double-clicks,
+    focus) is discrete and fires reliably every time.
+
+**`#PB_Canvas_Border`=1/`ClipMouse`=2/`Keyboard`=4/`Container`=32** - independent bits, oracle-
+verified via a direct `Debug` probe. `Keyboard` is implemented (`gtk_widget_set_can_focus`).
+`Border`/`ClipMouse` are registered but not behaviorally implemented this slice - `Border` for the
+same reason `ContainerGadget`'s own doc comment already gives (no accessor exists to query a
+gadget's own visual chrome from PB code at all), `ClipMouse` because real pointer confinement needs
+a real `gdk_seat_grab`, a narrower, independently-deferrable gap.
+
+**`#PB_Canvas_Container` auto-opens its own gadget list on creation**, the same as `ContainerGadget`
+(not `PanelGadget`, which needs `AddGadgetItem` first) - oracle-verified directly (a flagged
+Canvas's own immediate `CloseGadgetList()` succeeds; an unflagged one's matching call instead raises
+the usual fatal "can only be called after..." debugger error). Implemented via a `GtkOverlay`
+wrapping the real `GtkDrawingArea` (so anything drawn on the canvas stays visible underneath nested
+gadgets) plus an overlaid `GtkFixed` as the nesting target - the *placed* widget (what
+`gadgetTable()` maps the gadget id to) is the overlay when wrapped, but every real GTK signal is
+always connected to the inner `GtkDrawingArea` directly, tracked in its own `canvasDrawingAreaTable()`
+and manually re-tagged with the same `gadgetIdKey()`/`gadgetWindowIdKey()` `placeGadget` already put
+on the overlay, so `queueGadgetEvent` still finds the right ids regardless of which widget a given
+signal actually fired on.
+
+**`#PB_Canvas_MouseX`=2/`MouseY`=3/`Buttons`=4/`Key`=5/`Modifiers`=6/`Cursor`=7/`WheelDelta`=8** -
+oracle-verified attribute codes (`#PB_Canvas_Image`=1 is registered but not implemented - no
+`Image`-library-to-Canvas integration exists yet to back it; `Cursor` similarly registered but not
+implemented - cursor shape get/set was never investigated this slice). All seven are get-only -
+confirmed directly (`SetGadgetAttribute` on `MouseX` has no effect on a later read of it) - so there
+is no matching `SetGadgetAttribute` branch at all.
+
+**`MouseX`/`MouseY`** are continuously-tracked, canvas-*relative* coordinates (oracle-verified: a
+given *window*-local pointer position reads back as that position minus the Canvas's own top-left
+offset within the window), not clamped to the gadget's own bounds (confirmed via `MouseLeave`, which
+still reads back a genuinely out-of-bounds position).
+
+**`Buttons`/`Modifiers` are a direct translation of GDK's own raw `event->state` bits** (`Left`=1/
+`Right`=2/`Middle`=4; `Shift`=1/`Ctrl`=4 confirmed, `Alt`=2 inferred by elimination from
+`GDK_MOD1_MASK`, not independently oracle-confirmed) on every event that carries one - this
+reproduces a genuinely subtle, oracle-confirmed rule for free: a `ButtonPress`'s own `Buttons`
+reading does *not* yet include the button just pressed, but the matching `ButtonRelease`'s own
+reading (and the generic `LeftClick`/`RightClick` companion event right after it) *does* still
+include the button being released - real GDK convention, not invented here. During a drag (button
+held across `MouseMove`), `Buttons` correctly stays set throughout (also oracle-verified) - a free
+consequence of reading the live `event->state` rather than hand-rolling a press/release flag.
+**A modifier key's own press/release is the one place raw `event->state` is *not* enough** -
+oracle-verified directly: Ctrl's own `KeyDown` already reads `Modifiers`=4 (itself included), but
+Ctrl's own `KeyUp` reads `Modifiers`=0 (itself excluded) - the opposite of how a mouse button
+reports `Buttons` on its own press/release. Reproduced via `detail::canvasOwnModifierBit`, forcing
+the pressed/released modifier's own bit in/out explicitly rather than trusting `event->state` alone
+for that one bit.
+
+**`WheelDelta`/`Key` are genuinely one-shot fields**, valid only for the event they belong to and
+`0` for every other kind - oracle-verified directly (`WheelDelta` is back to `0` by the very next,
+unrelated event; the same keypress's own `Key` reading goes `65` during `KeyDown` → `0` during the
+immediately-following `Input` → `65` again during `KeyUp`, not simply left at `65` throughout).
+Reproduced by having every handler *other* than the one that owns a given field reset it to `0`
+before queuing its own event. `Key` uses PB's own Windows-`VK_`-style code for ordinary
+alphanumeric keys (oracle-verified: an unshifted lowercase `a` keypress reads back as `65`,
+`VK_A`'s own value, *not* `97`, the raw `GDK_KEY_a` keysym) - a pure modifier key instead reads
+back its own raw GDK keysym directly (`65505` for `Shift_L`), since PB has no `VK_`-style code of
+its own for it. Only letter keys have been oracle-verified against the `VK_`-style table so far.
+
+**Generic companion events**: `#PB_EventType_LeftClick`=0/`RightClick`=1 fire right after the
+matching `LeftButtonUp`=65541/`RightButtonUp`=65543 (oracle-verified, including that a *double*-
+click's second `ButtonDown`/`Up` pair still fires the plain `Click` too, not instead of it) - no
+`MiddleClick` equivalent exists in real PB, none observed either. `LeftDoubleClick`=2/
+`RightDoubleClick`=3 come from GTK's own `GDK_2BUTTON_PRESS` re-delivery of `button-press-event` -
+oracle-verified the second click of a double-click still fires its own ordinary `ButtonDown` first,
+then `DoubleClick`, then `ButtonUp`, then the generic `Click` - the full sequence is reproduced, not
+just the two endpoints.
+
+**`#PB_EventType_Focus`=256/`LostFocus`=512** (both already-pinned values, reused) - oracle-verified
+directly for `Focus`: clicking a `#PB_Canvas_Keyboard`-flagged Canvas for the first time fires
+`ButtonDown` → `Focus` → `ButtonUp` → `LeftClick`, in that order. Implemented via
+`gtk_widget_grab_focus` (a no-op if already focused, or if `Keyboard` wasn't set - so no spurious
+re-fire) called from the button-press handler, letting GTK's own `focus-in-event` fire
+synchronously *before* returning - which is exactly why `Focus` lands between `ButtonDown` and
+`ButtonUp` in the queue. `LostFocus` is wired symmetrically but not independently re-verified for
+this specific gadget (the same honestly-flagged "reasonable inference by analogy" treatment this
+project's own `HyperLinkGadget` doc comment already uses elsewhere).
+
+**Two gaps registered but deliberately not wired to fire at all**: `#PB_EventType_Resize`=6 (real PB
+only fires a gadget's own `Resize` via a gadget-anchoring/auto-resize mechanism this project hasn't
+built *at all* yet, for any gadget - a broader gap than this slice) and `#PB_EventType_Input`=65549
+(needs its own shift/caps-aware character-decoding logic this project doesn't have yet - `KeyDown`/
+`KeyUp` already cover raw key-code-level input). Both constants still compile correctly if a
+program references them by name.
+
+**Testing**: one new `runtime_guilib_test.cpp` case (creation, `Flags`, attribute defaults, and the
+`Container` auto-open/`CloseGadgetList` behavior - no synthetic input needed for any of that). Two
+new golden e2e cases: `tests/e2e/gui_canvas` (same non-interactive ground, via `run_gui_case.sh`)
+and `tests/e2e/gui_canvas_events` (the full interactive battery - every button/double-click/wheel/
+key combination this section documents - via a new `run_gui_interactive_case.sh`, modeled on
+`run_gui_case.sh` but adding its own private `Xvfb` display and a companion `xdotool_script`
+fixture, skipping gracefully when `Xvfb`/`xdotool` aren't installed the same way `run_gui_case.sh`
+already does for a missing display).
 

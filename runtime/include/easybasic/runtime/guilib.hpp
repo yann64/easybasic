@@ -2216,6 +2216,404 @@ inline std::int64_t pbEditorGadget(std::int64_t gadgetId, std::int64_t x, std::i
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, scrolled) ? 1 : 0;
 }
 
+namespace detail {
+
+/// M7b's twenty-second GUI slice: `CanvasGadget`. The first gadget with
+/// genuinely interactive mouse/keyboard events - oracle-verified via a
+/// live `Xvfb`+`xdotool` synthetic-input session (not just plain `Debug`
+/// probes of constant values, the way every other gadget so far has
+/// been), since confirming which real click/move/key-press produces
+/// which `EventType()`/`GetGadgetAttribute()` reading can't be done any
+/// other way. Full session details (the probe `.pb` programs, the exact
+/// `xdotool` command sequences, and the decoded event traces) live in
+/// this project's own development history, not restated here line by
+/// line - this comment records the resulting, oracle-confirmed *rules*.
+///
+/// `#PB_Canvas_Border`=1/`ClipMouse`=2/`Keyboard`=4/`Container`=32 are
+/// independent bits (oracle-verified via a direct `Debug #PB_Canvas_Xxx`
+/// probe). `Keyboard` is implemented (`gtk_widget_set_can_focus`); `Border`
+/// and `ClipMouse` are deliberately *not* visually/behaviorally
+/// implemented this slice - `Border` the same way `ContainerGadget`'s own
+/// doc comment already notes (no accessor exists to query a gadget's own
+/// visual chrome from PB code, so there's nothing to verify a rendering
+/// against), and `ClipMouse` because real pointer confinement needs a
+/// real `gdk_seat_grab`, a narrower, independently-deferrable gap - both
+/// constants are still registered so a program referencing them by name
+/// still compiles.
+///
+/// A gadget-list-nesting member of the `ContainerGadget`/`PanelGadget`/
+/// `ScrollAreaGadget` family when `#PB_Canvas_Container` is set -
+/// oracle-verified directly: creating one with that flag then calling
+/// `CloseGadgetList()` immediately succeeds (an *un*flagged Canvas's own
+/// matching call instead raises the usual "CloseGadgetList() can only be
+/// called after OpenGadgetList() or container gadgets." debugger error),
+/// confirming it auto-opens its own list on creation, the same as
+/// `ContainerGadget` (not `PanelGadget`, which needs `AddGadgetItem`
+/// first). Implemented via a `GtkOverlay` wrapping the real
+/// `GtkDrawingArea` as its base child, plus an overlaid `GtkFixed` (the
+/// nesting target, tracked in `containerFixedTable()` exactly like every
+/// other container) - keeps anything drawn on the canvas visible
+/// underneath nested gadgets. The *placed* widget (what `gadgetTable()`
+/// maps this gadget id to, and what carries the window's own size/
+/// position) is the overlay when wrapped, but every real GTK signal is
+/// always connected to the inner `GtkDrawingArea` directly - tracked in
+/// its own `canvasDrawingAreaTable()`, so `GetGadgetAttribute`/
+/// `SetGadgetAttribute` (and the 2D Drawing library) can find it
+/// regardless of wrapping - and manually re-tagged with the same
+/// `gadgetIdKey()`/`gadgetWindowIdKey()` `placeGadget` already put on the
+/// overlay, so `queueGadgetEvent` (which reads those tags back off
+/// whichever widget a signal fired on) still works correctly either way.
+///
+/// `#PB_Canvas_MouseX`=2/`MouseY`=3/`Buttons`=4/`Key`=5/`Modifiers`=6/
+/// `Cursor`=7/`WheelDelta`=8 (oracle-verified attribute codes;
+/// `#PB_Canvas_Image`=1 is registered but not implemented - no `Image`-
+/// library integration exists yet to back it). All seven are get-only -
+/// oracle-verified directly (`SetGadgetAttribute` on `MouseX` has no
+/// effect on a later `GetGadgetAttribute` read of it), so `SetGadgetAttribute`
+/// gets no Canvas branch at all, matching this project's established
+/// "unsupported combination harmlessly returns 0" convention.
+///
+/// `MouseX`/`MouseY` are continuously-tracked, canvas-*relative*
+/// coordinates (oracle-verified directly: moving the pointer to a given
+/// *window*-local position reads back as that position minus the
+/// Canvas's own top-left offset within the window) - not clamped to the
+/// gadget's own bounds (confirmed: a position past the Canvas's own
+/// edges, e.g. during `MouseLeave`, still reads back as a negative-of-
+/// bounds-relative value, not held at the last in-bounds reading).
+///
+/// `Buttons` (`Left`=1/`Right`=2/`Middle`=4) and `Modifiers` (`Shift`=1/
+/// `Ctrl`=4 confirmed; `Alt`=2 inferred by elimination from GDK's own
+/// `GDK_MOD1_MASK`, not independently oracle-confirmed) are a direct
+/// translation of GDK's own `event->state` bits on every event that
+/// carries one (motion, button press/release, scroll, key press/release)
+/// - this reproduces a real, oracle-confirmed subtlety for free: a
+/// `ButtonPress`'s own `Buttons` reading does *not* yet include the
+/// button just pressed, but the matching `ButtonRelease`'s own reading
+/// (and the generic `LeftClick`/`RightClick` companion event right after
+/// it) *does* still include the button being released - real GDK
+/// convention, not something this project invented. During a drag
+/// (button held across `MouseMove`), `Buttons` correctly stays set the
+/// whole time (also oracle-verified) - consistent with reading the live
+/// `event->state`, not a hand-rolled "set on press, clear on release"
+/// flag.
+///
+/// `WheelDelta` and `Key` are different: both are genuinely transient,
+/// one-shot fields, valid only for the one event they belong to and
+/// `0` for every other kind - oracle-verified directly (`WheelDelta` is
+/// back to `0` by the very next, unrelated event; the same keypress's own
+/// `Key` reading goes `65` during `#PB_EventType_KeyDown` → `0` during
+/// the immediately-following `#PB_EventType_Input` → `65` again during
+/// `#PB_EventType_KeyUp`, not simply left at `65` throughout). Reproduced
+/// here the same way: every handler *other* than the one that owns a
+/// given field resets it to `0` before queuing its own event; `Key`'s
+/// own `65`/`0`/`65` sequence falls out of one handler (`key-press-event`)
+/// queuing *two* separate events (`KeyDown` then `Input`) with a reset in
+/// between, and a second, separate handler (`key-release-event`) setting
+/// it again for `KeyUp`. `Key` uses PB's own Windows-`VK_`-style code for
+/// ordinary alphanumeric keys (oracle-verified: an unshifted lowercase
+/// `a` keypress reads back as `65`, `VK_A`/ASCII-uppercase-`'A'`'s own
+/// value, *not* `97` - the raw X keysym `GDK_KEY_a` would give) - a pure
+/// modifier key (e.g. `Shift_L`) instead reads back its own raw GDK
+/// keysym value directly (`65505`) since PB has no `VK_`-style code of
+/// its own for it. Only letter keys have been oracle-verified against
+/// this specific `VK_`-style table so far; the rest of the mapping (other
+/// non-alphanumeric keys) is deliberately narrow for now.
+///
+/// `#PB_EventType_LeftClick`=0/`RightClick`=1 are generic companion
+/// events fired right after the matching `LeftButtonUp`=65541/
+/// `RightButtonUp`=65543 (oracle-verified directly, including that a
+/// *double*-click's second `LeftButtonDown`/`Up` pair still fires the
+/// plain `LeftClick` too, not instead of it) - real PB's own docs
+/// describe no equivalent `MiddleClick`, and none was observed either.
+/// `LeftDoubleClick`=2/`RightDoubleClick`=3 fire from GTK's own
+/// `GDK_2BUTTON_PRESS` signal re-delivery (a real second invocation of
+/// `button-press-event`, after the ordinary `GDK_BUTTON_PRESS` one) -
+/// oracle-verified the second click of a double-click still fires its own
+/// ordinary `ButtonDown` first, then `DoubleClick`, then `ButtonUp`, then
+/// the generic `LeftClick`/`RightClick` - the full sequence this project
+/// reproduces exactly, not just the two endpoints.
+///
+/// `#PB_EventType_Focus`=256 fires when the Canvas gains keyboard focus
+/// (reusing the same value already pinned for `StringGadget`) -
+/// oracle-verified directly: clicking a `#PB_Canvas_Keyboard`-flagged
+/// Canvas for the first time fires `ButtonDown` → `Focus` → `ButtonUp` →
+/// `LeftClick`, in that order. Implemented via `gtk_widget_grab_focus`
+/// (a no-op, so no spurious re-fire, if already focused - or if the
+/// gadget isn't focusable at all, i.e. `Keyboard` wasn't set) called
+/// unconditionally from the button-press handler, letting GTK's own
+/// `focus-in-event` naturally fire *before* returning from that handler -
+/// which is exactly why `Focus` lands between `ButtonDown` and `ButtonUp`
+/// in the queue. `#PB_EventType_LostFocus`=512 (also already pinned) is
+/// wired symmetrically via `focus-out-event` - not independently
+/// re-verified for this specific gadget (the same honestly-flagged
+/// "reasonable inference by analogy" treatment this project's own
+/// `HyperLinkGadget` doc comment already uses elsewhere), since by the
+/// time a second interaction could trigger it in this project's own probe
+/// session, the Canvas already held focus from the first one.
+///
+/// `#PB_EventType_Resize`=6 (the same value already pinned at the window
+/// level) is registered but **not wired to fire at all** - real PB only
+/// fires a gadget's own `Resize` event via a gadget-anchoring/auto-resize
+/// mechanism (binding a gadget's size to its window's own), which this
+/// project hasn't built *at all* yet for any gadget - a separate, broader
+/// gap than this slice, not specific to Canvas.
+///
+/// `#PB_EventType_Input`=65549 is registered but not wired to fire at
+/// all either - real PB's own `Input` event is meant to deliver the
+/// actual typed *character* (shift/caps-aware), which needs its own
+/// dedicated decoding logic this project doesn't have yet - a narrower,
+/// deliberately deferred gap (the `KeyDown`/`KeyUp` events already cover
+/// raw key-code-level input).
+inline const char* canvasGadgetStateKey() { return "pbcxx-canvas-gadget-state"; }
+
+struct CanvasGadgetState {
+    std::int64_t mouseX = 0;
+    std::int64_t mouseY = 0;
+    std::int64_t buttons = 0;
+    std::int64_t modifiers = 0;
+    std::int64_t wheelDelta = 0;
+    std::int64_t key = 0;
+};
+
+inline std::unordered_map<std::int64_t, GtkWidget*>& canvasDrawingAreaTable() {
+    static std::unordered_map<std::int64_t, GtkWidget*> table;
+    return table;
+}
+
+inline CanvasGadgetState* canvasGadgetState(GtkWidget* drawingArea) {
+    return static_cast<CanvasGadgetState*>(g_object_get_data(G_OBJECT(drawingArea), canvasGadgetStateKey()));
+}
+
+inline std::int64_t canvasButtonMask(guint state) {
+    std::int64_t buttons = 0;
+    if ((state & GDK_BUTTON1_MASK) != 0) {
+        buttons |= 1; // Left
+    }
+    if ((state & GDK_BUTTON3_MASK) != 0) {
+        buttons |= 2; // Right
+    }
+    if ((state & GDK_BUTTON2_MASK) != 0) {
+        buttons |= 4; // Middle
+    }
+    return buttons;
+}
+
+inline std::int64_t canvasModifierMask(guint state) {
+    std::int64_t mods = 0;
+    if ((state & GDK_SHIFT_MASK) != 0) {
+        mods |= 1;
+    }
+    if ((state & GDK_MOD1_MASK) != 0) {
+        mods |= 2; // Alt - inferred, not independently oracle-confirmed.
+    }
+    if ((state & GDK_CONTROL_MASK) != 0) {
+        mods |= 4;
+    }
+    return mods;
+}
+
+inline gboolean onCanvasMotion(GtkWidget* widget, GdkEventMotion* event, gpointer) {
+    auto* state = canvasGadgetState(widget);
+    state->mouseX = static_cast<std::int64_t>(event->x);
+    state->mouseY = static_cast<std::int64_t>(event->y);
+    state->buttons = canvasButtonMask(event->state);
+    state->modifiers = canvasModifierMask(event->state);
+    state->wheelDelta = 0;
+    state->key = 0;
+    queueGadgetEvent(widget, 65539); // #PB_EventType_MouseMove
+    return FALSE;
+}
+
+inline gboolean onCanvasCrossing(GtkWidget* widget, GdkEventCrossing* event, gpointer) {
+    auto* state = canvasGadgetState(widget);
+    state->mouseX = static_cast<std::int64_t>(event->x);
+    state->mouseY = static_cast<std::int64_t>(event->y);
+    state->buttons = canvasButtonMask(event->state);
+    state->modifiers = canvasModifierMask(event->state);
+    state->wheelDelta = 0;
+    state->key = 0;
+    queueGadgetEvent(widget, event->type == GDK_ENTER_NOTIFY ? 65537 : 65538);
+    return FALSE;
+}
+
+inline gboolean onCanvasButtonPress(GtkWidget* widget, GdkEventButton* event, gpointer) {
+    auto* state = canvasGadgetState(widget);
+    state->mouseX = static_cast<std::int64_t>(event->x);
+    state->mouseY = static_cast<std::int64_t>(event->y);
+    state->buttons = canvasButtonMask(event->state);
+    state->modifiers = canvasModifierMask(event->state);
+    state->wheelDelta = 0;
+    state->key = 0;
+    if (event->type == GDK_2BUTTON_PRESS) {
+        if (event->button == 1) {
+            queueGadgetEvent(widget, 2); // #PB_EventType_LeftDoubleClick
+        } else if (event->button == 3) {
+            queueGadgetEvent(widget, 3); // #PB_EventType_RightDoubleClick
+        }
+        return FALSE;
+    }
+    if (event->button == 1) {
+        queueGadgetEvent(widget, 65540); // LeftButtonDown
+    } else if (event->button == 3) {
+        queueGadgetEvent(widget, 65542); // RightButtonDown
+    } else if (event->button == 2) {
+        queueGadgetEvent(widget, 65544); // MiddleButtonDown
+    } else {
+        return FALSE;
+    }
+    gtk_widget_grab_focus(widget);
+    return FALSE;
+}
+
+inline gboolean onCanvasFocusIn(GtkWidget* widget, GdkEvent*, gpointer) {
+    queueGadgetEvent(widget, 256); // #PB_EventType_Focus
+    return FALSE;
+}
+
+inline gboolean onCanvasFocusOut(GtkWidget* widget, GdkEvent*, gpointer) {
+    queueGadgetEvent(widget, 512); // #PB_EventType_LostFocus
+    return FALSE;
+}
+
+inline gboolean onCanvasButtonRelease(GtkWidget* widget, GdkEventButton* event, gpointer) {
+    auto* state = canvasGadgetState(widget);
+    state->mouseX = static_cast<std::int64_t>(event->x);
+    state->mouseY = static_cast<std::int64_t>(event->y);
+    state->buttons = canvasButtonMask(event->state);
+    state->modifiers = canvasModifierMask(event->state);
+    state->wheelDelta = 0;
+    state->key = 0;
+    if (event->button == 1) {
+        queueGadgetEvent(widget, 65541); // LeftButtonUp
+        queueGadgetEvent(widget, 0); // #PB_EventType_LeftClick
+    } else if (event->button == 3) {
+        queueGadgetEvent(widget, 65543); // RightButtonUp
+        queueGadgetEvent(widget, 1); // #PB_EventType_RightClick
+    } else if (event->button == 2) {
+        queueGadgetEvent(widget, 65545); // MiddleButtonUp
+    }
+    return FALSE;
+}
+
+inline gboolean onCanvasScroll(GtkWidget* widget, GdkEventScroll* event, gpointer) {
+    auto* state = canvasGadgetState(widget);
+    state->mouseX = static_cast<std::int64_t>(event->x);
+    state->mouseY = static_cast<std::int64_t>(event->y);
+    state->buttons = canvasButtonMask(event->state);
+    state->modifiers = canvasModifierMask(event->state);
+    state->key = 0;
+    if (event->direction == GDK_SCROLL_UP) {
+        state->wheelDelta = 1;
+    } else if (event->direction == GDK_SCROLL_DOWN) {
+        state->wheelDelta = -1;
+    } else {
+        return FALSE; // Smooth/left/right scroll - not oracle-tested.
+    }
+    queueGadgetEvent(widget, 65546); // #PB_EventType_MouseWheel
+    return FALSE;
+}
+
+/// A modifier key's *own* press/release doesn't follow plain
+/// `event->state` the way every other key/button/motion event does -
+/// oracle-verified directly (holding Shift then clicking shows
+/// `Modifiers`=1 throughout, as expected from raw `event->state`, but
+/// Shift's own `KeyUp` reads `Modifiers`=0, and Ctrl's own `KeyDown`
+/// reads `Modifiers`=4 - i.e. a modifier key's *own* press already
+/// counts itself in, and its own release already counts itself out,
+/// the opposite of how a mouse button's own press/release reports
+/// `Buttons`). Returns `0` for a non-modifier key.
+inline std::int64_t canvasOwnModifierBit(guint keyval) {
+    switch (keyval) {
+        case GDK_KEY_Shift_L:
+        case GDK_KEY_Shift_R:
+            return 1;
+        case GDK_KEY_Alt_L:
+        case GDK_KEY_Alt_R:
+            return 2;
+        case GDK_KEY_Control_L:
+        case GDK_KEY_Control_R:
+            return 4;
+        default:
+            return 0;
+    }
+}
+
+inline gboolean onCanvasKeyPress(GtkWidget* widget, GdkEventKey* event, gpointer) {
+    auto* state = canvasGadgetState(widget);
+    state->buttons = canvasButtonMask(event->state);
+    state->modifiers = canvasModifierMask(event->state) | canvasOwnModifierBit(event->keyval);
+    state->wheelDelta = 0;
+    guint keyval = gdk_keyval_to_upper(event->keyval);
+    state->key = (keyval >= 'A' && keyval <= 'Z') ? static_cast<std::int64_t>(keyval) : static_cast<std::int64_t>(event->keyval);
+    queueGadgetEvent(widget, 65547); // #PB_EventType_KeyDown
+    return FALSE;
+}
+
+inline gboolean onCanvasKeyRelease(GtkWidget* widget, GdkEventKey* event, gpointer) {
+    auto* state = canvasGadgetState(widget);
+    state->buttons = canvasButtonMask(event->state);
+    state->modifiers = canvasModifierMask(event->state) & ~canvasOwnModifierBit(event->keyval);
+    state->wheelDelta = 0;
+    guint keyval = gdk_keyval_to_upper(event->keyval);
+    state->key = (keyval >= 'A' && keyval <= 'Z') ? static_cast<std::int64_t>(keyval) : static_cast<std::int64_t>(event->keyval);
+    queueGadgetEvent(widget, 65548); // #PB_EventType_KeyUp
+    return FALSE;
+}
+
+} // namespace detail
+
+/// See `detail::canvasGadgetStateKey()`'s own doc comment for the full set
+/// of oracle-verified findings this implementation is based on.
+inline std::int64_t pbCanvasGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                     std::int64_t height, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* drawingArea = gtk_drawing_area_new();
+    gtk_widget_add_events(drawingArea, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK |
+                                            GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK | GDK_SCROLL_MASK |
+                                            GDK_KEY_PRESS_MASK | GDK_KEY_RELEASE_MASK | GDK_FOCUS_CHANGE_MASK);
+    if ((flags & 4) != 0) { // #PB_Canvas_Keyboard
+        gtk_widget_set_can_focus(drawingArea, TRUE);
+    }
+    auto* state = new detail::CanvasGadgetState();
+    g_object_set_data_full(G_OBJECT(drawingArea), detail::canvasGadgetStateKey(), state,
+                            [](gpointer p) { delete static_cast<detail::CanvasGadgetState*>(p); });
+    g_signal_connect(drawingArea, "motion-notify-event", G_CALLBACK(detail::onCanvasMotion), nullptr);
+    g_signal_connect(drawingArea, "enter-notify-event", G_CALLBACK(detail::onCanvasCrossing), nullptr);
+    g_signal_connect(drawingArea, "leave-notify-event", G_CALLBACK(detail::onCanvasCrossing), nullptr);
+    g_signal_connect(drawingArea, "button-press-event", G_CALLBACK(detail::onCanvasButtonPress), nullptr);
+    g_signal_connect(drawingArea, "button-release-event", G_CALLBACK(detail::onCanvasButtonRelease), nullptr);
+    g_signal_connect(drawingArea, "scroll-event", G_CALLBACK(detail::onCanvasScroll), nullptr);
+    g_signal_connect(drawingArea, "key-press-event", G_CALLBACK(detail::onCanvasKeyPress), nullptr);
+    g_signal_connect(drawingArea, "key-release-event", G_CALLBACK(detail::onCanvasKeyRelease), nullptr);
+    g_signal_connect(drawingArea, "focus-in-event", G_CALLBACK(detail::onCanvasFocusIn), nullptr);
+    g_signal_connect(drawingArea, "focus-out-event", G_CALLBACK(detail::onCanvasFocusOut), nullptr);
+
+    GtkWidget* placed = drawingArea;
+    if ((flags & 32) != 0) { // #PB_Canvas_Container
+        GtkWidget* overlay = gtk_overlay_new();
+        gtk_container_add(GTK_CONTAINER(overlay), drawingArea);
+        gtk_widget_show(drawingArea); // placeGadget only shows the outer overlay, not this inner child.
+        GtkWidget* fixed = gtk_fixed_new();
+        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), fixed);
+        gtk_widget_show(fixed);
+        placed = overlay;
+        if (!detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, placed)) {
+            return 0;
+        }
+        g_object_set_data(G_OBJECT(drawingArea), detail::gadgetIdKey(), reinterpret_cast<gpointer>(gadgetId));
+        g_object_set_data(G_OBJECT(drawingArea), detail::gadgetWindowIdKey(),
+                           reinterpret_cast<gpointer>(detail::activeWindowId()));
+        detail::containerFixedTable()[gadgetId] = fixed;
+        detail::gadgetListStack().push_back({gadgetId, fixed});
+    } else {
+        if (!detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, placed)) {
+            return 0;
+        }
+    }
+    detail::canvasDrawingAreaTable()[gadgetId] = drawingArea;
+    return 1;
+}
+
 inline std::int64_t pbFrameGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
                                    std::int64_t height, const PBString& text, std::int64_t /*flags*/ = 0) {
     detail::ensureGtkInit();
@@ -3437,6 +3835,32 @@ inline std::int64_t pbGetGadgetAttribute(std::int64_t gadgetId, std::int64_t att
     auto it = detail::gadgetTable().find(gadgetId);
     if (it == detail::gadgetTable().end()) {
         return 0;
+    }
+    // M7b's twenty-second GUI slice: `CanvasGadget` - checked via its own
+    // dedicated `canvasDrawingAreaTable()` rather than `GTK_IS_DRAWING_AREA
+    // (it->second)`, since `it->second` is the *placed* widget (a
+    // `GtkOverlay` when `#PB_Canvas_Container` wraps it, not the drawing
+    // area itself) - see `pbCanvasGadget`'s own doc comment. All seven
+    // attributes are get-only (oracle-verified), so there's no matching
+    // `SetGadgetAttribute` branch at all.
+    if (auto canvasIt = detail::canvasDrawingAreaTable().find(gadgetId); canvasIt != detail::canvasDrawingAreaTable().end()) {
+        auto* state = detail::canvasGadgetState(canvasIt->second);
+        switch (attribute) {
+            case 2: // #PB_Canvas_MouseX
+                return state->mouseX;
+            case 3: // #PB_Canvas_MouseY
+                return state->mouseY;
+            case 4: // #PB_Canvas_Buttons
+                return state->buttons;
+            case 5: // #PB_Canvas_Key
+                return state->key;
+            case 6: // #PB_Canvas_Modifiers
+                return state->modifiers;
+            case 8: // #PB_Canvas_WheelDelta
+                return state->wheelDelta;
+            default:
+                return 0;
+        }
     }
     // `ListViewGadget` (M7b's thirteenth GUI slice) is *also* a
     // `GtkScrolledWindow` (wrapping a natively-scrollable `GtkTreeView`
@@ -5687,5 +6111,4 @@ inline std::int64_t pbToolBarID(std::int64_t toolBarId) {
     auto it = detail::toolBarTable().find(toolBarId);
     return it != detail::toolBarTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
 }
-
 } // namespace easybasic::runtime
