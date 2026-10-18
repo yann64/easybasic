@@ -206,6 +206,8 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"canvasoutput", "pbCanvasOutput"}, {"startdrawing", "pbStartDrawing"}, {"stopdrawing", "pbStopDrawing"},
         {"frontcolor", "pbFrontColor"}, {"backcolor", "pbBackColor"}, {"box", "pbBox"}, {"circle", "pbCircle"},
         {"plot", "pbPlot"}, {"point", "pbPoint"}, {"shortcutgadget", "pbShortcutGadget"},
+        {"line", "pbLine"}, {"linexy", "pbLineXY"}, {"drawtext", "pbDrawText"},
+        {"textwidth", "pbTextWidth"}, {"textheight", "pbTextHeight"},
         {"messagerequester", "pbMessageRequester"},
         {"colorrequester", "pbColorRequester"}, {"fontrequester", "pbFontRequester"},
         {"selectedfontname", "pbSelectedFontName"}, {"selectedfontsize", "pbSelectedFontSize"},

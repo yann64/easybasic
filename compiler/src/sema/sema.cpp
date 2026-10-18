@@ -612,6 +612,34 @@ void Sema::registerGuiLibBuiltins() {
          3},
         {"plot", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"point", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        // 2D Drawing library extension (Line/LineXY/DrawText/TextWidth/
+        // TextHeight) - oracle-verified. Line/LineXY's trailing Color is
+        // optional (defaults to FrontColor, like Box/Circle/Plot).
+        // DrawText's FrontColor/BackColor are independently optional too,
+        // but default to black (0), *not* the ambient FrontColor - a
+        // real, oracle-confirmed difference from Box/Circle/Plot/Line/
+        // LineXY's own shared convention (see pbDrawText's own doc
+        // comment in guilib.hpp). DrawText/TextWidth/TextHeight all
+        // return Double, not Integer - oracle-verified via Debug's own
+        // distinct float-vs-integer padding (confirmed independently
+        // with a plain `a.d = 21` probe) - TextWidth/TextHeight's own
+        // values are real, meaningful measurements, not the undefined
+        // Integer-typed "no real return value" every other drawing
+        // command here already has (also confirmed: Box/Circle/Plot/
+        // Line/FrontColor/BackColor's own apparent "return value" is
+        // provably not their own color/argument - a multi-component
+        // Color's packed form never matched what Debug showed back).
+        {"line", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         4},
+        {"linexy", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         4},
+        {"drawtext", TypeSuffix::Double,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer},
+         3},
+        {"textwidth", TypeSuffix::Double, {TypeSuffix::String}, 1},
+        {"textheight", TypeSuffix::Double, {TypeSuffix::String}, 1},
         // M7b's twenty-fourth GUI slice: ShortcutGadget. All 6 arguments
         // required - oracle-verified (both a 5- and a 7-argument call are
         // real "Incorrect number of parameters" compile errors). See
@@ -772,6 +800,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "scrollbargadget", "imagegadget", "buttonimagegadget", "calendargadget", "hyperlinkgadget", "editorgadget",
         "dategadget", "ipaddressgadget", "canvasgadget", "shortcutgadget",
         "canvasoutput", "startdrawing", "stopdrawing", "frontcolor", "backcolor", "box", "circle", "plot", "point",
+        "line", "linexy", "drawtext", "textwidth", "textheight",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",

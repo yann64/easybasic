@@ -3092,3 +3092,85 @@ TEST_CASE("ShortcutGadget creates cleanly, matching every real GTK/gadget-table 
 
     pbCloseWindow(939);
 }
+
+TEST_CASE("Line/LineXY: Line is delta-based and draws nothing at all for a zero Width or Height; "
+          "LineXY uses two absolute endpoints and has no such quirk",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: a Line call with Width or Height exactly
+    // 0 draws nothing anywhere in a wide neighborhood of the attempted
+    // line - a real PB quirk, reproduced as-is. LineXY has no such
+    // quirk - a horizontal/vertical LineXY (which would also have a
+    // zero "delta" if it worked the same way) draws correctly,
+    // including its own far endpoint pixel. Both default their own
+    // trailing Color to the ambient FrontColor when omitted, and clip
+    // silently off-canvas (confirmed separately below).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(940, 10, 10, 320, 320, PBString("Test"));
+    pbCanvasGadget(0, 10, 10, 200, 150);
+    pbStartDrawing(pbCanvasOutput(0));
+
+    pbLine(10, 10, 20, 0, pbRGB(1, 2, 3));
+    CHECK(pbPoint(15, 10) == 16777215); // zero Height: nothing drawn at all
+    pbLine(10, 30, 0, 20, pbRGB(1, 2, 3));
+    CHECK(pbPoint(10, 35) == 16777215); // zero Width: nothing drawn at all
+
+    pbFrontColor(pbRGB(9, 99, 199));
+    pbLine(50, 50, 30, 30);
+    CHECK(pbPoint(50, 50) == pbRGB(9, 99, 199)); // defaults to ambient FrontColor
+
+    pbLineXY(100, 100, 150, 100, pbRGB(5, 15, 25));
+    CHECK(pbPoint(125, 100) == pbRGB(5, 15, 25));
+    CHECK(pbPoint(150, 100) == pbRGB(5, 15, 25)); // far endpoint is included too
+
+    CHECK(pbLine(190, 140, 50, 50, pbRGB(1, 1, 1)) == 0);
+    CHECK(pbLineXY(0, 149, -1000, 1000, pbRGB(2, 2, 2)) == 0);
+    CHECK(pbPoint(195, 145) == pbRGB(1, 1, 1)); // Line clipped silently, not a crash
+    CHECK(pbPoint(0, 149) == pbRGB(2, 2, 2)); // LineXY clipped silently too
+
+    pbStopDrawing();
+    pbCloseWindow(940);
+}
+
+TEST_CASE("DrawText paints an opaque BackColor background (defaulting to black, not the ambient "
+          "one) behind FrontColor text (also defaulting to black); TextWidth/TextHeight return "
+          "real Double measurements",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: FrontColor/BackColor passed to DrawText
+    // are independent of the ambient FrontColor/BackColor commands -
+    // both default to plain black when omitted, not whatever the
+    // ambient one currently is (confirmed: setting the ambient
+    // FrontColor first, then calling DrawText with neither argument,
+    // still reads back solid black). The background fill is opaque,
+    // covering the full TextWidth x TextHeight box (confirmed: a
+    // distinct color drawn underneath first is fully overwritten).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(941, 10, 10, 320, 320, PBString("Test"));
+    pbCanvasGadget(0, 10, 10, 200, 150);
+    pbStartDrawing(pbCanvasOutput(0));
+
+    CHECK(pbTextWidth(PBString("")) == 0.0);
+    CHECK(pbTextHeight(PBString("")) == 0.0);
+    double w = pbTextWidth(PBString("A"));
+    double h = pbTextHeight(PBString("A"));
+    CHECK(w > 0.0);
+    CHECK(h > 0.0);
+    CHECK(pbTextWidth(PBString("AB")) > w); // a second character widens it
+
+    pbBox(50, 50, 40, 40, pbRGB(200, 200, 200));
+    pbDrawText(50, 50, PBString("A"));
+    CHECK(pbPoint(50, 50) == 0); // opaque black background, not the gray box underneath
+
+    pbFrontColor(pbRGB(111, 112, 113));
+    pbDrawText(100, 50, PBString("A"));
+    CHECK(pbPoint(100, 50) == 0); // still black - FrontColor doesn't inherit the ambient one
+
+    pbDrawText(150, 50, PBString("A"), pbRGB(255, 0, 0), pbRGB(0, 0, 255));
+    CHECK(pbPoint(150, 50) == pbRGB(0, 0, 255)); // explicit BackColor used instead
+
+    pbStopDrawing();
+    pbCloseWindow(941);
+}

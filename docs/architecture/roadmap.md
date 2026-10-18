@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library, `ShortcutGadget` (creation/constants only - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight`), `ShortcutGadget` (creation/constants only - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -4547,4 +4547,90 @@ that work), plus the `pbFreeGadget` sentinel-bug regression it incidentally caug
 e2e case (`tests/e2e/gui_shortcut`) exercises creation/`IsGadget`/`FreeGadget` and every constant,
 confirmed line-for-line against the real oracle before being pinned - no interactive case was added
 at all, since there's nothing interactive to regression-test yet.
+
+## M7b Implementation Notes (2D Drawing library extension: `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight`)
+
+**Scope landed**: `Line`, `LineXY`, `DrawText`, `TextWidth`, `TextHeight` - the natural next
+additions on top of `Box`/`Circle`/`Plot` (M7b's twenty-third slice). Still scoped to the
+`CanvasOutput` target only; `DrawingMode`/`DrawingFont` (needed for a transparent-background
+`DrawText` or a non-default font) remain explicitly deferred, along with everything else that
+slice's own notes already listed as future work.
+
+**`Line(x, y, Width, Height [, Color])` is delta-based** (the endpoint is `(x + Width, y + Height)`),
+*not* two absolute endpoints - confirmed directly: a diagonal `Line` from `(50, 50)` with `Width`/
+`Height` both `30` reads back its own color partway along *and* near `(80, 80)` (`50 + 30`), not
+anywhere near `(30, 30)` (what a "second absolute point" reading would imply).
+
+**A real, oracle-confirmed quirk: `Line` draws *nothing at all* when `Width` or `Height` is exactly
+`0`** - confirmed directly, scanning a wide neighborhood of an attempted purely horizontal/vertical
+`Line` and finding every pixel still background. Reproduced as-is (an early return before any Cairo
+call at all), not "fixed" - this project's own goal is behavioral fidelity, quirks included.
+**`LineXY(X1, Y1, X2, Y2 [, Color])` has no such quirk** - a `LineXY` between two points sharing the
+same X or Y (which would also be a "zero delta" if it worked the same way `Line` does) draws
+correctly, including its own far endpoint pixel.
+
+Both default their own trailing `Color` to the ambient `FrontColor` when omitted (like `Box`/
+`Circle`/`Plot`), and both clip silently at the gadget's own edges, even entirely off-canvas (also
+like `Box`/`Circle`/`Plot`, not `Plot`/`Point`'s own fatal-error convention).
+
+**Pixel-level rendering notes** (both stroked 1px wide, antialiasing off, for a crisp line - not
+Cairo's own default 2px/antialiased stroke): a `+0.5` pixel-centering offset on `LineXY`'s own
+coordinates is what actually lands a horizontal/vertical line on the exact pixel row/column the
+oracle itself draws on (Cairo's integer coordinates fall on pixel *boundaries*, not centers, so an
+unshifted 1px stroke straddles two rows/columns) - confirmed directly, and also needed
+`CAIRO_LINE_CAP_SQUARE` (not Cairo's own default `BUTT` cap) to get the *far* endpoint's own pixel
+covered too. `Line` deliberately does **not** get the same `+0.5` offset - it can never be purely
+horizontal/vertical in the first place (the zero-quirk's own early return already rules that out),
+and adding it anyway was confirmed to throw off a diagonal line's own endpoint pixel instead of
+fixing anything. **Exact pixel-for-pixel rasterization of a diagonal line's own interior isn't
+guaranteed to match the oracle at every single pixel** (confirmed: a negative-direction diagonal's
+own starting pixel didn't always read back as drawn) - this project's own Cairo-based rendering and
+real PB's own backend don't necessarily rasterize a diagonal identically at the sub-pixel level; the
+overall geometry, direction, color, clipping, and the zero-delta quirk are all faithfully matched,
+consistent with this project's own existing tolerance for "not pixel-perfect" visual details
+elsewhere (e.g. `ContainerGadget`'s own border styling).
+
+**`DrawText(x, y, Text$ [, FrontColor [, BackColor]])` has its own different defaulting rule than
+every other drawing command here** - a real, oracle-confirmed difference: `FrontColor`/`BackColor`
+do *not* inherit the ambient `FrontColor`/`BackColor` when omitted, unlike `Box`/`Circle`/`Plot`/
+`Line`/`LineXY` - both independently default to plain black (`RGB(0,0,0)`) instead, confirmed
+directly (setting the ambient `FrontColor` first, then calling `DrawText` with neither argument,
+still reads back solid black everywhere in the glyph's own bounding box). The background fill is
+**opaque, covering the full `TextWidth`x`TextHeight` box** - confirmed: a distinct color drawn
+underneath first is fully overwritten, not left visible through any "transparent" gaps. The glyphs
+themselves render antialiased on top in `FrontColor` - confirmed via a full-bounding-box pixel scan
+(varying partial-coverage values, not just flat `0`/`FrontColor`).
+
+**`TextWidth`/`TextHeight` both require an active `StartDrawing`**, the same as every other drawing
+command here (oracle-verified: a real, fatal "StartDrawing() must be called..." error outside one -
+not replicated, `0.0` instead). **Both return `Double`, not `Integer`** - a real, easy-to-miss
+finding, discovered via `Debug`'s own distinct float-vs-integer output padding (confirmed
+independently with a plain `a.d = 21` probe: identical padding to what `TextWidth`/`TextHeight`/
+`DrawText` themselves show). Unlike every other drawing command's own apparent "return value" here
+(confirmed separately to be undefined/meaningless content - a multi-component `Color`'s own packed
+form never matched what `Debug` showed back for `Box`/`Circle`/`Plot`/`Line`/`FrontColor`/
+`BackColor`, including `Line` itself despite two earlier, single-component-color coincidences that
+looked like a match at first), `TextWidth`/`TextHeight`'s own values are real, meaningful
+measurements (oracle-verified: `"A"`→`11`, `"AB"`→`21`, `"ABC"`→`31`, `""`→`0` wide; `"A"`→`23`,
+`""`→`0` tall). `DrawText` itself also returns `Double` (confirmed via the same padding check), but
+- like every other drawing command - it's undefined/meaningless content, not a real value.
+
+**Implemented via Pango** (`pango_cairo_create_layout`/`pango_layout_get_pixel_size`/
+`pango_cairo_show_layout`), the same text stack a real GTK-based PB backend already uses internally
+and this project's own `FontRequester` (M7b's `Requester` family slice) already links against -
+matches the oracle's own measurements exactly on this project's own dev machine, using whatever
+default font a fresh `PangoLayout` resolves to with no explicit `DrawingFont` call. One small gap
+`pango_layout_get_pixel_size` doesn't close on its own: an *empty* string's own height is `0` in
+real PB, but Pango's own empty-layout height is still the font's full line height (confirmed
+directly - `23`, not `0`) - `TextHeight` special-cases an empty string explicitly to match (`Text
+Width`'s own empty-string case already reads `0` from Pango directly, no special-casing needed
+there).
+
+**Testing**: two new `runtime_guilib_test.cpp` cases (the zero-delta quirk, `LineXY`'s own lack of
+it, both defaulting to the ambient `FrontColor`, both clipping off-canvas silently; and `DrawText`'s
+own independent-of-the-ambient-color black defaults, its opaque background fill, and `TextWidth`/
+`TextHeight`'s real measurements). One new golden e2e case (`tests/e2e/gui_canvas_draw_ext`)
+exercises the same full sequence end to end through `pbcxx`, confirmed line-for-line against the
+real oracle before being pinned - via the plain `run_gui_case.sh`, since none of this needed
+synthetic input either.
 

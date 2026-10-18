@@ -2853,6 +2853,173 @@ inline std::int64_t pbPoint(std::int64_t x, std::int64_t y) {
     return r | (g << 8) | (b << 16);
 }
 
+/// 2D Drawing library extension: `Line`/`LineXY`. Both clip silently at
+/// the gadget's own edges, even entirely off-canvas (like `Box`/`Circle`,
+/// not `Plot`/`Point`) - oracle-verified directly. Both default their
+/// own trailing `Color` to the ambient `FrontColor` when omitted, the
+/// same as `Box`/`Circle`/`Plot`. Stroked 1px wide with antialiasing
+/// off - oracle-verified directly: a horizontal `LineXY` only ever
+/// touches the *one* pixel row it's drawn on, no antialiased bleed onto
+/// the row above/below.
+///
+/// `Line(x, y, Width, Height [, Color])` is delta-based, *not* two
+/// absolute endpoints - confirmed directly: a diagonal `Line` from
+/// `(50, 50)` with `Width`/`Height` both `30` reads back its own color
+/// partway along *and* near `(80, 80)` (`50 + 30`), not anywhere near
+/// `(30, 30)` (what a "second absolute point" reading would imply).
+/// **A real, oracle-confirmed quirk**: a `Line` call with `Width` *or*
+/// `Height` exactly `0` draws **nothing at all** - confirmed directly,
+/// scanning every pixel in a wide neighborhood of an attempted purely
+/// horizontal/vertical `Line`, all still background. `LineXY` has no
+/// such quirk - a `LineXY` between two points sharing the same X or Y
+/// (so `Width`/`Height`, if it were delta-based too, would also be `0`)
+/// draws correctly. This is deliberately reproduced as-is, not "fixed" -
+/// this project's own goal is behavioral fidelity, quirks included.
+inline std::int64_t pbLine(std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height,
+                            std::int64_t color = -1) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0;
+    }
+    if (width == 0 || height == 0) {
+        return 0; // Oracle-verified: draws nothing at all - see doc comment above.
+    }
+    cairo_antialias_t previous = cairo_get_antialias(drawing.cr);
+    cairo_set_antialias(drawing.cr, CAIRO_ANTIALIAS_NONE);
+    cairo_set_line_width(drawing.cr, 1.0);
+    cairo_set_line_cap(drawing.cr, CAIRO_LINE_CAP_SQUARE);
+    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
+    // No `+0.5` pixel-centering here, unlike `pbLineXY` below - `Line`
+    // can never be purely horizontal or vertical in the first place (the
+    // early-return above already rules that out), so the specific
+    // "1px-wide stroke straddles two rows/columns" concern that fix
+    // addresses doesn't apply the same way; adding it anyway was
+    // confirmed to throw off a diagonal line's own endpoint pixel
+    // instead, without fixing anything.
+    cairo_move_to(drawing.cr, static_cast<double>(x), static_cast<double>(y));
+    cairo_line_to(drawing.cr, static_cast<double>(x + width), static_cast<double>(y + height));
+    cairo_stroke(drawing.cr);
+    cairo_set_antialias(drawing.cr, previous);
+    return 0;
+}
+
+inline std::int64_t pbLineXY(std::int64_t x1, std::int64_t y1, std::int64_t x2, std::int64_t y2,
+                              std::int64_t color = -1) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0;
+    }
+    cairo_antialias_t previous = cairo_get_antialias(drawing.cr);
+    cairo_set_antialias(drawing.cr, CAIRO_ANTIALIAS_NONE);
+    cairo_set_line_width(drawing.cr, 1.0);
+    cairo_set_line_cap(drawing.cr, CAIRO_LINE_CAP_SQUARE);
+    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
+    cairo_move_to(drawing.cr, static_cast<double>(x1) + 0.5, static_cast<double>(y1) + 0.5);
+    cairo_line_to(drawing.cr, static_cast<double>(x2) + 0.5, static_cast<double>(y2) + 0.5);
+    cairo_stroke(drawing.cr);
+    cairo_set_antialias(drawing.cr, previous);
+    return 0;
+}
+
+/// 2D Drawing library extension: `TextWidth`/`TextHeight` - both require
+/// an active `StartDrawing` the same as every other drawing command here
+/// (oracle-verified: a real, fatal "StartDrawing() must be called..."
+/// error outside one - not replicated, `0.0` instead). Both return
+/// `Double`, not `Integer` - oracle-verified via `Debug`'s own distinct
+/// float-vs-integer padding (confirmed independently with a plain
+/// `a.d = 21` probe: identical padding). Unlike every other drawing
+/// command's own "return value" here (confirmed separately to be
+/// undefined/meaningless Integer-typed content - a multi-component
+/// `Color`'s packed form never matched what `Debug` showed back for
+/// `Box`/`Circle`/`Plot`/`Line`/`FrontColor`/`BackColor`), these two are
+/// real, meaningful measurements - oracle-verified directly (`"A"`→`11`,
+/// `"AB"`→`21`, `"ABC"`→`31`, `""`→`0` wide; `"A"`→`23`, `""`→`0` tall).
+/// Implemented via Pango (the same text stack a real GTK-based PB
+/// backend already uses internally) rather than Cairo's own simpler
+/// "toy text API" - matches the oracle's own measurements exactly on
+/// this project's own dev machine, using whatever default font a fresh
+/// `PangoLayout` resolves to with no explicit `DrawingFont` call (not
+/// implemented at all - a separate, broader gap).
+inline double pbTextWidth(const PBString& text) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0.0;
+    }
+    PangoLayout* layout = pango_cairo_create_layout(drawing.cr);
+    pango_layout_set_text(layout, text.bytes().c_str(), -1);
+    int width = 0;
+    int height = 0;
+    pango_layout_get_pixel_size(layout, &width, &height);
+    g_object_unref(layout);
+    return static_cast<double>(width);
+}
+
+inline double pbTextHeight(const PBString& text) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0.0;
+    }
+    // Oracle-verified: an empty string's own height is `0`, not the
+    // font's natural line height regardless of content - unlike
+    // `TextWidth`, which `pango_layout_get_pixel_size` already reports as
+    // `0` for an empty layout on its own, `get_pixel_size`'s own height
+    // for an empty layout is still the font's full line height (confirmed
+    // directly - `23`, not `0`), so this needs its own explicit check to
+    // match the oracle's own `0`.
+    if (text.bytes().empty()) {
+        return 0.0;
+    }
+    PangoLayout* layout = pango_cairo_create_layout(drawing.cr);
+    pango_layout_set_text(layout, text.bytes().c_str(), -1);
+    int width = 0;
+    int height = 0;
+    pango_layout_get_pixel_size(layout, &width, &height);
+    g_object_unref(layout);
+    return static_cast<double>(height);
+}
+
+/// 2D Drawing library extension: `DrawText(x, y, Text$ [, FrontColor
+/// [, BackColor]])`. **A real, oracle-confirmed difference from every
+/// other drawing command here**: `FrontColor`/`BackColor` do *not*
+/// default to the ambient `FrontColor`/`BackColor` set via those same-
+/// named commands when omitted - both independently default to plain
+/// black (`RGB(0,0,0)`) instead, confirmed directly (calling `FrontColor`
+/// first, then `DrawText` with neither argument, still reads back solid
+/// black everywhere in the glyph's own bounding box, not the ambient
+/// color). Paints the *entire* `TextWidth`x`TextHeight` bounding box
+/// with `BackColor` first (opaque, not transparent - confirmed: a gray
+/// box drawn first underneath is fully overwritten), then renders the
+/// glyphs on top in `FrontColor` with real antialiasing (confirmed via a
+/// full-bounding-box pixel scan: varying partial-coverage values, not
+/// just flat `0`/`FrontColor`). Returns `Double`, like `TextWidth`/
+/// `TextHeight` (confirmed via the same padding check), but - unlike
+/// those two - it's undefined/meaningless content, the same
+/// "no real return value" situation every other drawing command here
+/// already has.
+inline double pbDrawText(std::int64_t x, std::int64_t y, const PBString& text, std::int64_t frontColor = 0,
+                          std::int64_t backColor = 0) {
+    auto& drawing = detail::activeDrawing();
+    if (drawing.cr == nullptr) {
+        return 0.0;
+    }
+    PangoLayout* layout = pango_cairo_create_layout(drawing.cr);
+    pango_layout_set_text(layout, text.bytes().c_str(), -1);
+    int width = 0;
+    int height = 0;
+    pango_layout_get_pixel_size(layout, &width, &height);
+
+    detail::cairoSetSourceFromColor(drawing.cr, backColor);
+    cairo_rectangle(drawing.cr, static_cast<double>(x), static_cast<double>(y), static_cast<double>(width),
+                     static_cast<double>(height));
+    cairo_fill(drawing.cr);
+
+    detail::cairoSetSourceFromColor(drawing.cr, frontColor);
+    cairo_move_to(drawing.cr, static_cast<double>(x), static_cast<double>(y));
+    pango_cairo_show_layout(drawing.cr, layout);
+    g_object_unref(layout);
+    return 0.0;
+}
+
 /// M7b's twenty-fourth GUI slice: `ShortcutGadget(#Gadget, x, y, Width,
 /// Height, Shortcut)` - a new-in-this-beta command (first appeared in
 /// PureBasic 6.50 beta; no mention anywhere in this project's own prior
