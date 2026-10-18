@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -2053,6 +2054,105 @@ inline std::int64_t pbDateGadget(std::int64_t gadgetId, std::int64_t x, std::int
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
+namespace detail {
+inline const char* ipAddressGadgetMarkerKey() { return "pbcxx-ipaddress-gadget"; }
+
+/// `IPAddressGadget`'s own `GetGadgetState`/`SetGadgetText` parsing rule -
+/// oracle-verified via a dedicated character-by-character probe, and
+/// genuinely *not* a simple "split on '.', validate each part" parse:
+/// real PB processes the given text as if it were typed, one character
+/// at a time, into a 4-field masked entry. A digit appends to whichever
+/// field is currently active, *unless* the result would exceed 3 digits
+/// or `255` (silently rejected, the field keeps its old value and stays
+/// active - confirmed: `"1.300.3.4"` keeps `"30"`, dropping only the
+/// overflowing final `0`). A `.` advances to the next field *only if*
+/// the current one already holds at least one digit (confirmed:
+/// `"1.abc.3.4"` → `"1.3.4"`, not `"1..3.4"` - the `.` right after the
+/// still-empty second field is a no-op, so the next digit `3` lands in
+/// that same still-open field instead of a fourth one). Any other
+/// character (a sign, a letter, whitespace, a 5th `.` once the last
+/// field is already active) is simply ignored. A consequence confirmed
+/// directly: a later field can never hold a value while an earlier one
+/// doesn't, since advancing past field `N` requires field `N` already
+/// non-empty - the populated fields are always a contiguous prefix,
+/// never a value with a "gap".
+inline std::pair<int, std::array<int, 4>> parseIPAddressText(const std::string& text) {
+    std::array<std::string, 4> fields{};
+    int active = 0;
+    for (char c : text) {
+        if (c >= '0' && c <= '9') {
+            std::string tentative = fields[static_cast<std::size_t>(active)] + c;
+            if (tentative.size() <= 3 && std::stoi(tentative) <= 255) {
+                fields[static_cast<std::size_t>(active)] = tentative;
+            }
+        } else if (c == '.' && !fields[static_cast<std::size_t>(active)].empty() && active < 3) {
+            ++active;
+        }
+    }
+    std::array<int, 4> octets{0, 0, 0, 0};
+    int populated = 0;
+    while (populated < 4 && !fields[static_cast<std::size_t>(populated)].empty()) {
+        octets[static_cast<std::size_t>(populated)] = std::stoi(fields[static_cast<std::size_t>(populated)]);
+        ++populated;
+    }
+    return {populated, octets};
+}
+
+inline std::string formatIPAddressText(int populated, const std::array<int, 4>& octets) {
+    std::string result;
+    for (int i = 0; i < populated; ++i) {
+        if (i != 0) {
+            result += '.';
+        }
+        result += std::to_string(octets[static_cast<std::size_t>(i)]);
+    }
+    return result;
+}
+
+/// Oracle-verified: `GetGadgetState`'s own packed Integer is the 4
+/// octets read as a little-endian 32-bit value (`octet1` the *low*
+/// byte, `octet4` the *high* one - the natural `in_addr`-on-a-little-
+/// endian-host layout `inet_addr()`-style parsing gives for free), and
+/// genuinely a *signed* 32-bit value, sign-extended back into the 64-
+/// bit Integer on read (confirmed: `SetGadgetState(g, -1)` round-trips
+/// to `"255.255.255.255"` and back to `-1` again, never `4294967295`).
+inline std::int64_t packIPAddressState(const std::array<int, 4>& octets) {
+    auto packed = static_cast<std::uint32_t>(octets[0] & 0xFF) | (static_cast<std::uint32_t>(octets[1] & 0xFF) << 8) |
+                  (static_cast<std::uint32_t>(octets[2] & 0xFF) << 16) |
+                  (static_cast<std::uint32_t>(octets[3] & 0xFF) << 24);
+    return static_cast<std::int64_t>(static_cast<std::int32_t>(packed));
+}
+
+inline std::array<int, 4> unpackIPAddressState(std::int64_t state) {
+    auto bits = static_cast<std::uint32_t>(static_cast<std::int32_t>(state));
+    return {static_cast<int>(bits & 0xFF), static_cast<int>((bits >> 8) & 0xFF), static_cast<int>((bits >> 16) & 0xFF),
+            static_cast<int>((bits >> 24) & 0xFF)};
+}
+} // namespace detail
+
+/// M7b's twenty-first GUI slice: `IPAddressGadget`. No native GTK masked-
+/// 4-octet-entry widget exists, so this is a plain, deliberately **non-
+/// editable** `GtkEntry` - faithful for the documented, Debug-testable
+/// API (`GetGadgetText`/`GetGadgetState`/`SetGadgetText`/
+/// `SetGadgetState`, all oracle-verified - see
+/// `detail::parseIPAddressText`'s own doc comment for the real,
+/// surprisingly intricate character-by-character parsing rule
+/// `SetGadgetText` uses), without attempting to replicate unverifiable
+/// live-keystroke masked-editing (auto-advance between octets, in-place
+/// overflow rejection as the user types) - this project's own "don't
+/// guess" discipline, the same category as `DateGadget`'s own deferred
+/// interactivity just above. Takes no `Flags` at all - oracle-verified
+/// (a 6-argument call is a real "Incorrect number of parameters" compile
+/// error, unlike every other gadget in this family).
+inline std::int64_t pbIPAddressGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                        std::int64_t height) {
+    detail::ensureGtkInit();
+    GtkWidget* widget = gtk_entry_new();
+    gtk_editable_set_editable(GTK_EDITABLE(widget), FALSE);
+    g_object_set_data(G_OBJECT(widget), detail::ipAddressGadgetMarkerKey(), reinterpret_cast<gpointer>(1));
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
 /// `HyperLinkGadget` - a `GtkLinkButton`, built with an empty URI (never
 /// actually navigated - its own `"activate-link"` handler always
 /// suppresses the default open-in-browser behavior, see
@@ -3921,6 +4021,15 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
         return 0;
     }
     GtkWidget* widget = it->second;
+    // M7b's twenty-first GUI slice: `IPAddressGadget` - re-parses the
+    // given text with the real character-by-character field-entry rule
+    // (see `detail::parseIPAddressText`'s own doc comment) and displays
+    // its canonical, re-formatted result, not the literal input.
+    if (g_object_get_data(G_OBJECT(widget), detail::ipAddressGadgetMarkerKey()) != nullptr) {
+        auto [populated, octets] = detail::parseIPAddressText(text.bytes());
+        gtk_entry_set_text(GTK_ENTRY(widget), detail::formatIPAddressText(populated, octets).c_str());
+        return 1;
+    }
     // M7b's twentieth GUI slice: `DateGadget` - oracle-verified a real,
     // if obscure, side effect: `SetGadgetText` overwrites the displayed
     // text *literally* (no re-formatting, no re-parsing back into a
@@ -4072,6 +4181,15 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     if (GTK_IS_NOTEBOOK(it->second) != 0) {
         return gtk_notebook_get_current_page(GTK_NOTEBOOK(it->second));
     }
+    // M7b's twenty-first GUI slice: `IPAddressGadget` re-parses its own
+    // currently displayed (always already-canonical) text and packs the
+    // result - see `detail::packIPAddressState`'s own doc comment for
+    // the exact little-endian, sign-extended encoding.
+    if (g_object_get_data(G_OBJECT(it->second), detail::ipAddressGadgetMarkerKey()) != nullptr) {
+        auto [populated, octets] = detail::parseIPAddressText(gtk_entry_get_text(GTK_ENTRY(it->second)));
+        (void)populated;
+        return detail::packIPAddressState(octets);
+    }
     // M7b's twentieth GUI slice: `DateGadget` reports back its own
     // already mask-filtered `Date()` value - see
     // `detail::filterDateByMask`'s own doc comment for the exact
@@ -4209,6 +4327,15 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
         g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
         gtk_notebook_set_current_page(GTK_NOTEBOOK(it->second), static_cast<int>(state));
         g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
+        return 1;
+    }
+    // `IPAddressGadget` - `state` unpacks into all 4 octets (always
+    // fully "populated", unlike a partially-typed `SetGadgetText` -
+    // oracle-verified: `SetGadgetState(g, 0)` displays `"0.0.0.0"`, not
+    // an empty string).
+    if (g_object_get_data(G_OBJECT(it->second), detail::ipAddressGadgetMarkerKey()) != nullptr) {
+        auto octets = detail::unpackIPAddressState(state);
+        gtk_entry_set_text(GTK_ENTRY(it->second), detail::formatIPAddressText(4, octets).c_str());
         return 1;
     }
     // `DateGadget` - `state` is a real `Date()` value, re-filtered

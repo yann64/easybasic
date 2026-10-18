@@ -583,6 +583,12 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
           TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer},
          7},
+        // M7b's twenty-first GUI slice: IPAddressGadget. Oracle-verified
+        // to take no Flags at all (a 6-argument call is a real
+        // "Incorrect number of parameters" compile error).
+        {"ipaddressgadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         5},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -728,7 +734,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
         "setgadgetitemattribute", "optiongadget", "progressbargadget", "spingadget", "trackbargadget",
         "scrollbargadget", "imagegadget", "buttonimagegadget", "calendargadget", "hyperlinkgadget", "editorgadget",
-        "dategadget",
+        "dategadget", "ipaddressgadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",

@@ -4233,3 +4233,53 @@ the very next `pbWindowEvent()` call - reproduced consistently under the `linux-
 specifically (timing-sensitive; `linux-gcc` happened not to trigger it), fixed by adding the missing
 drain, verified clean over several repeated runs on both compilers afterward.
 
+## M7b Implementation Notes (GUI core, twenty-first slice: `IPAddressGadget`)
+
+**Scope landed**: a plain, deliberately **non-editable** `GtkEntry` - no native GTK masked-4-octet-
+entry widget exists, so (the same position `DateGadget` just before it already takes) this is
+faithful for the documented, Debug-testable API only (`GetGadgetText`/`GetGadgetState`/
+`SetGadgetText`/`SetGadgetState`), without attempting to replicate live-keystroke masked editing
+(auto-advance between octets, in-place overflow rejection as the user types). Takes **no `Flags` at
+all** - oracle-verified (a 6-argument call is a real "Incorrect number of parameters" compile
+error, unlike every other gadget in this whole family, which all accept at least one).
+
+**`SetGadgetText`'s own parsing turned out to be a genuinely intricate character-by-character
+field-entry simulation, not a simple "split on '.', validate each part"** - discovered only because
+a naive split-based guess was checked against the oracle on a battery of edge cases before being
+trusted, and failed several of them. The real, now fully oracle-verified rule (`detail::
+parseIPAddressText`): text is processed one character at a time into a 4-field masked entry. A
+digit appends to whichever field is currently active, unless the result would exceed 3 digits or
+`255` - then it's dropped and the field keeps its *old* value (confirmed: `"1.300.3.4"` → `"1.30.3.
+4"`, only the overflowing final `0` is lost, not the whole field). A `.` advances to the next field
+*only if* the current one already holds at least one digit - confirmed with the sharpest case found:
+`"1.abc.3.4"` → `"1.3.4"`, not `"1..3.4"`, because the `.` immediately after the still-empty second
+field is a no-op (doesn't advance), so the following `3` lands in that *same* still-open field
+instead of a new one. Any other character (a sign, a letter, whitespace, a 5th `.` once the last
+field is active) is simply ignored. A direct consequence, also confirmed: the populated fields are
+always a contiguous prefix - a later field can never hold a value while an earlier one is empty,
+since advancing past field `N` requires field `N` already non-empty.
+
+**`GetGadgetState`'s packed Integer is the 4 octets read as a little-endian 32-bit value** (octet1
+the low byte, octet4 the high one - the natural `in_addr`-on-a-little-endian-host layout, matching
+how `inet_addr()`-style parsing naturally comes out) - oracle-verified directly by computing the
+expected packed value independently and matching it exactly, both directions. **Genuinely signed**,
+not unsigned: `SetGadgetState(g, -1)` round-trips to `"255.255.255.255"` and back to `-1` again,
+never `4294967295` - implemented via a `static_cast` through `std::int32_t` before sign-extending
+back to the 64-bit Integer. `SetGadgetState` always shows *all 4* octets (oracle-verified:
+`SetGadgetState(g, 0)` displays `"0.0.0.0"`, not an empty string) - unlike a partially-typed
+`SetGadgetText`, which only shows however many fields actually got a digit.
+
+**No per-widget stored state needed at all, unlike `DateGadget`'s own `DateGadgetState`**: since
+`GetGadgetState` can always be *re-derived* by re-parsing whatever text is currently displayed
+(the entry only ever holds text this code itself wrote, always already in canonical form), a bare
+marker tag (`detail::ipAddressGadgetMarkerKey`) is enough to distinguish this gadget's own
+`GtkEntry` from `StringGadget`'s/`DateGadget`'s own bare ones - no `g_object_set_data_full`-owned
+struct required.
+
+**Testing**: two new `runtime_guilib_test.cpp` cases - the full `SetGadgetText` parsing-edge-case
+battery (overflow rejection, the empty-field-blocks-advance case, junk characters, a trailing
+partial octet) and the `SetGadgetState` pack/unpack round-trip including the signed-`-1` case. One
+new golden e2e case (`tests/e2e/gui_ipaddress`) exercises the same sequence end to end through
+`pbcxx` itself, confirmed line-for-line against the real oracle (modulo the established native-
+creation-handle divergence) before being pinned.
+

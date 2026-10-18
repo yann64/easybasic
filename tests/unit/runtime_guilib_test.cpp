@@ -2883,3 +2883,77 @@ TEST_CASE("DateGadget's SetGadgetState re-filters through the same Mask; SetGadg
 
     pbCloseWindow(933);
 }
+
+TEST_CASE("IPAddressGadget's SetGadgetText parses text with the real character-by-character "
+          "field-entry rule, not a simple split",
+          "[runtime][guilib]") {
+    // Oracle-verified directly, across every combination tested: a
+    // digit that would push the active field over 255 or past 3
+    // characters is dropped, not the whole field; a '.' only advances
+    // to the next field if the current one already has a digit (so
+    // "1.abc.3.4" becomes "1.3.4", not "1..3.4" - the '.' right after
+    // the still-empty second field is a no-op); any other junk
+    // character (sign, letter, space, 5th '.') is simply ignored; the
+    // populated fields are always a contiguous prefix.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(934, 10, 10, 300, 300, PBString("Test"));
+    CHECK(pbIPAddressGadget(0, 10, 10, 200, 25) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "");
+    CHECK(pbGetGadgetState(0) == 0);
+
+    pbSetGadgetText(0, PBString("192.168.1.42"));
+    CHECK(pbGetGadgetText(0).bytes() == "192.168.1.42");
+    CHECK(pbGetGadgetState(0) == 704751808);
+
+    pbSetGadgetText(0, PBString("1.2.3.4.5"));
+    CHECK(pbGetGadgetText(0).bytes() == "1.2.3.45");
+
+    pbSetGadgetText(0, PBString("1.300.3.4"));
+    CHECK(pbGetGadgetText(0).bytes() == "1.30.3.4");
+
+    pbSetGadgetText(0, PBString("1.abc.3.4"));
+    CHECK(pbGetGadgetText(0).bytes() == "1.3.4");
+    CHECK(pbGetGadgetState(0) == 262913);
+
+    pbSetGadgetText(0, PBString("-1.2.3.4"));
+    CHECK(pbGetGadgetText(0).bytes() == "1.2.3.4");
+
+    pbSetGadgetText(0, PBString("1.2.3"));
+    CHECK(pbGetGadgetText(0).bytes() == "1.2.3");
+    CHECK(pbGetGadgetState(0) == 197121);
+
+    pbSetGadgetText(0, PBString("..."));
+    CHECK(pbGetGadgetText(0).bytes() == "");
+    CHECK(pbGetGadgetState(0) == 0);
+
+    pbCloseWindow(934);
+}
+
+TEST_CASE("IPAddressGadget's SetGadgetState packs/unpacks all 4 octets as a sign-extended, "
+          "little-endian 32-bit value",
+          "[runtime][guilib]") {
+    // Oracle-verified: SetGadgetState always shows all 4 octets (even
+    // 0.0.0.0, unlike a partially-typed SetGadgetText), and -1 round-
+    // trips through "255.255.255.255" back to -1, not 4294967295 - a
+    // genuinely signed 32-bit value, not unsigned.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(935, 10, 10, 300, 300, PBString("Test"));
+    pbIPAddressGadget(0, 10, 10, 200, 25);
+
+    CHECK(pbSetGadgetState(0, 0) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "0.0.0.0");
+    CHECK(pbGetGadgetState(0) == 0);
+
+    CHECK(pbSetGadgetState(0, 16777226) == 1); // 10.0.0.1
+    CHECK(pbGetGadgetText(0).bytes() == "10.0.0.1");
+
+    CHECK(pbSetGadgetState(0, -1) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "255.255.255.255");
+    CHECK(pbGetGadgetState(0) == -1);
+
+    pbCloseWindow(935);
+}
