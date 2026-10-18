@@ -1979,6 +1979,80 @@ inline std::int64_t pbCalendarGadget(std::int64_t gadgetId, std::int64_t x, std:
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
+namespace detail {
+/// `DateGadget`'s own per-widget state - the `Mask$` string (needed to
+/// recompute both `GetGadgetText` and the mask-filtered `GetGadgetState`
+/// on every `SetGadgetState`) and the current, already mask-filtered
+/// `Date()` value. Lives attached directly to the `GtkEntry` via
+/// `g_object_set_data_full`, the same ownership pattern
+/// `treeLevelStack`'s own doc comment already explains. Also doubles as
+/// the marker that distinguishes a `DateGadget`'s own `GtkEntry` from a
+/// plain `StringGadget`'s (both are bare `GtkEntry`s otherwise) -
+/// checked ahead of the generic `GTK_IS_ENTRY` branches in
+/// `GetGadgetState`/`SetGadgetState`/`SetGadgetText`.
+struct DateGadgetState {
+    std::string mask;
+    std::int64_t value = 0;
+};
+inline const char* dateGadgetStateKey() { return "pbcxx-date-gadget-state"; }
+inline DateGadgetState* dateGadgetState(GtkWidget* widget) {
+    return static_cast<DateGadgetState*>(g_object_get_data(G_OBJECT(widget), dateGadgetStateKey()));
+}
+
+/// `DateGadget`'s own state-encoding rule, oracle-verified directly
+/// across every combination of date-only/time-only/partial masks: only
+/// the date/time *components* whose own mask token actually appears in
+/// `Mask$` are kept from the given `Date`; every other component resets
+/// to the Unix epoch's own value for that field (year `1970`, month/day
+/// `1`, hour/minute/second `0`) - a date-only mask truncates to
+/// midnight (matching `CalendarGadget`'s own truncation above), a
+/// time-only mask with no date tokens at all collapses to a raw,
+/// sub-day-magnitude second offset from `1970-01-01` rather than any
+/// `Date()` value one might naively expect, and a mask with only `%hh`
+/// (no `%ii`/`%ss`) keeps the hour but zeroes the minute/second.
+inline std::int64_t filterDateByMask(const std::string& mask, std::int64_t date) {
+    std::tm value = localTm(date);
+    bool hasYear = mask.find("%yyyy") != std::string::npos || mask.find("%yy") != std::string::npos;
+    std::int64_t year = hasYear ? value.tm_year + 1900 : 1970;
+    std::int64_t month = mask.find("%mm") != std::string::npos ? value.tm_mon + 1 : 1;
+    std::int64_t day = mask.find("%dd") != std::string::npos ? value.tm_mday : 1;
+    std::int64_t hour = mask.find("%hh") != std::string::npos ? value.tm_hour : 0;
+    std::int64_t minute = mask.find("%ii") != std::string::npos ? value.tm_min : 0;
+    std::int64_t second = mask.find("%ss") != std::string::npos ? value.tm_sec : 0;
+    return pbDate(year, month, day, hour, minute, second);
+}
+} // namespace detail
+
+/// M7b's twentieth GUI slice: `DateGadget`. No native GTK date-mask-entry
+/// widget exists to match real PB's own native control, so this is a
+/// plain, deliberately **non-editable** `GtkEntry` showing the formatted
+/// text - faithful for the documented, Debug-testable API
+/// (`GetGadgetText`/`GetGadgetState`/`SetGadgetState`, all oracle-
+/// verified - see `detail::filterDateByMask`'s own doc comment for the
+/// state-encoding rule), without attempting to replicate unverifiable
+/// interactive behavior (a real clickable popup/spin-arrow editing
+/// experience) - this project's own "don't guess" discipline, the same
+/// category as `HyperLinkGadget`'s own unapplied `Color`.
+/// `#PB_Date_CheckBox` (`=2`, oracle-verified value) is registered but
+/// not applied for the same reason - no PB-visible accessor exists to
+/// verify any cosmetic effect against.
+inline std::int64_t pbDateGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
+                                   std::int64_t height, const PBString& mask, std::int64_t date,
+                                   std::int64_t /*flags*/ = 0) {
+    detail::ensureGtkInit();
+    GtkWidget* widget = gtk_entry_new();
+    gtk_editable_set_editable(GTK_EDITABLE(widget), FALSE);
+
+    auto* state = new detail::DateGadgetState();
+    state->mask = mask.bytes();
+    state->value = detail::filterDateByMask(state->mask, date);
+    g_object_set_data_full(G_OBJECT(widget), detail::dateGadgetStateKey(), state,
+                            [](gpointer p) { delete static_cast<detail::DateGadgetState*>(p); });
+    gtk_entry_set_text(GTK_ENTRY(widget), pbFormatDate(PBString(state->mask), state->value).bytes().c_str());
+
+    return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
+}
+
 /// `HyperLinkGadget` - a `GtkLinkButton`, built with an empty URI (never
 /// actually navigated - its own `"activate-link"` handler always
 /// suppresses the default open-in-browser behavior, see
@@ -3847,6 +3921,18 @@ inline std::int64_t pbSetGadgetText(std::int64_t gadgetId, const PBString& text)
         return 0;
     }
     GtkWidget* widget = it->second;
+    // M7b's twentieth GUI slice: `DateGadget` - oracle-verified a real,
+    // if obscure, side effect: `SetGadgetText` overwrites the displayed
+    // text *literally* (no re-formatting, no re-parsing back into a
+    // Date), and independently resets the gadget's own tracked state to
+    // `0` regardless of what text is given (confirmed with both a
+    // non-numeric and a numeric string - `GetGadgetState` stays `0`
+    // either way, never reparsing the literal digits as a timestamp).
+    if (detail::DateGadgetState* dateState = detail::dateGadgetState(widget)) {
+        gtk_entry_set_text(GTK_ENTRY(widget), text.bytes().c_str());
+        dateState->value = 0;
+        return 1;
+    }
     // M7b's nineteenth GUI slice: `EditorGadget` - replaces the buffer's
     // own full text, the same "no spurious event for a programmatic
     // change" blocking every other text-setter here already uses.
@@ -3986,6 +4072,13 @@ inline std::int64_t pbGetGadgetState(std::int64_t gadgetId) {
     if (GTK_IS_NOTEBOOK(it->second) != 0) {
         return gtk_notebook_get_current_page(GTK_NOTEBOOK(it->second));
     }
+    // M7b's twentieth GUI slice: `DateGadget` reports back its own
+    // already mask-filtered `Date()` value - see
+    // `detail::filterDateByMask`'s own doc comment for the exact
+    // component-keeping rule.
+    if (detail::DateGadgetState* dateState = detail::dateGadgetState(it->second)) {
+        return dateState->value;
+    }
     // M7b's eighteenth GUI slice: `CalendarGadget` reports back a real
     // `Date()` value (midnight local time) - see `pbCalendarGadget`'s
     // own doc comment on reusing `datelib.hpp`'s own local-time
@@ -4116,6 +4209,15 @@ inline std::int64_t pbSetGadgetState(std::int64_t gadgetId, std::int64_t state) 
         g_signal_handlers_block_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
         gtk_notebook_set_current_page(GTK_NOTEBOOK(it->second), static_cast<int>(state));
         g_signal_handlers_unblock_by_func(it->second, reinterpret_cast<gpointer>(detail::onPanelSwitchPage), nullptr);
+        return 1;
+    }
+    // `DateGadget` - `state` is a real `Date()` value, re-filtered
+    // through the same `Mask$`-component rule creation itself applies
+    // (see `detail::filterDateByMask`'s own doc comment) and
+    // re-formatted into the displayed text - oracle-verified directly.
+    if (detail::DateGadgetState* dateState = detail::dateGadgetState(it->second)) {
+        dateState->value = detail::filterDateByMask(dateState->mask, state);
+        gtk_entry_set_text(GTK_ENTRY(it->second), pbFormatDate(PBString(dateState->mask), dateState->value).bytes().c_str());
         return 1;
     }
     // `CalendarGadget` - `state` is a real `Date()` value (see

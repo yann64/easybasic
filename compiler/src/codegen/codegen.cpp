@@ -201,7 +201,7 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"scrollbargadget", "pbScrollBarGadget"},
         {"imagegadget", "pbImageGadget"}, {"buttonimagegadget", "pbButtonImageGadget"},
         {"calendargadget", "pbCalendarGadget"}, {"hyperlinkgadget", "pbHyperLinkGadget"},
-        {"editorgadget", "pbEditorGadget"},
+        {"editorgadget", "pbEditorGadget"}, {"dategadget", "pbDateGadget"},
         {"messagerequester", "pbMessageRequester"},
         {"colorrequester", "pbColorRequester"}, {"fontrequester", "pbFontRequester"},
         {"selectedfontname", "pbSelectedFontName"}, {"selectedfontsize", "pbSelectedFontSize"},

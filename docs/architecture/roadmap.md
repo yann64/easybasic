@@ -4165,3 +4165,71 @@ fact, same as that earlier test's own). One new golden e2e case (`tests/e2e/gui_
 text/state/item round-tripping end to end through `pbcxx` itself, confirmed line-for-line against
 the real oracle (modulo the established native-creation-handle divergence) before being pinned.
 
+## CI note: Haiku box LAN address changed (192.168.1.32 -> .31)
+
+The Haiku machine's own static LAN address changed outside this project's control, which broke the
+`haiku` CI job (`ssh: connect to host 192.168.1.32 port 22: No route to host`) even though the
+`haiku-bridge` self-hosted runner itself stayed online the whole time - two genuinely separate
+failure modes that look identical from the job's own "can't reach Haiku" symptom. `HAIKU_HOST` in
+`.github/workflows/ci.yml` updated to the new `.31` address; confirmed green again on the next push.
+
+## M7b Implementation Notes (GUI core, twentieth slice: `DateGadget`)
+
+**Scope landed**: a plain, deliberately **non-editable** `GtkEntry` showing `Mask$`-formatted text -
+no native GTK date-mask-entry widget exists to match real PB's own native control, so this
+implementation is faithful for the documented, Debug-testable API only (`GetGadgetText`/
+`GetGadgetState`/`SetGadgetState`), without attempting to replicate unverifiable interactive
+behavior (a real clickable popup or spin-arrow editing experience) - this project's own "don't
+guess" discipline, the same category as `HyperLinkGadget`'s own unapplied `Color`.
+
+**The real, oracle-verified heart of this gadget: `GetGadgetState` keeps only the date/time
+*components* whose own token actually appears in `Mask$`** - every other component resets to the
+Unix epoch's own value for that field (year `1970`, month/day `1`, hour/minute/second `0`), not to
+whatever the originally-given `Date` happened to hold. Confirmed precisely across every combination
+tested: a date-only mask (`"%dd/%mm/%yyyy"`) truncates to midnight (the same truncation
+`CalendarGadget`'s own state already does); adding `%hh` to that same mask keeps the hour but still
+zeroes minute/second; adding `%ii` instead keeps the minute but zeroes hour/second; a mask with *no*
+date tokens at all (`"%hh:%ii:%ss"`) collapses to a raw, sub-day-magnitude second offset from
+`1970-01-01` - not some arbitrary date's time-of-day, a genuinely different *kind* of number than
+every other case; a mask naming only `%yyyy` defaults month/day to `1`/`1` (a real calendar date),
+not `0`/`0`. `detail::filterDateByMask` implements this exactly; `SetGadgetState` re-applies the
+same rule (confirmed directly: setting a date-only-mask gadget's state to a value carrying a
+non-zero time component gets the time truncated away again, same as creation).
+
+**Found as a pure byproduct of this investigation, fixed separately**: real PB's `FormatDate()`
+supports a `%yy` (2-digit year) token this project's `pbFormatDate` never implemented - needed here
+because `GetGadgetText` is just `FormatDate(Mask$, <the already-filtered state>)`, reusing that
+function directly rather than duplicating its substitution logic. Oracle-verified order-safety too
+(`%yyyy` must substitute before `%yy`, confirmed not to corrupt an already-substituted 4-digit year).
+See `datelib.hpp`'s own `pbFormatDate` doc comment and its dedicated commit.
+
+**`SetGadgetText` is a genuine, oracle-verified escape hatch, unlike every other gadget in this
+whole family**: it writes the literal text given with *no* re-formatting and *no* re-parsing back
+into a Date, and independently resets `GetGadgetState` to `0` regardless of what text is given -
+confirmed with both a non-numeric and a purely numeric string (state never reparses the digits as a
+timestamp either way). Implemented as a dedicated branch checked ahead of the generic `GTK_IS_ENTRY`
+fallback in `pbSetGadgetText` (the same "marker tag checked early" pattern `imageButtonMarkerKey`
+already established), since a `DateGadget`'s own `GtkEntry` is otherwise indistinguishable from a
+plain `StringGadget`'s.
+
+**`#PB_Date_CheckBox`(`=2`, oracle-verified value) is registered but not applied** - no PB-visible
+accessor exists to verify any cosmetic effect against, the same deliberately deferred gap several
+`Options`-style flags earlier in this gadget family already are.
+
+**Testing**: two new `runtime_guilib_test.cpp` cases covering the full component-filtering matrix
+(date-only/`+%hh`/`+%ii`/time-only/year-only masks) plus the `SetGadgetState` re-filtering and
+`SetGadgetText` escape-hatch behavior, and two new `runtime_datelib_test.cpp` cases for the `%yy`
+fix. One new golden e2e case (`tests/e2e/gui_date`) exercises the same sequence end to end through
+`pbcxx` itself, confirmed line-for-line against the real oracle (modulo the established native-
+creation-handle divergence) before being pinned. While investigating this slice, also caught and
+fixed a genuine, reproducible flake in the *previous* slice's own `EditorGadget` "SetGadgetText
+stays silent" test (`runtime_guilib_test.cpp`): it was missing a `drainEvents()` call between the
+action and the `pbWindowEvent() == 0` check - every other "an action queues nothing" test in this
+file does the action, drains, *then* checks, giving the main loop a chance to settle whatever
+async GTK/X11 side effects the action itself produced first. Without that drain, a late-arriving,
+genuinely-real `#PB_Event_SizeWindow`/`MoveWindow` (from `GtkTextView`'s own content-driven layout
+renegotiation cascading up to the top-level window) could still be in flight and get picked up by
+the very next `pbWindowEvent()` call - reproduced consistently under the `linux-clang` build
+specifically (timing-sensitive; `linux-gcc` happened not to trigger it), fixed by adding the missing
+drain, verified clean over several repeated runs on both compilers afterward.
+

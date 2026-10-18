@@ -577,6 +577,12 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
           TypeSuffix::Integer},
          5},
+        // M7b's twentieth GUI slice: DateGadget. Mask$/Date are required;
+        // Flags (#PB_Date_CheckBox=2, oracle-verified value) is optional.
+        {"dategadget", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer},
+         7},
         // M7b's third GUI slice: MessageRequester. Flags is optional
         // (oracle-verified: a plain two-argument call defaults to an
         // Ok-only, iconless dialog).
@@ -722,6 +728,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "listicongadget", "treegadget", "addgadgetcolumn", "removegadgetcolumn", "getgadgetitemattribute",
         "setgadgetitemattribute", "optiongadget", "progressbargadget", "spingadget", "trackbargadget",
         "scrollbargadget", "imagegadget", "buttonimagegadget", "calendargadget", "hyperlinkgadget", "editorgadget",
+        "dategadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
@@ -1050,6 +1057,9 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         // a direct `Debug #PB_Xxx` probe.
         {"pb_editor_readonly", 1},
         {"pb_editor_wordwrap", 2},
+        // DateGadget (M7b's twentieth GUI slice) - oracle-verified via a
+        // direct `Debug #PB_Xxx` probe.
+        {"pb_date_checkbox", 2},
     };
     return table;
 }

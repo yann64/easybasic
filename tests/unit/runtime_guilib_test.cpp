@@ -2801,6 +2801,7 @@ TEST_CASE("Real text entry (gtk_text_buffer_insert_at_cursor) queues #PB_Event_G
     drainEvents();
 
     pbSetGadgetText(0, PBString("no event"));
+    drainEvents();
     CHECK(pbWindowEvent() == 0);
 
     GtkWidget* scrolled = detail::gadgetTable().at(0);
@@ -2816,4 +2817,69 @@ TEST_CASE("Real text entry (gtk_text_buffer_insert_at_cursor) queues #PB_Event_G
     CHECK(pbEventType() == 768); // #PB_EventType_Change
 
     pbCloseWindow(931);
+}
+
+TEST_CASE("DateGadget's state keeps only the date/time components the Mask actually mentions",
+          "[runtime][guilib]") {
+    // Oracle-verified directly, across every combination tested: a
+    // date-only mask truncates GetGadgetState to midnight (matching
+    // CalendarGadget's own truncation); a mask that also mentions %hh
+    // keeps the hour but still zeroes minute/second; a mask that
+    // mentions %ii instead keeps the minute but zeroes hour/second -
+    // every component not named by the mask resets to the Unix epoch's
+    // own value for that field (1970-01-01 00:00:00), not to whatever
+    // the originally-given Date happened to hold.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(932, 10, 10, 300, 300, PBString("Test"));
+    std::int64_t d = pbDate(2020, 6, 15, 10, 30, 45);
+
+    CHECK(pbDateGadget(0, 10, 10, 200, 25, PBString("%dd/%mm/%yyyy"), d) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "15/06/2020");
+    CHECK(pbGetGadgetState(0) == pbDate(2020, 6, 15, 0, 0, 0));
+
+    CHECK(pbDateGadget(1, 10, 50, 200, 25, PBString("%dd/%mm/%yyyy %hh"), d) == 1);
+    CHECK(pbGetGadgetState(1) == pbDate(2020, 6, 15, 10, 0, 0));
+
+    CHECK(pbDateGadget(2, 10, 90, 200, 25, PBString("%dd/%mm/%yyyy %ii"), d) == 1);
+    CHECK(pbGetGadgetState(2) == pbDate(2020, 6, 15, 0, 30, 0));
+
+    CHECK(pbDateGadget(3, 10, 130, 200, 25, PBString("%hh:%ii:%ss"), d) == 1);
+    CHECK(pbGetGadgetState(3) == pbDate(1970, 1, 1, 10, 30, 45));
+
+    CHECK(pbDateGadget(4, 10, 170, 200, 25, PBString("%yyyy"), d) == 1);
+    CHECK(pbGetGadgetState(4) == pbDate(2020, 1, 1, 0, 0, 0));
+
+    pbCloseWindow(932);
+}
+
+TEST_CASE("DateGadget's SetGadgetState re-filters through the same Mask; SetGadgetText is a "
+          "literal-text-and-state-reset escape hatch",
+          "[runtime][guilib]") {
+    // Oracle-verified: SetGadgetState re-applies the exact same
+    // component-filtering rule creation uses (confirmed by setting a
+    // date-only-mask gadget's state to a value carrying a non-zero time
+    // component and finding it truncated away again). SetGadgetText,
+    // unlike every other gadget here, is a genuine escape hatch: it
+    // writes the literal text given with no re-formatting, and
+    // independently resets GetGadgetState to 0 regardless of what text
+    // is given (confirmed with both a non-numeric and a purely numeric
+    // string - state never reparses the digits as a timestamp).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(933, 10, 10, 300, 300, PBString("Test"));
+    pbDateGadget(0, 10, 10, 200, 25, PBString("%dd/%mm/%yyyy"), pbDate(2020, 6, 15, 0, 0, 0));
+
+    std::int64_t d2 = pbDate(2021, 3, 9, 14, 22, 33);
+    CHECK(pbSetGadgetState(0, d2) == 1);
+    CHECK(pbGetGadgetState(0) == pbDate(2021, 3, 9, 0, 0, 0));
+    CHECK(pbGetGadgetText(0).bytes() == "09/03/2021");
+
+    CHECK(pbSetGadgetText(0, PBString("12345")) == 1);
+    CHECK(pbGetGadgetText(0).bytes() == "12345");
+    CHECK(pbGetGadgetState(0) == 0);
+
+    pbCloseWindow(933);
 }
