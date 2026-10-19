@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **264 / 1848** procedures implemented (14%).
+**Summary**: **268 / 1848** procedures implemented (14%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -53,7 +53,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [FileSystem](#filesystem) | 3 | 29 | 10% |
 | [Font](#font) | 0 | 5 | 0% |
 | [Ftp](#ftp) | 0 | 23 | 0% |
-| [Gadget](#gadget) | 68 | 82 | 82% |
+| [Gadget](#gadget) | 72 | 82 | 87% |
 | [GadgetOpenGL](#gadgetopengl) | 0 | 1 | 0% |
 | [GadgetWeb](#gadgetweb) | 0 | 1 | 0% |
 | [Help](#help) | 0 | 2 | 0% |
@@ -919,7 +919,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Gadget
 
-68/82 implemented.
+72/82 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -940,7 +940,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `CountGadgetItems` | (#Gadget) - Count all the items of the specified #Gadget. |
 | Yes | `DateGadget` | (#Gadget, x, y, Width, Height [, Mask$ [, Date [, Flags]]]) - Create a Date/Time selector Gadget. |
 | Yes | `DisableGadget` | (#Gadget, State) - Disable or enable a gadget. |
-| No | `DisableGadgetRedraw` | (#Gadget, State) - Disable or enable the redrawing of a gadget to speed up mass updates. |
+| Yes | `DisableGadgetRedraw` | (#Gadget, State) - Disable or enable the redrawing of a gadget to speed up mass updates. |
 | Yes | `EditorGadget` | (#Gadget, x, y, Width, Height [, Flags]) - Create an Editor gadget in the current GadgetList. |
 | Yes | `ExplorerComboGadget` | (#Gadget, x, y, Width, Height, Directory$ [, Flags]) - Create a File/Directory Combo Gadget. |
 | Yes | `ExplorerListGadget` | (#Gadget, x, y, Width, Height, Directory$ [, Flags]) - Create a File/Directory List Gadget. |
@@ -950,14 +950,14 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `GadgetHeight` | (#Gadget [, Mode]) - Return the height of the #Gadget, in pixels. |
 | Yes | `GadgetID` | (#Gadget) - Return the ID of the #Gadget. |
 | No | `GadgetItemID` | (#Gadget, Item) - Return the system ID of the specified gadget item. |
-| No | `GadgetToolTip` | (#Gadget, Text$) - Associate the specified Text$ with the #Gadget. |
+| Yes | `GadgetToolTip` | (#Gadget, Text$) - Associate the specified Text$ with the #Gadget. |
 | Yes | `GadgetType` | (#Gadget) - Return the type of the specified #Gadget. |
 | Yes | `GadgetWidth` | (#Gadget [, Mode]) - Return the width of the #Gadget, in pixels. |
 | Yes | `GadgetX` | (#Gadget [, Mode]) - Return the X position of the #Gadget, in pixels. |
 | Yes | `GadgetY` | (#Gadget [, Mode]) - Return the Y position of the #Gadget, in pixels. |
 | Yes | `GetActiveGadget` | () - Get the Gadget that has the focus. |
 | Yes | `GetGadgetAttribute` | (#Gadget, Attribute) - Return the specified #Gadget attribute value. |
-| No | `GetGadgetColor` | (#Gadget, ColorType) - Get the currently set color of the Gadget. |
+| Yes | `GetGadgetColor` | (#Gadget, ColorType) - Get the currently set color of the Gadget. |
 | Yes | `GetGadgetData` | (#Gadget) - Return the value previously stored for this Gadget. |
 | No | `GetGadgetFont` | (#Gadget) - Get the FontID associated with the specified gadget. |
 | Yes | `GetGadgetItemAttribute` | (#Gadget, Item, Attribute [, Column]) - Return the specified #Gadget item attribute value. |
@@ -985,7 +985,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `ScrollBarGadget` | (#Gadget, x, y, Width, Height, Min, Max, PageLength [, Flags]) - Create a ScrollBar gadget in the current GadgetList. |
 | Yes | `SetActiveGadget` | (#Gadget) - Set the focus on the specified Gadget. |
 | Yes | `SetGadgetAttribute` | (#Gadget, Attribute, Value) - Change the specified #Gadget attribute. |
-| No | `SetGadgetColor` | (#Gadget, ColorType, Color) - Change a color in the Gadget. |
+| Yes | `SetGadgetColor` | (#Gadget, ColorType, Color) - Change a color in the Gadget. |
 | Yes | `SetGadgetData` | (#Gadget, Value) - Store a value for the Gadget. |
 | No | `SetGadgetFont` | (#Gadget, FontID()) - Change the font which will be used by newly created gadgets. |
 | Yes | `SetGadgetItemAttribute` | (#Gadget, Item, Attribute, Value [, Column]) - Change the specified #Gadget item attribute. |

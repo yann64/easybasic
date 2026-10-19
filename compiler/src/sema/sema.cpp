@@ -409,6 +409,11 @@ void Sema::registerGuiLibBuiltins() {
         {"getgadgetdata", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"getactivegadget", TypeSuffix::Integer, {}, 0},
         {"setactivegadget", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"setgadgetcolor", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"getgadgetcolor", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"gadgettooltip", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"disablegadgetredraw", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"setgadgettext", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
         {"getgadgettext", TypeSuffix::String, {TypeSuffix::Integer}, 1},
         {"setgadgetstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
@@ -848,6 +853,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "isgadget",      "freegadget",  "resizegadget",     "hidegadget",     "disablegadget",
         "gadgetx", "gadgety", "gadgetwidth", "gadgetheight", "gadgetid", "gadgettype",
         "setgadgetdata", "getgadgetdata", "getactivegadget", "setactivegadget",
+        "setgadgetcolor", "getgadgetcolor", "gadgettooltip", "disablegadgetredraw",
         "setgadgettext", "getgadgettext", "setgadgetstate", "getgadgetstate", "messagerequester",
         "containergadget", "opengadgetlist", "closegadgetlist",
         "panelgadget", "addgadgetitem", "countgadgetitems", "removegadgetitem", "cleargadgetitems",
@@ -1348,9 +1354,10 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_gadget_actualsize", 0}, {"pb_gadget_requiredsize", 1},
         {"pb_gadget_containercoordinate", 0}, {"pb_gadget_screencoordinate", 1},
         {"pb_gadget_windowcoordinate", 2},
-        // GetGadgetColor/SetGadgetColor's own ColorType - not behaviorally
-        // implemented this slice, registered for forward-compile
-        // compatibility only.
+        // GetGadgetColor/SetGadgetColor's own ColorType - FrontColor/
+        // BackColor are behaviorally implemented (see pbSetGadgetColor's
+        // own doc comment in guilib.hpp); TitleBackColor/GrayTextColor
+        // are registered for forward-compile compatibility only.
         {"pb_gadget_frontcolor", 1}, {"pb_gadget_backcolor", 2}, {"pb_gadget_titlebackcolor", 5},
         {"pb_gadget_graytextcolor", 6},
         // DrawingMode(Mode) flags - oracle-verified via a direct `Debug

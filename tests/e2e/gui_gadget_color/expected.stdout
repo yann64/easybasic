@@ -1,0 +1,25 @@
+[Debugger]  --- fixed gadgets: Set silently succeeds, Get never reflects it ---
+[Debugger]  -1
+[Debugger]  0
+[Debugger]  -1
+[Debugger]  0
+[Debugger]  16777215
+[Debugger]  0
+[Debugger]  16777215
+[Debugger]  --- settable gadgets: a real, persisting round-trip ---
+[Debugger]  -1
+[Debugger]  255
+[Debugger]  -1
+[Debugger]  16711680
+[Debugger]  0
+[Debugger]  16777215
+[Debugger]  255
+[Debugger]  16711680
+[Debugger]  --- CanvasGadget: BackColor only ---
+[Debugger]  -1
+[Debugger]  16711680
+[Debugger]  --- GadgetToolTip/DisableGadgetRedraw ---
+[Debugger]  0
+[Debugger]  1
+[Debugger]  1
+[Debugger]  done

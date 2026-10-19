@@ -361,6 +361,69 @@ TEST_CASE("SetGadgetData/GetGadgetData round-trip a plain per-gadget Integer; Ge
     pbCloseWindow(951);
 }
 
+TEST_CASE("SetGadgetColor/GetGadgetColor support is genuinely gadget-type-specific, not "
+          "universal - a 'fixed' gadget's own SetGadgetColor silently succeeds but has no "
+          "effect at all; GadgetToolTip/DisableGadgetRedraw are both plain, clean successes",
+          "[runtime][guilib]") {
+    // Oracle-verified directly, gadget type by gadget type - see
+    // detail::gadgetColorSupportFor's own doc comment in guilib.hpp for
+    // the full support table and its one deliberate exception
+    // (ScrollAreaGadget's own real GetGadgetColor is non-deterministic
+    // garbage in real PB itself - a different huge number every single
+    // run - so this project deliberately treats it as "fixed" instead,
+    // for a clean, reproducible answer).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(952, 10, 10, 320, 320, PBString("Test"));
+
+    // "Fixed" gadgets: Set silently succeeds, Get never reflects it.
+    pbButtonGadget(1, 10, 10, 50, 20, PBString("B"));
+    CHECK(pbGetGadgetColor(1, 1) == -1); // #PB_Gadget_FrontColor
+    CHECK(pbSetGadgetColor(1, 1, pbRGB(255, 0, 0)) == 0);
+    CHECK(pbGetGadgetColor(1, 1) == -1); // unchanged
+
+    pbStringGadget(2, 10, 40, 50, 20, PBString(""));
+    CHECK(pbGetGadgetColor(2, 1) == 0); // black
+    CHECK(pbGetGadgetColor(2, 2) == 16777215); // white, #PB_Gadget_BackColor
+    pbSetGadgetColor(2, 1, pbRGB(255, 0, 0));
+    pbSetGadgetColor(2, 2, pbRGB(0, 0, 255));
+    CHECK(pbGetGadgetColor(2, 1) == 0); // still unchanged
+    CHECK(pbGetGadgetColor(2, 2) == 16777215);
+
+    // "Settable" gadgets: a real, persisting round-trip.
+    pbTextGadget(3, 10, 70, 50, 20, PBString("T"));
+    CHECK(pbGetGadgetColor(3, 1) == -1);
+    CHECK(pbSetGadgetColor(3, 1, pbRGB(255, 0, 0)) == 0);
+    CHECK(pbGetGadgetColor(3, 1) == pbRGB(255, 0, 0));
+    CHECK(pbGetGadgetColor(3, 2) == -1);
+    pbSetGadgetColor(3, 2, pbRGB(0, 0, 255));
+    CHECK(pbGetGadgetColor(3, 2) == pbRGB(0, 0, 255));
+
+    pbListIconGadget(4, 10, 100, 50, 20, PBString(""), 50);
+    CHECK(pbGetGadgetColor(4, 1) == 0); // default black, but genuinely settable
+    CHECK(pbGetGadgetColor(4, 2) == 16777215); // default white, genuinely settable
+    pbSetGadgetColor(4, 1, pbRGB(255, 0, 0));
+    pbSetGadgetColor(4, 2, pbRGB(0, 0, 255));
+    CHECK(pbGetGadgetColor(4, 1) == pbRGB(255, 0, 0));
+    CHECK(pbGetGadgetColor(4, 2) == pbRGB(0, 0, 255));
+
+    // Asymmetric: CanvasGadget only supports BackColor, not FrontColor.
+    pbCanvasGadget(5, 10, 130, 50, 20);
+    pbSetGadgetColor(5, 1, pbRGB(255, 0, 0));
+    CHECK(pbGetGadgetColor(5, 1) == -1); // unaffected
+    pbSetGadgetColor(5, 2, pbRGB(0, 0, 255));
+    CHECK(pbGetGadgetColor(5, 2) == pbRGB(0, 0, 255));
+
+    CHECK(pbGadgetToolTip(1, PBString("hello")) == 0);
+    CHECK(pbDisableGadgetRedraw(1, 1) == 1);
+    CHECK(pbDisableGadgetRedraw(1, 0) == 1);
+    CHECK(pbGadgetToolTip(999, PBString("x")) == 0); // nonexistent gadget - not replicated as fatal
+    CHECK(pbDisableGadgetRedraw(999, 1) == 0);
+
+    pbCloseWindow(952);
+}
+
 TEST_CASE("GetGadgetText/SetGadgetText dispatch correctly per real gadget type", "[runtime][guilib]") {
     // Oracle-verified: ButtonGadget, TextGadget, StringGadget,
     // CheckBoxGadget, and FrameGadget all support GetGadgetText/

@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-nine slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`) - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`) - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -4972,4 +4972,58 @@ confirmed line-for-line against the real oracle (aside from the deliberately-sco
 `ScreenCoordinate` and the theme-dependent exact `RequiredSize` pixel value, neither included in the
 golden comparison) before being pinned - needed the same `Delay`-between-`WindowEvent()`-passes
 recipe as the oracle probes themselves to get a reliably-settled `WindowCoordinate` reading.
+
+## M7b Implementation Notes (Gadget color cluster)
+
+**Scope landed**: `SetGadgetColor`/`GetGadgetColor` (`#PB_Gadget_FrontColor`/`BackColor` only -
+`TitleBackColor`/`GrayTextColor` are registered but not implemented, a narrow gap), `GadgetToolTip`,
+`DisableGadgetRedraw`.
+
+**The headline finding**: `SetGadgetColor`/`GetGadgetColor` support is genuinely gadget-type-
+specific in real PB, not universal - oracle-verified directly, gadget type by gadget type, across
+every type this project implements. A "fixed" gadget's own `SetGadgetColor` call silently succeeds
+(no error at all) but has no real, persisting effect - `GetGadgetColor` always reports the exact
+same fixed default regardless of how many times `SetGadgetColor` is called first. Only `TextGadget`/
+`ContainerGadget`/`SpinGadget`/the `GtkTreeView` family (`ListViewGadget`/`ListIconGadget`/
+`TreeGadget`/`ExplorerListGadget`/`ExplorerTreeGadget`) give a real round-trip for *both* colors;
+`CanvasGadget` is a real, confirmed asymmetric exception (`BackColor` only, not `FrontColor`).
+Every other gadget type checked (`ButtonGadget`/`StringGadget`/`CheckBoxGadget`/`OptionGadget`/
+`ComboBoxGadget`/`CalendarGadget`/`DateGadget`/`EditorGadget`/`FrameGadget`/`ImageGadget`/
+`IPAddressGadget`/`PanelGadget`/`ProgressBarGadget`/`ScrollBarGadget`/`ShortcutGadget`/
+`SplitterGadget`/`TrackBarGadget`/`ExplorerComboGadget`/`ButtonImageGadget`) is fixed. The one
+deliberate, documented exception: `ScrollAreaGadget`'s own real `GetGadgetColor`, after a real
+`SetGadgetColor` call, returns a *different, non-deterministic* huge number on every single run
+(confirmed directly, 3 separate runs, 3 different numbers) - genuinely undefined behavior in real
+PB itself, not something to replicate; treated as "fixed" here instead, for a clean, reproducible
+answer no real PB program could ever actually depend on anyway. `HyperLinkGadget`'s own real
+`FrontColor` round-trip is also a narrow, accepted divergence: setting `RGB(255, 0, 0)` reads back
+as `254`, not `255` (confirmed deterministic, not garbage) - most likely a real color-space/alpha-
+blending artifact in however real PB's own link-button styling applies it, not worth the further
+reverse-engineering it would take to replicate exactly; this project's own implementation just
+gives back the exact color stored, a cosmetic, narrow, 1-bit-per-channel divergence.
+
+**Implementation**: a small `GadgetColorSupport` lookup table (keyed by `GadgetType`'s own already-
+built dispatch, reused directly) gives each gadget type's own default-before-any-`Set` value and
+whether `FrontColor`/`BackColor` are each genuinely settable; a `GadgetColorState` struct (per-
+widget, the same `g_object_set_data_full`-owned-struct pattern used throughout this runtime) holds
+whichever colors have actually been set. A real, visible `GtkCssProvider` override is also applied
+(scoped to that one widget alone - a provider added to one widget's own `GtkStyleContext` in GTK3
+never cascades to its children's own, separate contexts) as a genuine visual nicety, though this
+part isn't independently verified pixel-for-pixel against the oracle (no screenshot/pixel-diffing
+tool in this project's own test suite) - the same spirit as `ContainerGadget`'s own `Flags`-to-
+shadow-type mapping already being "mapped by name, not screenshot-matched".
+
+**`GadgetToolTip`**: a plain `gtk_widget_set_tooltip_text`, no findings of note.
+
+**`DisableGadgetRedraw`**: no real GTK equivalent exists for "stop redrawing, still accept updates"
+the way real PB's own native-widget backends can offer directly - a narrow, documented no-op that
+still returns a clean success, since redraw suppression itself isn't observable through this
+project's own test suite either way without measuring real paint events on a real display.
+
+**Testing**: one new `runtime_guilib_test.cpp` case covering the full fixed/settable/asymmetric
+support matrix plus `GadgetToolTip`/`DisableGadgetRedraw`. One new golden e2e case
+(`tests/e2e/gui_gadget_color`), confirmed line-for-line against the real oracle (aside from the
+deliberately-scoped-out `ScrollAreaGadget` garbage and `HyperLinkGadget` off-by-one, neither included
+in the golden comparison, both covered - and the divergence explained - in the unit test instead)
+before being pinned.
 
