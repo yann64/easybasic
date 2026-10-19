@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-eight slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-nine slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`) - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -4891,4 +4891,85 @@ library-grouped table of every real PureBasic procedure (`pbcompilerc -lf`, cros
 each library's own binary definition file under `purebasic/purelibraries/` for grouping) against
 this project's own implemented builtins. Not GUI-specific - covers every PB library, M7b or not. Re-
 run after any slice that adds or removes a builtin to keep it current.
+
+## M7b Implementation Notes (Gadget geometry/data/introspection cluster)
+
+**Scope landed**: `GadgetX`/`GadgetY`/`GadgetWidth`/`GadgetHeight`, `GadgetID`, `GadgetType`,
+`SetGadgetData`/`GetGadgetData`, `GetActiveGadget`/`SetActiveGadget` - cross-cutting functions that
+apply to every gadget type already implemented, rather than one more gadget type of its own.
+
+**`GadgetX`/`GadgetY`/`GadgetWidth`/`GadgetHeight`**: `Mode` defaults to `#PB_Gadget_
+ContainerCoordinate`(`0`)/`#PB_Gadget_ActualSize`(`0`) - exactly the coordinates/size the gadget was
+created or `ResizeGadget`'d with, read straight back from the `GtkFixed` child properties/size
+request `placeGadget`/`ResizeGadget` already set. `#PB_Gadget_WindowCoordinate`(`2`) sums every
+ancestor `ContainerGadget`/`PanelGadget`/`ScrollAreaGadget`'s own offset up to the window - oracle-
+verified directly with 2 levels of real nesting, **with a real, non-obvious timing caveat**: the
+real oracle only reports this correctly once the window has processed at least one event, and
+needs a genuine wall-clock `Delay` between two `WindowEvent()`-loop passes to do so reliably (a
+tight loop of 20 `WindowEvent()` calls with no delay wasn't enough - the X server needs real wall-
+clock time to actually generate and deliver the realization events in between, not just repeated
+polling). This implementation has no such dependency at all, since it sums real `GtkFixed` child
+properties directly (already set the moment each gadget is placed, regardless of realization)
+rather than replicating whatever lazily-computed/cached value the real oracle's own pre-realization
+sentinel reflects - a deliberate, narrow divergence for that one pre-realization window.
+`#PB_Gadget_RequiredSize`(`1`, `Width`/`Height` only) reports the gadget's own natural/intrinsic
+size via `gtk_widget_get_preferred_size` - a real bug found and fixed while implementing this:
+`gtk_widget_set_size_request`'s own request (always set by `placeGadget`) otherwise poisons this
+query straight back to `ActualSize`'s own answer, needing a clear-query-restore dance around it to
+get a real answer at all. That real answer's own *exact* pixel value didn't match the oracle's own
+for the one case checked directly (a short-text `ButtonGadget`) - most likely a real GTK theme
+difference between real PB's own Linux backend and this build's own system theme, not a logic bug,
+so this is a deliberately approximate natural size, not a pixel-exact one (the same spirit as
+`ContainerGadget`'s own `Flags`-to-shadow-type mapping already being "mapped by name, not
+screenshot-matched"). `#PB_Gadget_ScreenCoordinate`(`1`, for `GadgetX`/`GadgetY`) is registered but
+not behaviorally implemented - its own real value didn't match a straightforward on-screen-origin
+computation in this project's own headless (no window manager) test environment, and untangling
+whether that's an environment quirk or a real, replicable rule wasn't judged worth it.
+
+**`GadgetID`**: the real native `GtkWidget*` pointer, the same established "real, usable native
+handle, never byte-matched against the oracle's own pointer value" convention as `WindowID`/
+`ImageID`.
+
+**`GadgetType`**: oracle-verified directly against all 29 gadget types this project implements -
+every `#PB_GadgetType_Xxx` value confirmed via a real creation call, not just the constant's own
+value. The real implementation work here was entirely about telling apart gadget types that share
+an identical underlying GTK widget, in every case either via this project's own existing marker
+tags/side tables (no new ones needed, except one: `ExplorerComboGadget` needed its own new
+`gadgetKindExplorerCombo()` tag, since it and `StringGadget` are both an untagged bare `GtkEntry`)
+or via real GTK class-hierarchy ordering (most-derived-first) - `GtkRadioButton` extends
+`GtkCheckButton` extends `GtkToggleButton` extends `GtkButton` (`OptionGadget`/`CheckBoxGadget`/
+`CheckBoxGadget`-flavoured-`ButtonImageGadget`/`ButtonGadget`); `GtkSpinButton` extends `GtkEntry`
+(`SpinGadget` vs `DateGadget`/`IPAddressGadget`/`ExplorerComboGadget`/`StringGadget`, all sharing a
+bare `GtkEntry` otherwise) - **a real bug found and fixed**: `GTK_IS_ENTRY` was originally checked
+*before* `GTK_IS_SPIN_BUTTON`, making every `SpinGadget` misreport as `StringGadget` (dead code
+further down an already-matched, unreachable `GTK_IS_SPIN_BUTTON` branch was the tell). A second
+real bug, same root cause: `EditorGadget`'s own `GtkTextView` is wrapped in a `GtkScrolledWindow`,
+the same wrapper `ListViewGadget`'s/`ScrollAreaGadget`'s own content uses, misreporting every
+`EditorGadget` as `ListViewGadget` until checked for a `GtkTextView` child specifically, ahead of
+the generic `GtkScrolledWindow` fallthrough. `GtkFrame` (`ContainerGadget` vs `FrameGadget`) and the
+generic `GtkScrolledWindow` case (`ScrollAreaGadget` vs the `GtkTreeView` family) are each told
+apart by `containerFixedTable()` membership - whether that gadget id supports nested child gadgets
+at all - rather than any new marker.
+
+**`SetGadgetData`/`GetGadgetData`**: a plain per-gadget `Integer` round-trip (including negative
+values), defaulting to `0` before any `SetGadgetData` call - no real complexity here.
+
+**`GetActiveGadget`/`SetActiveGadget`**: real GTK keyboard focus (`gtk_widget_grab_focus`/
+`gtk_window_get_focus`), oracle-confirmed to carry the same event-loop-settling caveat
+`WindowCoordinate` has (though, unlike `WindowCoordinate`, a plain `WindowEvent()` loop with no
+extra `Delay` was already enough in every case checked) - and, oracle-confirmed directly across two
+simultaneously open windows, not scoped to any particular "current" window at all: whichever
+gadget, in any open window, most recently received real focus. Finding the *owning* gadget id for
+a real focus widget deep inside a composite gadget (e.g. an editable `ComboBoxGadget`'s own inner
+`GtkEntry`) needed its own small ancestor-walking helper, matching by widget *value* in
+`gadgetTable()` rather than by `gadgetIdKey()`'s own tag - deliberately, since a real gadget
+legitimately numbered `0` would otherwise be indistinguishable from "no tag set" via the tag alone.
+
+**Testing**: three new `runtime_guilib_test.cpp` cases (geometry/`WindowCoordinate`/`RequiredSize`;
+`GadgetID`/`GadgetType` across every ambiguous-widget case; `SetGadgetData`/`GetGadgetData`/
+`GetActiveGadget`/`SetActiveGadget`). One new golden e2e case (`tests/e2e/gui_gadget_geometry_data`),
+confirmed line-for-line against the real oracle (aside from the deliberately-scoped-out
+`ScreenCoordinate` and the theme-dependent exact `RequiredSize` pixel value, neither included in the
+golden comparison) before being pinned - needed the same `Delay`-between-`WindowEvent()`-passes
+recipe as the oracle probes themselves to get a reliably-settled `WindowCoordinate` reading.
 

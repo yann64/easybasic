@@ -1,0 +1,33 @@
+[Debugger]  20
+[Debugger]  30
+[Debugger]  100
+[Debugger]  40
+[Debugger]  25
+[Debugger]  110
+[Debugger]  required-size-differs
+[Debugger]  110
+[Debugger]  50
+[Debugger]  70
+[Debugger]  90
+[Debugger]  20
+[Debugger]  --- GadgetID/IsGadget ---
+[Debugger]  0
+[Debugger]  --- GadgetType ---
+[Debugger]  1
+[Debugger]  19
+[Debugger]  2
+[Debugger]  21
+[Debugger]  13
+[Debugger]  7
+[Debugger]  16
+[Debugger]  22
+[Debugger]  33
+[Debugger]  32
+[Debugger]  --- SetGadgetData/GetGadgetData ---
+[Debugger]  0
+[Debugger]  12345
+[Debugger]  -99
+[Debugger]  --- GetActiveGadget/SetActiveGadget ---
+[Debugger]  -1
+[Debugger]  5
+[Debugger]  done

@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **254 / 1848** procedures implemented (13%).
+**Summary**: **264 / 1848** procedures implemented (14%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -53,7 +53,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [FileSystem](#filesystem) | 3 | 29 | 10% |
 | [Font](#font) | 0 | 5 | 0% |
 | [Ftp](#ftp) | 0 | 23 | 0% |
-| [Gadget](#gadget) | 58 | 82 | 70% |
+| [Gadget](#gadget) | 68 | 82 | 82% |
 | [GadgetOpenGL](#gadgetopengl) | 0 | 1 | 0% |
 | [GadgetWeb](#gadgetweb) | 0 | 1 | 0% |
 | [Help](#help) | 0 | 2 | 0% |
@@ -919,7 +919,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Gadget
 
-58/82 implemented.
+68/82 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -947,18 +947,18 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `ExplorerTreeGadget` | (#Gadget, x, y, Width, Height, Directory$ [, Flags]) - Create a File/Directory Tree Gadget. |
 | Yes | `FrameGadget` | (#Gadget, x, y, Width, Height, Text$ [, Flags]) - Create a frame gadget in the current GadgetList. |
 | Yes | `FreeGadget` | (#Gadget) - Free (remove) the #Gadget. |
-| No | `GadgetHeight` | (#Gadget [, Mode]) - Return the height of the #Gadget, in pixels. |
-| No | `GadgetID` | (#Gadget) - Return the ID of the #Gadget. |
+| Yes | `GadgetHeight` | (#Gadget [, Mode]) - Return the height of the #Gadget, in pixels. |
+| Yes | `GadgetID` | (#Gadget) - Return the ID of the #Gadget. |
 | No | `GadgetItemID` | (#Gadget, Item) - Return the system ID of the specified gadget item. |
 | No | `GadgetToolTip` | (#Gadget, Text$) - Associate the specified Text$ with the #Gadget. |
-| No | `GadgetType` | (#Gadget) - Return the type of the specified #Gadget. |
-| No | `GadgetWidth` | (#Gadget [, Mode]) - Return the width of the #Gadget, in pixels. |
-| No | `GadgetX` | (#Gadget [, Mode]) - Return the X position of the #Gadget, in pixels. |
-| No | `GadgetY` | (#Gadget [, Mode]) - Return the Y position of the #Gadget, in pixels. |
-| No | `GetActiveGadget` | () - Get the Gadget that has the focus. |
+| Yes | `GadgetType` | (#Gadget) - Return the type of the specified #Gadget. |
+| Yes | `GadgetWidth` | (#Gadget [, Mode]) - Return the width of the #Gadget, in pixels. |
+| Yes | `GadgetX` | (#Gadget [, Mode]) - Return the X position of the #Gadget, in pixels. |
+| Yes | `GadgetY` | (#Gadget [, Mode]) - Return the Y position of the #Gadget, in pixels. |
+| Yes | `GetActiveGadget` | () - Get the Gadget that has the focus. |
 | Yes | `GetGadgetAttribute` | (#Gadget, Attribute) - Return the specified #Gadget attribute value. |
 | No | `GetGadgetColor` | (#Gadget, ColorType) - Get the currently set color of the Gadget. |
-| No | `GetGadgetData` | (#Gadget) - Return the value previously stored for this Gadget. |
+| Yes | `GetGadgetData` | (#Gadget) - Return the value previously stored for this Gadget. |
 | No | `GetGadgetFont` | (#Gadget) - Get the FontID associated with the specified gadget. |
 | Yes | `GetGadgetItemAttribute` | (#Gadget, Item, Attribute [, Column]) - Return the specified #Gadget item attribute value. |
 | No | `GetGadgetItemColor` | (#Gadget, Item, ColorType [, Column]) - Get the currently set color of the Gadget item. |
@@ -983,10 +983,10 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `ResizeGadget` | (#Gadget, x, y, Width, Height) - Move and resize the specified #Gadget to the given position and dimensions. |
 | Yes | `ScrollAreaGadget` | (#Gadget, x, y, Width, Height, ScrollAreaWidth, ScrollAreaHeight [, ScrollStep [, Flags]]) - Create a ScrollArea gadget in the current GadgetList. |
 | Yes | `ScrollBarGadget` | (#Gadget, x, y, Width, Height, Min, Max, PageLength [, Flags]) - Create a ScrollBar gadget in the current GadgetList. |
-| No | `SetActiveGadget` | (#Gadget) - Set the focus on the specified Gadget. |
+| Yes | `SetActiveGadget` | (#Gadget) - Set the focus on the specified Gadget. |
 | Yes | `SetGadgetAttribute` | (#Gadget, Attribute, Value) - Change the specified #Gadget attribute. |
 | No | `SetGadgetColor` | (#Gadget, ColorType, Color) - Change a color in the Gadget. |
-| No | `SetGadgetData` | (#Gadget, Value) - Store a value for the Gadget. |
+| Yes | `SetGadgetData` | (#Gadget, Value) - Store a value for the Gadget. |
 | No | `SetGadgetFont` | (#Gadget, FontID()) - Change the font which will be used by newly created gadgets. |
 | Yes | `SetGadgetItemAttribute` | (#Gadget, Item, Attribute, Value [, Column]) - Change the specified #Gadget item attribute. |
 | No | `SetGadgetItemColor` | (#Gadget, Item, ColorType, Color [, Column]) - Change a color in the Gadget item. |

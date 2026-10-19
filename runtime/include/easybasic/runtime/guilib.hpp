@@ -3564,6 +3564,7 @@ namespace detail {
 /// PB-queryable dropdown of entries is populated, since real PB's own
 /// API can't query one either.
 inline const char* gadgetKindExplorerList() { return "explorerlist"; }
+inline const char* gadgetKindExplorerCombo() { return "explorercombo"; }
 
 struct ExplorerListState {
     std::string directory;
@@ -3697,13 +3698,19 @@ inline std::int64_t pbExplorerListGadget(std::int64_t gadgetId, std::int64_t x, 
 /// See `detail::gadgetKindExplorerList()`'s own doc comment for the full
 /// set of oracle findings this is based on - `ExplorerComboGadget` is a
 /// bare `GtkEntry` holding `Directory$`, needing no dispatch code of its
-/// own anywhere else.
+/// own anywhere else *except* `GadgetType` - tagged with `detail::
+/// gadgetKindKey()`/`gadgetKindExplorerCombo()`, the same marker-tag
+/// pattern already used for the `GtkTreeView`-based gadgets, purely so
+/// `GadgetType` can tell it apart from `StringGadget`'s own identical
+/// bare `GtkEntry`.
 inline std::int64_t pbExplorerComboGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
                                             std::int64_t height, const PBString& directory,
                                             std::int64_t /*flags*/ = 0) {
     detail::ensureGtkInit();
     GtkWidget* widget = gtk_entry_new();
     gtk_entry_set_text(GTK_ENTRY(widget), directory.bytes().c_str());
+    g_object_set_data(G_OBJECT(widget), detail::gadgetKindKey(),
+                       const_cast<gpointer>(static_cast<const void*>(detail::gadgetKindExplorerCombo())));
     return detail::placeGadget(detail::activeWindowId(), gadgetId, x, y, width, height, widget) ? 1 : 0;
 }
 
@@ -5568,6 +5575,399 @@ inline std::int64_t pbDisableGadget(std::int64_t gadgetId, std::int64_t state) {
     }
     gtk_widget_set_sensitive(it->second, state == 0 ? TRUE : FALSE);
     return 1;
+}
+
+namespace detail {
+
+inline const char* gadgetDataKey() { return "pbcxx-gadget-data"; }
+
+/// Walks from `gadgetId`'s own widget up through nested `ContainerGadget`/
+/// `PanelGadget`/`ScrollAreaGadget` parents (via each level's own
+/// `gadgetContainerIdKey()` tag, `-1` at the top) to the window's own
+/// top-level `GtkFixed`, summing each level's own `GtkFixed` "x"/"y"
+/// child properties - oracle-verified to match `GadgetX`/`GadgetY`'s own
+/// `#PB_Gadget_WindowCoordinate` mode directly, with 2 levels of real
+/// container nesting (a button inside a `ContainerGadget`). The real
+/// oracle only reports this correctly once the window has processed at
+/// least one event (confirmed directly: reads back a seemingly-garbage
+/// small negative number immediately after creation, the expected sum
+/// only after a few `WindowEvent()` calls) - this implementation needs no
+/// such wait at all, since it sums real `GtkFixed` child properties
+/// (already set the moment each gadget is placed, regardless of
+/// realization) rather than whatever lazily-computed/cached value the
+/// real oracle's own pre-realization sentinel reflects. A deliberate,
+/// narrow divergence: querying this in the narrow window before a
+/// program's very first event-loop iteration is a vanishingly rare thing
+/// for real PB code to depend on.
+inline void gadgetWindowCoordinate(std::int64_t gadgetId, std::int64_t& outX, std::int64_t& outY) {
+    outX = 0;
+    outY = 0;
+    std::int64_t currentId = gadgetId;
+    while (true) {
+        auto it = gadgetTable().find(currentId);
+        if (it == gadgetTable().end()) {
+            return;
+        }
+        GtkWidget* widget = it->second;
+        GtkWidget* parent = gtk_widget_get_parent(widget);
+        if (parent == nullptr || GTK_IS_FIXED(parent) == 0) {
+            return;
+        }
+        int x = 0;
+        int y = 0;
+        gtk_container_child_get(GTK_CONTAINER(parent), widget, "x", &x, "y", &y, nullptr);
+        outX += x;
+        outY += y;
+        auto containerId = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(widget), gadgetContainerIdKey()));
+        if (containerId == -1) {
+            return;
+        }
+        currentId = containerId;
+    }
+}
+
+/// Walks up from `widget` (inclusive) through its own ancestor chain,
+/// stopping at the first one found as some gadget's own top-level widget
+/// in `gadgetTable()` (a *value* lookup, not `gadgetIdKey()`'s own tag -
+/// deliberately, since a real gadget legitimately numbered `0` would be
+/// indistinguishable from "no tag set" via the tag alone) - used to find
+/// which gadget, if any, a real focus/event widget deep inside a
+/// composite gadget (e.g. an editable `ComboBoxGadget`'s own inner
+/// `GtkEntry`) actually belongs to. Returns `-1` if `widget` isn't inside
+/// any known gadget at all.
+inline std::int64_t gadgetIdForWidget(GtkWidget* widget) {
+    for (GtkWidget* w = widget; w != nullptr; w = gtk_widget_get_parent(w)) {
+        for (const auto& [id, known] : gadgetTable()) {
+            if (known == w) {
+                return id;
+            }
+        }
+        if (GTK_IS_WINDOW(w) != 0) {
+            break;
+        }
+    }
+    return -1;
+}
+
+} // namespace detail
+
+/// `GadgetX`/`GadgetY`/`GadgetWidth`/`GadgetHeight` - oracle-verified
+/// directly. `Mode` defaults to `#PB_Gadget_ContainerCoordinate`(`0`) for
+/// `GadgetX`/`GadgetY` (the gadget's own position relative to its
+/// immediate parent - a window, or a `ContainerGadget`/`PanelGadget`/
+/// `ScrollAreaGadget` it's nested in, matching the exact coordinates the
+/// gadget was created/`ResizeGadget`d with) and `#PB_Gadget_ActualSize`
+/// (`0`) for `GadgetWidth`/`GadgetHeight` (likewise, the exact `Width`/
+/// `Height` last given). `#PB_Gadget_WindowCoordinate`(`2`) sums every
+/// ancestor container's own offset up to the window (see `detail::
+/// gadgetWindowCoordinate`'s own doc comment); `#PB_Gadget_RequiredSize`
+/// (`1`, for `GadgetWidth`/`GadgetHeight` only) reports the gadget's own
+/// natural/intrinsic size via `gtk_widget_get_preferred_size` (with
+/// `gtk_widget_set_size_request`'s own, otherwise-always-set request
+/// cleared first - see `detail::gadgetRequiredSize`'s own doc comment -
+/// without that, this query is always poisoned straight back to
+/// `ActualSize`'s own answer), ignoring whatever `Width`/`Height` it
+/// actually has - confirmed directly on a `ButtonGadget` to be smaller
+/// than its own created size, based on its label text, the same
+/// direction the real oracle's own answer moves in. **Scope note**:
+/// the real oracle's own *exact* `RequiredSize` pixel values didn't
+/// match this project's own GTK theme's own natural-size computation
+/// for the one case checked directly (a short-text `ButtonGadget`) -
+/// most likely a real difference between whatever GTK theme real PB's
+/// own Linux backend uses internally and this build's own system theme,
+/// not a logic bug, and in the same spirit as `ContainerGadget`'s own
+/// `Flags`-to-shadow-type mapping already being "mapped by name, not
+/// screenshot-matched" - so this is a deliberately *approximate*, real,
+/// theme-dependent natural size, not a pixel-exact replication.
+/// `#PB_Gadget_ScreenCoordinate`(`1`, for `GadgetX`/`GadgetY`) is
+/// registered (so code using it still compiles) but not behaviorally
+/// implemented - falls through to `ContainerCoordinate`'s own behavior
+/// instead; the real oracle's own value for it didn't match a
+/// straightforward on-screen-origin computation in this project's own
+/// headless (no window manager) test environment, and untangling
+/// whether that's an environment-specific quirk or a real, replicable
+/// rule wasn't judged worth it here.
+inline std::int64_t pbGadgetX(std::int64_t gadgetId, std::int64_t mode = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (mode == 2) { // #PB_Gadget_WindowCoordinate
+        std::int64_t x = 0;
+        std::int64_t y = 0;
+        detail::gadgetWindowCoordinate(gadgetId, x, y);
+        return x;
+    }
+    GtkWidget* parent = gtk_widget_get_parent(it->second);
+    int x = 0;
+    int y = 0;
+    gtk_container_child_get(GTK_CONTAINER(parent), it->second, "x", &x, "y", &y, nullptr);
+    return x;
+}
+
+/// See `pbGadgetX`'s own doc comment for the full set of findings.
+inline std::int64_t pbGadgetY(std::int64_t gadgetId, std::int64_t mode = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (mode == 2) { // #PB_Gadget_WindowCoordinate
+        std::int64_t x = 0;
+        std::int64_t y = 0;
+        detail::gadgetWindowCoordinate(gadgetId, x, y);
+        return y;
+    }
+    GtkWidget* parent = gtk_widget_get_parent(it->second);
+    int x = 0;
+    int y = 0;
+    gtk_container_child_get(GTK_CONTAINER(parent), it->second, "x", &x, "y", &y, nullptr);
+    return y;
+}
+
+namespace detail {
+/// `gtk_widget_get_preferred_size`'s own "natural size" already accounts
+/// for whatever `gtk_widget_set_size_request` was last called with - every
+/// gadget always has *some* explicit request, set unconditionally by
+/// `placeGadget` itself, which otherwise always poisons this query back
+/// towards the gadget's own *created* size instead of its real natural/
+/// intrinsic one (confirmed directly: without this clear-query-restore
+/// dance, `#PB_Gadget_RequiredSize` on a `ButtonGadget` just echoed back
+/// its own `Width`/`Height` unchanged, never the smaller size its own
+/// label text would naturally need). Clearing the request to `-1`/`-1`
+/// (GTK's own "unset" sentinel) before querying, then restoring it
+/// immediately after, gets the real answer without leaving any lasting
+/// side effect on the gadget's own actual displayed size.
+inline void gadgetRequiredSize(GtkWidget* widget, int& outWidth, int& outHeight) {
+    int requestedWidth = 0;
+    int requestedHeight = 0;
+    gtk_widget_get_size_request(widget, &requestedWidth, &requestedHeight);
+    gtk_widget_set_size_request(widget, -1, -1);
+    GtkRequisition natural;
+    gtk_widget_get_preferred_size(widget, nullptr, &natural);
+    gtk_widget_set_size_request(widget, requestedWidth, requestedHeight);
+    outWidth = natural.width;
+    outHeight = natural.height;
+}
+} // namespace detail
+
+/// See `pbGadgetX`'s own doc comment for the full set of findings.
+inline std::int64_t pbGadgetWidth(std::int64_t gadgetId, std::int64_t mode = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (mode == 1) { // #PB_Gadget_RequiredSize
+        int width = 0;
+        int height = 0;
+        detail::gadgetRequiredSize(it->second, width, height);
+        return width;
+    }
+    int width = 0;
+    int height = 0;
+    gtk_widget_get_size_request(it->second, &width, &height);
+    return width;
+}
+
+/// See `pbGadgetX`'s own doc comment for the full set of findings.
+inline std::int64_t pbGadgetHeight(std::int64_t gadgetId, std::int64_t mode = 0) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    if (mode == 1) { // #PB_Gadget_RequiredSize
+        int width = 0;
+        int height = 0;
+        detail::gadgetRequiredSize(it->second, width, height);
+        return height;
+    }
+    int width = 0;
+    int height = 0;
+    gtk_widget_get_size_request(it->second, &width, &height);
+    return height;
+}
+
+/// `GadgetID(#Gadget)` - the real native `GtkWidget*` pointer, the same
+/// established "a real, usable native handle, never byte-matched against
+/// the oracle's own pointer value" convention as `WindowID`/`ImageID`.
+inline std::int64_t pbGadgetID(std::int64_t gadgetId) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    return it != detail::gadgetTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
+}
+
+/// `GadgetType(#Gadget)` - oracle-verified directly against all 29
+/// gadget types this project implements (every `#PB_GadgetType_Xxx`
+/// value below confirmed via a real creation call, not just the
+/// constant's own value). Checked most-derived-class-first throughout,
+/// since several real GTK widget classes used here are themselves
+/// subclasses of another one also used here (`GtkRadioButton` extends
+/// `GtkCheckButton` extends `GtkToggleButton` extends `GtkButton`;
+/// `GtkLinkButton` also extends `GtkButton`) - and several gadget types
+/// share the exact same bare widget, told apart only by this project's
+/// own marker tags or side tables, never by GTK class alone (`GtkEntry`:
+/// `DateGadget`/`IPAddressGadget`/`ExplorerComboGadget`/`StringGadget`
+/// (the untagged fallback); `GtkFrame`: `ContainerGadget` (registered in
+/// `containerFixedTable()`) vs `FrameGadget` (not); `GtkScrolledWindow`:
+/// `ScrollAreaGadget` (registered in `containerFixedTable()`) vs the
+/// `GtkTreeView`-based family (not, told apart by the same marker tags
+/// `GetGadgetText`'s own dispatch already uses); `GtkDrawingArea`:
+/// `CanvasGadget` (registered in `canvasDrawingAreaTable()`, including
+/// its own `#PB_Canvas_Container` variant, where the *placed* widget is
+/// an outer `GtkOverlay`, not the drawing area itself - checked by
+/// gadget id, not widget type, for exactly that reason) vs
+/// `ShortcutGadget` (not)).
+inline std::int64_t pbGadgetType(std::int64_t gadgetId) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* widget = it->second;
+
+    if (detail::canvasDrawingAreaTable().contains(gadgetId)) {
+        return 33; // #PB_GadgetType_Canvas
+    }
+    if (detail::explorerListTreeView(widget) != nullptr) {
+        return 23; // #PB_GadgetType_ExplorerList
+    }
+    if (detail::explorerTreeTreeView(widget) != nullptr) {
+        return 24; // #PB_GadgetType_ExplorerTree
+    }
+    if (detail::listIconTreeView(widget) != nullptr) {
+        return 12; // #PB_GadgetType_ListIcon
+    }
+    if (detail::treeGadgetTreeView(widget) != nullptr) {
+        return 27; // #PB_GadgetType_Tree
+    }
+    if (GTK_IS_SCROLLED_WINDOW(widget) != 0) {
+        GtkWidget* inner = gtk_bin_get_child(GTK_BIN(widget));
+        if (inner != nullptr && GTK_IS_TEXT_VIEW(inner) != 0) {
+            return 22; // #PB_GadgetType_Editor
+        }
+        return detail::containerFixedTable().contains(gadgetId) ? 16 // #PB_GadgetType_ScrollArea
+                                                                  : 6; // #PB_GadgetType_ListView
+    }
+    if (GTK_IS_RADIO_BUTTON(widget) != 0) {
+        return 5; // #PB_GadgetType_Option
+    }
+    if (GTK_IS_CHECK_BUTTON(widget) != 0) {
+        return 4; // #PB_GadgetType_CheckBox
+    }
+    if (GTK_IS_LINK_BUTTON(widget) != 0) {
+        return 10; // #PB_GadgetType_HyperLink
+    }
+    if (GTK_IS_BUTTON(widget) != 0) {
+        return g_object_get_data(G_OBJECT(widget), detail::imageButtonMarkerKey()) != nullptr
+                   ? 19  // #PB_GadgetType_ButtonImage
+                   : 1; // #PB_GadgetType_Button
+    }
+    // `GtkSpinButton` is itself a `GtkEntry` subclass - checked before the
+    // generic `GTK_IS_ENTRY` branch below for exactly that reason.
+    if (GTK_IS_SPIN_BUTTON(widget) != 0) {
+        return 26; // #PB_GadgetType_Spin
+    }
+    if (GTK_IS_ENTRY(widget) != 0) {
+        if (g_object_get_data(G_OBJECT(widget), detail::dateGadgetStateKey()) != nullptr) {
+            return 21; // #PB_GadgetType_Date
+        }
+        if (g_object_get_data(G_OBJECT(widget), detail::ipAddressGadgetMarkerKey()) != nullptr) {
+            return 13; // #PB_GadgetType_IPAddress
+        }
+        auto* kind = static_cast<const char*>(g_object_get_data(G_OBJECT(widget), detail::gadgetKindKey()));
+        if (kind != nullptr && g_strcmp0(kind, detail::gadgetKindExplorerCombo()) == 0) {
+            return 25; // #PB_GadgetType_ExplorerCombo
+        }
+        return 2; // #PB_GadgetType_String
+    }
+    if (GTK_IS_FRAME(widget) != 0) {
+        return detail::containerFixedTable().contains(gadgetId) ? 11 // #PB_GadgetType_Container
+                                                                   : 7; // #PB_GadgetType_Frame
+    }
+    if (GTK_IS_COMBO_BOX(widget) != 0) {
+        return 8; // #PB_GadgetType_ComboBox
+    }
+    if (GTK_IS_CALENDAR(widget) != 0) {
+        return 20; // #PB_GadgetType_Calendar
+    }
+    if (GTK_IS_IMAGE(widget) != 0) {
+        return 9; // #PB_GadgetType_Image
+    }
+    if (GTK_IS_NOTEBOOK(widget) != 0) {
+        return 28; // #PB_GadgetType_Panel
+    }
+    if (GTK_IS_PROGRESS_BAR(widget) != 0) {
+        return 14; // #PB_GadgetType_ProgressBar
+    }
+    if (GTK_IS_SCROLLBAR(widget) != 0) {
+        return 15; // #PB_GadgetType_ScrollBar
+    }
+    if (GTK_IS_SCALE(widget) != 0) {
+        return 17; // #PB_GadgetType_TrackBar
+    }
+    if (GTK_IS_PANED(widget) != 0) {
+        return 29; // #PB_GadgetType_Splitter
+    }
+    if (GTK_IS_LABEL(widget) != 0) {
+        return 3; // #PB_GadgetType_Text
+    }
+    if (GTK_IS_DRAWING_AREA(widget) != 0) {
+        return 32; // #PB_GadgetType_Shortcut
+    }
+    return 0;
+}
+
+/// `SetGadgetData`/`GetGadgetData` - oracle-verified directly: a plain,
+/// per-gadget `Integer` round-trip (including negative values), defaulting
+/// to `0` before any `SetGadgetData` call.
+inline std::int64_t pbSetGadgetData(std::int64_t gadgetId, std::int64_t value) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    g_object_set_data(G_OBJECT(it->second), detail::gadgetDataKey(), reinterpret_cast<gpointer>(value));
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+inline std::int64_t pbGetGadgetData(std::int64_t gadgetId) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    return reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(it->second), detail::gadgetDataKey()));
+}
+
+/// `GetActiveGadget`/`SetActiveGadget` - oracle-verified directly, the
+/// same realization caveat `GadgetX`/`GadgetY`'s own `WindowCoordinate`
+/// mode has: a `SetActiveGadget` call only takes visible effect on
+/// `GetActiveGadget`'s own next read after the window has processed at
+/// least one event (confirmed directly) - unlike `WindowCoordinate`,
+/// there's no realization-independent shortcut available here (focus is
+/// a real GTK/windowing-system concept, not a plain stored property this
+/// project tracks itself), so this one genuinely does need a live event
+/// loop, the same as the real oracle. Not scoped to any particular
+/// "current" window - confirmed directly across two simultaneously open
+/// windows, `GetActiveGadget` always reflects whichever gadget, in
+/// either window, most recently received focus.
+inline std::int64_t pbSetActiveGadget(std::int64_t gadgetId) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    gtk_widget_grab_focus(it->second);
+    return 1;
+}
+
+inline std::int64_t pbGetActiveGadget() {
+    for (const auto& [windowId, window] : detail::windowTable()) {
+        (void)windowId;
+        GtkWidget* focus = gtk_window_get_focus(GTK_WINDOW(window));
+        if (focus == nullptr) {
+            continue;
+        }
+        std::int64_t gadgetId = detail::gadgetIdForWidget(focus);
+        if (gadgetId != -1) {
+            return gadgetId;
+        }
+    }
+    return -1;
 }
 
 /// Dispatches on the gadget's own real GTK widget type rather than needing

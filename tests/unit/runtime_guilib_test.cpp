@@ -217,6 +217,150 @@ TEST_CASE("Gadget creation round-trips through IsGadget/GetGadgetText/FreeGadget
     pbCloseWindow(200);
 }
 
+TEST_CASE("GadgetX/GadgetY/GadgetWidth/GadgetHeight default to ContainerCoordinate/ActualSize - "
+          "matching exactly what the gadget was created/ResizeGadget'd with - and "
+          "WindowCoordinate sums every ancestor container's own offset up to the window",
+          "[runtime][guilib]") {
+    // Oracle-verified directly. #PB_Gadget_WindowCoordinate only reads
+    // back correctly, in real PB, once the window has processed at
+    // least one event - this implementation has no such dependency at
+    // all (see pbGadgetX's own doc comment in guilib.hpp), so this test
+    // deliberately checks it immediately, with no event-loop pump.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(949, 10, 10, 320, 320, PBString("Test"));
+    pbButtonGadget(1, 20, 30, 100, 40, PBString("Hi"));
+    CHECK(pbGadgetX(1) == 20);
+    CHECK(pbGadgetY(1) == 30);
+    CHECK(pbGadgetWidth(1) == 100);
+    CHECK(pbGadgetHeight(1) == 40);
+    CHECK(pbGadgetX(1, 0) == 20); // #PB_Gadget_ContainerCoordinate, explicit
+    CHECK(pbGadgetWidth(1, 0) == 100); // #PB_Gadget_ActualSize, explicit
+
+    pbResizeGadget(1, 25, 35, 110, 45);
+    CHECK(pbGadgetX(1) == 25);
+    CHECK(pbGadgetY(1) == 35);
+    CHECK(pbGadgetWidth(1) == 110);
+    CHECK(pbGadgetHeight(1) == 45);
+
+    // #PB_Gadget_RequiredSize: a real, different (smaller) natural size,
+    // based on the label's own text - not pixel-matched against the
+    // oracle's own exact value (see pbGadgetX's own doc comment).
+    std::int64_t requiredWidth = pbGadgetWidth(1, 1);
+    std::int64_t requiredHeight = pbGadgetHeight(1, 1);
+    CHECK(requiredWidth > 0);
+    CHECK(requiredHeight > 0);
+    CHECK(requiredWidth != 110); // genuinely different from ActualSize
+    CHECK(pbGadgetWidth(1) == 110); // clearing/restoring the request left no lasting side effect
+
+    // WindowCoordinate with two levels of real container nesting.
+    pbContainerGadget(2, 50, 60, 200, 150);
+    pbButtonGadget(3, 20, 30, 50, 20, PBString("Nested"));
+    pbCloseGadgetList();
+    CHECK(pbGadgetX(2, 2) == 50); // top-level container - same as its own ContainerCoordinate
+    CHECK(pbGadgetY(2, 2) == 60);
+    CHECK(pbGadgetX(3, 2) == 70); // nested button - container's own offset + its own
+    CHECK(pbGadgetY(3, 2) == 90);
+    CHECK(pbGadgetX(3) == 20); // ContainerCoordinate stays relative to its own immediate parent
+
+    pbCloseWindow(949);
+}
+
+TEST_CASE("GadgetID returns the real native widget handle; GadgetType is oracle-verified for "
+          "every implemented gadget type, including several that share an identical underlying "
+          "GTK widget and are told apart only by this project's own marker tags/side tables",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(950, 10, 10, 320, 320, PBString("Test"));
+
+    pbButtonGadget(1, 10, 10, 50, 20, PBString("B"));
+    CHECK(pbGadgetID(1) != 0);
+    CHECK(pbIsGadget(pbGadgetID(1)) == 0); // a native handle, not a #Gadget number
+
+    CHECK(pbGadgetType(1) == 1); // #PB_GadgetType_Button
+    pbButtonImageGadget(2, 10, 40, 50, 20, 0);
+    CHECK(pbGadgetType(2) == 19); // #PB_GadgetType_ButtonImage - same GtkButton, own marker
+    pbCheckBoxGadget(3, 10, 70, 50, 20, PBString("C"));
+    CHECK(pbGadgetType(3) == 4); // #PB_GadgetType_CheckBox
+    pbOptionGadget(4, 10, 100, 50, 20, PBString("O"));
+    CHECK(pbGadgetType(4) == 5); // #PB_GadgetType_Option - GtkRadioButton extends GtkCheckButton
+    pbStringGadget(5, 10, 130, 50, 20, PBString(""));
+    CHECK(pbGadgetType(5) == 2); // #PB_GadgetType_String - bare GtkEntry, the untagged fallback
+    pbDateGadget(6, 70, 10, 50, 20, PBString("YYYY-MM-DD"), 0);
+    CHECK(pbGadgetType(6) == 21); // #PB_GadgetType_Date - also a bare GtkEntry
+    pbIPAddressGadget(7, 70, 40, 50, 20);
+    CHECK(pbGadgetType(7) == 13); // #PB_GadgetType_IPAddress - also a bare GtkEntry
+    pbExplorerComboGadget(8, 70, 70, 50, 20, PBString("/tmp"));
+    CHECK(pbGadgetType(8) == 25); // #PB_GadgetType_ExplorerCombo - also a bare GtkEntry
+    pbSpinGadget(9, 70, 100, 50, 20, 0, 100);
+    CHECK(pbGadgetType(9) == 26); // #PB_GadgetType_Spin - GtkSpinButton extends GtkEntry too
+    pbListViewGadget(10, 70, 130, 50, 20);
+    CHECK(pbGadgetType(10) == 6); // #PB_GadgetType_ListView - untagged GtkTreeView-in-scroller
+    pbEditorGadget(11, 130, 10, 50, 20);
+    CHECK(pbGadgetType(11) == 22); // #PB_GadgetType_Editor - GtkTextView-in-scroller, same wrapper
+    pbContainerGadget(12, 130, 40, 50, 20);
+    pbCloseGadgetList();
+    CHECK(pbGadgetType(12) == 11); // #PB_GadgetType_Container - bare GtkFrame
+    pbFrameGadget(13, 130, 70, 50, 20, PBString("F"));
+    CHECK(pbGadgetType(13) == 7); // #PB_GadgetType_Frame - also a bare GtkFrame
+    pbScrollAreaGadget(14, 130, 100, 50, 20, 100, 100, 10);
+    pbCloseGadgetList();
+    CHECK(pbGadgetType(14) == 16); // #PB_GadgetType_ScrollArea - same GtkScrolledWindow wrapper
+    pbCanvasGadget(15, 190, 10, 50, 20);
+    CHECK(pbGadgetType(15) == 33); // #PB_GadgetType_Canvas - bare GtkDrawingArea
+    pbShortcutGadget(16, 190, 40, 50, 20, 0);
+    CHECK(pbGadgetType(16) == 32); // #PB_GadgetType_Shortcut - also a bare GtkDrawingArea
+
+    pbCloseWindow(950);
+}
+
+TEST_CASE("SetGadgetData/GetGadgetData round-trip a plain per-gadget Integer; GetActiveGadget/"
+          "SetActiveGadget track real keyboard focus, across any open window",
+          "[runtime][guilib]") {
+    // Oracle-verified directly - like #PB_Gadget_WindowCoordinate,
+    // GetActiveGadget only reflects a SetActiveGadget call after the
+    // window has processed at least one event; unlike WindowCoordinate,
+    // there's no realization-independent shortcut here (focus is a real
+    // GTK/windowing-system concept), so this test drives a real,
+    // pbWindowEvent()-style event-loop pump, the same mechanism PB's own
+    // WindowEvent() itself uses.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(951, 10, 10, 320, 320, PBString("Test"));
+    pbButtonGadget(1, 10, 10, 50, 20, PBString("B1"));
+    pbStringGadget(2, 10, 40, 50, 20, PBString(""));
+
+    CHECK(pbGetGadgetData(1) == 0);
+    CHECK(pbSetGadgetData(1, 12345) == 0);
+    CHECK(pbGetGadgetData(1) == 12345);
+    CHECK(pbSetGadgetData(1, -99) == 0);
+    CHECK(pbGetGadgetData(1) == -99);
+    CHECK(pbGetGadgetData(2) == 0); // independent per gadget
+
+    for (int i = 0; i < 20; ++i) {
+        pbWindowEvent();
+    }
+    CHECK(pbGetActiveGadget() == -1); // nothing focused yet
+
+    CHECK(pbSetActiveGadget(2) == 1);
+    for (int i = 0; i < 20; ++i) {
+        pbWindowEvent();
+    }
+    CHECK(pbGetActiveGadget() == 2);
+
+    CHECK(pbSetActiveGadget(1) == 1);
+    for (int i = 0; i < 20; ++i) {
+        pbWindowEvent();
+    }
+    CHECK(pbGetActiveGadget() == 1);
+
+    pbCloseWindow(951);
+}
+
 TEST_CASE("GetGadgetText/SetGadgetText dispatch correctly per real gadget type", "[runtime][guilib]") {
     // Oracle-verified: ButtonGadget, TextGadget, StringGadget,
     // CheckBoxGadget, and FrameGadget all support GetGadgetText/

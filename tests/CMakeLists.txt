@@ -15,7 +15,7 @@ add_subdirectory(unit)
 # run_case.sh - it skips gracefully (SKIP_RETURN_CODE) rather than failing
 # when this environment has no GTK3 dev files or no usable display, the
 # same way e2e_diff cases skip when pbcompilerc isn't installed.
-set(EASYBASIC_GUI_E2E_CASES gui_window_core gui_basic_gadgets gui_menu_statusbar gui_image gui_toolbar gui_systray gui_container gui_panel gui_splitter gui_scrollarea gui_listview_combobox gui_listicon_tree gui_option_progressbar gui_spin_trackbar_scrollbar gui_image_gadgets gui_calendar_hyperlink gui_editor gui_date gui_ipaddress gui_canvas gui_canvas_draw gui_shortcut gui_canvas_draw_ext gui_explorerlist_explorercombo gui_explorertree gui_canvas_draw_ext2 gui_drawingmode)
+set(EASYBASIC_GUI_E2E_CASES gui_window_core gui_basic_gadgets gui_menu_statusbar gui_image gui_toolbar gui_systray gui_container gui_panel gui_splitter gui_scrollarea gui_listview_combobox gui_listicon_tree gui_option_progressbar gui_spin_trackbar_scrollbar gui_image_gadgets gui_calendar_hyperlink gui_editor gui_date gui_ipaddress gui_canvas gui_canvas_draw gui_shortcut gui_canvas_draw_ext gui_explorerlist_explorercombo gui_explorertree gui_canvas_draw_ext2 gui_drawingmode gui_gadget_geometry_data)
 # Cases needing real synthetic mouse/keyboard input (CanvasGadget's own
 # genuinely interactive events - see run_gui_interactive_case.sh's own
 # comment) - run via that script instead, which also skips gracefully

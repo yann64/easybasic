@@ -394,6 +394,21 @@ void Sema::registerGuiLibBuiltins() {
          5},
         {"hidegadget", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"disablegadget", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        // Gadget geometry/data/introspection cluster - oracle-verified.
+        // GadgetX/Y/Width/Height's trailing Mode is optional (defaults to
+        // ContainerCoordinate/ActualSize respectively); GadgetID/
+        // GadgetType/GetGadgetData/GetActiveGadget take no optional args
+        // at all.
+        {"gadgetx", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"gadgety", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"gadgetwidth", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"gadgetheight", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"gadgetid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"gadgettype", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"setgadgetdata", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"getgadgetdata", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"getactivegadget", TypeSuffix::Integer, {}, 0},
+        {"setactivegadget", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"setgadgettext", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
         {"getgadgettext", TypeSuffix::String, {TypeSuffix::Integer}, 1},
         {"setgadgetstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
@@ -831,6 +846,8 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "windowevent",   "waitwindowevent", "eventwindow",  "eventgadget",    "eventtype",
         "buttongadget",  "textgadget",  "stringgadget",     "checkboxgadget", "framegadget",
         "isgadget",      "freegadget",  "resizegadget",     "hidegadget",     "disablegadget",
+        "gadgetx", "gadgety", "gadgetwidth", "gadgetheight", "gadgetid", "gadgettype",
+        "setgadgetdata", "getgadgetdata", "getactivegadget", "setactivegadget",
         "setgadgettext", "getgadgettext", "setgadgetstate", "getgadgetstate", "messagerequester",
         "containergadget", "opengadgetlist", "closegadgetlist",
         "panelgadget", "addgadgetitem", "countgadgetitems", "removegadgetitem", "cleargadgetitems",
@@ -1312,6 +1329,30 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_explorer_smallicon", 1}, {"pb_explorer_largeicon", 0},
         {"pb_gadgettype_explorerlist", 23}, {"pb_gadgettype_explorertree", 24},
         {"pb_gadgettype_explorercombo", 25},
+        // The rest of the GadgetType family - oracle-verified via a real
+        // creation call for each (not just the constant's own value),
+        // for every gadget type this project implements.
+        {"pb_gadgettype_button", 1}, {"pb_gadgettype_string", 2}, {"pb_gadgettype_text", 3},
+        {"pb_gadgettype_checkbox", 4}, {"pb_gadgettype_option", 5}, {"pb_gadgettype_listview", 6},
+        {"pb_gadgettype_frame", 7}, {"pb_gadgettype_combobox", 8}, {"pb_gadgettype_image", 9},
+        {"pb_gadgettype_hyperlink", 10}, {"pb_gadgettype_container", 11}, {"pb_gadgettype_listicon", 12},
+        {"pb_gadgettype_ipaddress", 13}, {"pb_gadgettype_progressbar", 14}, {"pb_gadgettype_scrollbar", 15},
+        {"pb_gadgettype_scrollarea", 16}, {"pb_gadgettype_trackbar", 17}, {"pb_gadgettype_buttonimage", 19},
+        {"pb_gadgettype_calendar", 20}, {"pb_gadgettype_date", 21}, {"pb_gadgettype_editor", 22},
+        {"pb_gadgettype_spin", 26}, {"pb_gadgettype_tree", 27}, {"pb_gadgettype_panel", 28},
+        {"pb_gadgettype_splitter", 29}, {"pb_gadgettype_canvas", 33},
+        // GadgetX/Y/Width/Height's own Mode - oracle-verified.
+        // #PB_Gadget_ScreenCoordinate is registered for forward-compile
+        // compatibility only (see pbGadgetX's own doc comment in
+        // guilib.hpp for the scope note).
+        {"pb_gadget_actualsize", 0}, {"pb_gadget_requiredsize", 1},
+        {"pb_gadget_containercoordinate", 0}, {"pb_gadget_screencoordinate", 1},
+        {"pb_gadget_windowcoordinate", 2},
+        // GetGadgetColor/SetGadgetColor's own ColorType - not behaviorally
+        // implemented this slice, registered for forward-compile
+        // compatibility only.
+        {"pb_gadget_frontcolor", 1}, {"pb_gadget_backcolor", 2}, {"pb_gadget_titlebackcolor", 5},
+        {"pb_gadget_graytextcolor", 6},
         // DrawingMode(Mode) flags - oracle-verified via a direct `Debug
         // #PB_2DDrawing_Xxx` probe, cross-checked against the resident
         // file's own full name list for completeness. Only `Default`/
