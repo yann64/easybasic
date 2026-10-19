@@ -3267,6 +3267,80 @@ TEST_CASE("FillArea is a raster-level boundary fill (replacing every reachable p
     pbCloseWindow(947);
 }
 
+TEST_CASE("DrawingMode is an ambient setting, like FrontColor/BackColor, changing how every "
+          "other drawing command composites its own color against the canvas - Outlined draws "
+          "only a shape's own boundary, XOr bitwise-XORs against the destination, AlphaBlend "
+          "does a standard alpha composite using the color's own top byte, and Transparent "
+          "skips DrawText's own background fill specifically",
+          "[runtime][guilib]") {
+    // Oracle-verified directly, each independently - see pbDrawingMode's
+    // own doc comment in guilib.hpp for the full set of findings.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(948, 10, 10, 320, 320, PBString("Test"));
+    pbCanvasGadget(0, 10, 10, 200, 150);
+    pbStartDrawing(pbCanvasOutput(0));
+
+    // Outlined: Box draws only its own boundary, not the filled interior.
+    CHECK(pbDrawingMode(4) == 0); // #PB_2DDrawing_Outlined
+    pbBox(10, 10, 20, 20, pbRGB(1, 2, 3));
+    CHECK(pbPoint(10, 10) == pbRGB(1, 2, 3)); // corner - on the boundary
+    CHECK(pbPoint(15, 15) == 16777215); // center - interior, skipped
+
+    // Outlined has no effect on Plot (a single pixel has no interior).
+    pbPlot(50, 50, pbRGB(9, 9, 9));
+    CHECK(pbPoint(50, 50) == pbRGB(9, 9, 9));
+
+    // DrawingMode is ambient - persists across calls with no new DrawingMode() in between.
+    pbBox(50, 10, 20, 20, pbRGB(4, 5, 6));
+    CHECK(pbPoint(55, 15) == 16777215); // still outline-only
+
+    // XOr: a plain per-channel bitwise XOR against the existing destination pixel.
+    pbDrawingMode(0); // #PB_2DDrawing_Default
+    pbBox(10, 50, 5, 5, pbRGB(255, 0, 0));
+    pbDrawingMode(2); // #PB_2DDrawing_XOr
+    pbBox(10, 50, 5, 5, pbRGB(255, 255, 255));
+    CHECK(pbPoint(12, 52) == pbRGB(0, 255, 255)); // (255,0,0) XOR (255,255,255) = cyan
+
+    // AlphaBlend: standard "source over destination" using the color's own top byte as alpha -
+    // RGB() always packs alpha 0 (fully transparent), RGBA() sets it explicitly.
+    pbDrawingMode(0);
+    pbBox(50, 50, 20, 20, pbRGB(200, 0, 0));
+    pbDrawingMode(16); // #PB_2DDrawing_AlphaBlend
+    pbBox(50, 50, 20, 20, pbRGB(0, 200, 0)); // alpha 0 - fully invisible
+    CHECK(pbPoint(55, 55) == pbRGB(200, 0, 0));
+    pbBox(50, 50, 20, 20, pbRGBA(0, 200, 0, 255)); // alpha 255 - fully opaque
+    CHECK(pbPoint(55, 55) == pbRGB(0, 200, 0));
+    pbBox(90, 50, 20, 20, pbRGB(200, 0, 0));
+    pbBox(90, 50, 20, 20, pbRGBA(50, 60, 70, 100)); // partial alpha - truncating-integer blend
+    std::int64_t blended = pbPoint(95, 55);
+    CHECK(pbRed(blended) == 174);
+    CHECK(pbGreen(blended) == 178);
+    CHECK(pbBlue(blended) == 182);
+
+    // Transparent: no effect on Box - still opaque, same as Default.
+    pbDrawingMode(1); // #PB_2DDrawing_Transparent
+    pbBox(130, 50, 20, 20, pbRGB(7, 7, 7));
+    CHECK(pbPoint(135, 55) == pbRGB(7, 7, 7));
+
+    // Transparent's real effect: skips DrawText's own background fill entirely.
+    pbDrawingMode(0);
+    pbBox(10, 90, 40, 40, pbRGB(50, 60, 70));
+    pbDrawingMode(1);
+    pbDrawText(15, 95, PBString("A"), pbRGB(0, 0, 0), pbRGB(9, 9, 9));
+    CHECK(pbPoint(15, 95) == pbRGB(50, 60, 70)); // background fill skipped - gray box still visible
+
+    // A new StartDrawing resets DrawingMode back to Default, like FrontColor/BackColor.
+    pbStopDrawing();
+    pbStartDrawing(pbCanvasOutput(0));
+    pbBox(10, 10, 20, 20, pbRGB(8, 8, 8));
+    CHECK(pbPoint(15, 15) == pbRGB(8, 8, 8)); // filled, not outline-only
+
+    pbStopDrawing();
+    pbCloseWindow(948);
+}
+
 TEST_CASE("ExplorerListGadget lists a directory's own entries - directories always first, "
           "each group in raw directory-entry order, prefixed by a fixed '..' - with "
           "GetGadgetItemText/GetGadgetItemState (a plain file/directory type code, not a "

@@ -658,6 +658,9 @@ void Sema::registerGuiLibBuiltins() {
         {"fillarea", TypeSuffix::Integer,
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
          3},
+        // DrawingMode(Mode) - oracle-verified: exactly one required
+        // Integer argument, no optional trailing one.
+        {"drawingmode", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         // ExplorerListGadget/ExplorerComboGadget - oracle-verified. Flags
         // is optional (both compile and run fine with only the first 6
         // arguments). See pbExplorerListGadget's own doc comment in
@@ -841,7 +844,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "dategadget", "ipaddressgadget", "canvasgadget", "shortcutgadget",
         "canvasoutput", "startdrawing", "stopdrawing", "frontcolor", "backcolor", "box", "circle", "plot", "point",
         "line", "linexy", "drawtext", "textwidth", "textheight",
-        "ellipse", "roundbox", "fillarea",
+        "ellipse", "roundbox", "fillarea", "drawingmode",
         "explorerlistgadget", "explorercombogadget", "explorertreegadget",
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
@@ -1309,6 +1312,18 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_explorer_smallicon", 1}, {"pb_explorer_largeicon", 0},
         {"pb_gadgettype_explorerlist", 23}, {"pb_gadgettype_explorertree", 24},
         {"pb_gadgettype_explorercombo", 25},
+        // DrawingMode(Mode) flags - oracle-verified via a direct `Debug
+        // #PB_2DDrawing_Xxx` probe, cross-checked against the resident
+        // file's own full name list for completeness. Only `Default`/
+        // `Outlined`/`XOr`/`AlphaBlend`/`Transparent` (the last one,
+        // `DrawText`-only) are behaviorally implemented this slice (see
+        // `pbDrawingMode`'s own doc comment) - the rest are registered
+        // for forward-compile compatibility only, consistent with every
+        // other gadget/library's own niche-flag precedent.
+        {"pb_2ddrawing_default", 0}, {"pb_2ddrawing_transparent", 1}, {"pb_2ddrawing_xor", 2},
+        {"pb_2ddrawing_outlined", 4}, {"pb_2ddrawing_alphachannel", 8}, {"pb_2ddrawing_alphablend", 16},
+        {"pb_2ddrawing_alphaclip", 32}, {"pb_2ddrawing_gradient", 64}, {"pb_2ddrawing_customfilter", 128},
+        {"pb_2ddrawing_allchannels", 256}, {"pb_2ddrawing_nativetext", 512}, {"pb_2ddrawing_fasttext", 1024},
     };
     return table;
 }

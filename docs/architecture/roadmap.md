@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-seven slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Twenty-eight slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -4819,4 +4819,76 @@ case, `FrontColor` defaulting, and off-canvas clipping. One new golden e2e case
 (`tests/e2e/gui_canvas_draw_ext2`), confirmed line-for-line against the real oracle (aside from the
 two creation-style calls' own native-handle-ish return values, normalized to a clean `0` per this
 project's established divergence) before being pinned.
+
+## M7b Implementation Notes (2D Drawing library extension: `DrawingMode`)
+
+**Scope landed**: `DrawingMode(Mode)` itself, plus 4 of its real flags, each independently oracle-
+verified - `#PB_2DDrawing_Outlined`, `#PB_2DDrawing_XOr`, `#PB_2DDrawing_AlphaBlend`, and
+`#PB_2DDrawing_Transparent`. An ambient setting, like `FrontColor`/`BackColor` - persists across
+calls, resets to `#PB_2DDrawing_Default` on the next `StartDrawing` (both oracle-confirmed
+directly).
+
+**`Outlined`**: `Box`/`Circle`/`Ellipse`/`RoundBox` draw only their own 1-pixel-wide boundary, not
+the filled interior (confirmed directly: a shape's own center reads back as untouched background).
+No effect on `Plot` (a single pixel has no "interior" to skip) or `Line`/`LineXY`/`DrawText`
+(confirmed on `LineXY`/`Plot` directly; `Line`'s own already-documented zero-delta quirk makes it
+easy to mistake for an effect here - confirmed cleanly with a genuinely non-degenerate `Line` call
+too).
+
+**`XOr`**: every pixel actually written gets a plain per-channel bitwise XOR of the given color's
+own RGB bytes against whatever is already there, instead of a plain overwrite - confirmed directly
+on `Box`/`LineXY`/`DrawText`'s own background fill, and (combined with `Outlined`) on `Box`'s own
+outline pixels too; also confirmed to apply to `FillArea`'s own fill (a flood-filled white region
+XOR'd with white turns black). Only implemented for the commands already rasterized directly onto
+the raw pixel buffer (`Box`/`Circle`/`Ellipse`/`RoundBox`/`Plot`/`FillArea`) - `Line`/`LineXY`/
+`DrawText` remain Cairo/Pango-rendered and have no real per-pixel compositing hook exposed for this
+(Cairo's own `CAIRO_OPERATOR_XOR` is a Porter-Duff alpha XOR, not a bitwise RGB one, and produces
+nothing at all when both sides are fully opaque), so they're a documented, narrow gap - still drawn,
+just without `XOr`'s own compositing.
+
+**`AlphaBlend`**: a standard "source over destination" alpha composite, using the color's own top
+byte as its alpha - confirmed directly via `(dst * (255 - alpha) + src * alpha) / 255` per channel,
+integer *truncating* division, at alpha `0`/`100`/`255`. `RGB()` always packs `0` there (so a plain
+`RGB()` color is fully invisible under this mode - a real, non-obvious finding, found while
+decoding an otherwise-inexplicable blend result), `RGBA()` sets it explicitly. Implemented uniformly
+for every drawing command, including `Line`/`LineXY`/`DrawText` - unlike `XOr`, this one is cheap
+for Cairo's own native rendering too (`cairo_set_source_rgba` with the same alpha already does
+exactly this composite against an opaque destination, confirmed to match the oracle's own formula
+exactly - no scratch-surface workaround needed).
+
+**`Transparent`**: no effect on `Box`/`Circle`/`Ellipse`/`RoundBox`/`Plot`/`Line`/`LineXY` at all
+(confirmed directly on `Box` - opaque, normal fill, same as `Default`) - its real effect is
+narrower, on `DrawText` alone: the usual opaque `BackColor`-filled background box behind the glyphs
+is skipped entirely under this mode, letting whatever was already there show through (confirmed
+directly: a gray box drawn underneath first stays fully visible).
+
+**A real refactor, not just a new feature**: implementing `Outlined`/`XOr` uniformly required
+`Box`/`Circle`/`Plot` to move from `cairo_fill` to the same raw-pixel-buffer rasterization
+`Ellipse`/`RoundBox`/`FillArea` already use, sharing one new `detail::rasterizeShape` helper
+(parameterized by an inside-shape predicate and `detail::blendPixelWithMode`) and - a nice side
+effect - fixing `Circle`'s own identical, previously-undetected antialiased-edge imprecision at the
+same time (it reuses `Ellipse`'s own exact integer-inclusive test with equal radii; its own prior
+test only ever checked "one pixel inside" the edge, never the exact boundary, so this was never
+caught before).
+
+**Scope note**: `#PB_2DDrawing_AlphaChannel`/`AlphaClip`/`Gradient`/`CustomFilter`/`NativeText`/
+`FastText`/`AllChannels` are registered (so code using them still compiles) but not behaviorally
+implemented - `Gradient` needs its own gradient-definition functions (`LinearGradient`,
+`CircularGradient`, etc.) this project hasn't built yet; `AlphaChannel` alone (without
+`AlphaBlend`) produced a confusing, hard-to-characterize result when probed directly that wasn't
+judged worth the further investigation it would take to nail down; the rest are about an internal
+rendering strategy choice with no meaningful GTK/Cairo equivalent, or tie into image-drawing
+commands this project hasn't implemented either.
+
+**Testing**: one new `runtime_guilib_test.cpp` case covering all 4 implemented flags plus the
+ambient-persistence and reset-on-`StartDrawing` findings. One new golden e2e case
+(`tests/e2e/gui_drawingmode`), confirmed line-for-line against the real oracle before being pinned.
+
+## PureBasic procedure coverage tracking
+
+Added `docs/architecture/pb_coverage.md` (regenerated by `tools/pb_coverage/generate.py`) - a full,
+library-grouped table of every real PureBasic procedure (`pbcompilerc -lf`, cross-referenced against
+each library's own binary definition file under `purebasic/purelibraries/` for grouping) against
+this project's own implemented builtins. Not GUI-specific - covers every PB library, M7b or not. Re-
+run after any slice that adds or removes a builtin to keep it current.
 

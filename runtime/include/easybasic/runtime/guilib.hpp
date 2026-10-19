@@ -2634,6 +2634,7 @@ struct DrawingState {
     cairo_t* cr = nullptr;
     std::int64_t frontColor = 0;
     std::int64_t backColor = 0;
+    std::int64_t drawingMode = 0; // #PB_2DDrawing_Default
 };
 
 inline DrawingState& activeDrawing() {
@@ -2656,12 +2657,30 @@ inline gboolean onCanvasDraw(GtkWidget* widget, cairo_t* cr, gpointer) {
 
 /// Converts this project's own `RGB`/`RGBA` packing (`mathlib.hpp`'s
 /// `pbRGB`/`pbRGBA`, oracle-verified `0x00BBGGRR`/`0xAABBGGRR`) to Cairo's
-/// own `[0, 1]`-per-channel convention.
-inline void cairoSetSourceFromColor(cairo_t* cr, std::int64_t color) {
+/// own `[0, 1]`-per-channel convention. Under `#PB_2DDrawing_AlphaBlend`
+/// (see `pbDrawingMode`'s own doc comment), also applies the color's own
+/// top (alpha) byte - `RGB()` always packs `0` there (fully transparent),
+/// `RGBA()` lets a caller set it explicitly - via `cairo_set_source_rgba`,
+/// letting Cairo's own standard "source over destination" compositing do
+/// the blending natively; confirmed empirically to reproduce the oracle's
+/// own blend exactly for every drawing command still rendered through
+/// Cairo (`Line`/`LineXY`/`DrawText`). Every other mode (including
+/// `#PB_2DDrawing_XOr`, which needs true bitwise-XOR-with-the-existing-
+/// destination-pixel compositing Cairo has no operator for) falls back to
+/// plain opaque `cairo_set_source_rgb` here - a documented, narrow gap for
+/// the three Cairo-rendered commands above (see `pbDrawingMode`'s own doc
+/// comment); every other drawing command instead goes through
+/// `blendPixelWithMode` below, which *does* support `XOr` directly.
+inline void cairoSetSourceFromColor(cairo_t* cr, std::int64_t color, std::int64_t mode = 0) {
     double r = static_cast<double>(color & 0xff) / 255.0;
     double g = static_cast<double>((color >> 8) & 0xff) / 255.0;
     double b = static_cast<double>((color >> 16) & 0xff) / 255.0;
-    cairo_set_source_rgb(cr, r, g, b);
+    if ((mode & 16) != 0) { // #PB_2DDrawing_AlphaBlend
+        double a = static_cast<double>((color >> 24) & 0xff) / 255.0;
+        cairo_set_source_rgba(cr, r, g, b, a);
+    } else {
+        cairo_set_source_rgb(cr, r, g, b);
+    }
 }
 
 /// Converts this project's own `0x00BBGGRR` `RGB` packing to the backing
@@ -2673,6 +2692,85 @@ inline std::uint32_t colorToArgb(std::int64_t color) {
     std::uint32_t g = static_cast<std::uint32_t>((color >> 8) & 0xff);
     std::uint32_t b = static_cast<std::uint32_t>((color >> 16) & 0xff);
     return 0xFF000000U | (r << 16) | (g << 8) | b;
+}
+
+/// Writes `color` into `*pixel` (a raw `CAIRO_FORMAT_ARGB32` pixel, same
+/// layout as `colorToArgb`'s own result) according to `mode`'s own
+/// `#PB_2DDrawing_Xxx` bits - oracle-verified directly, the hard way, for
+/// each of the two cases below (see `pbDrawingMode`'s own doc comment for
+/// the full set of findings): `XOr` computes a plain per-channel bitwise
+/// XOR of `color`'s own RGB bytes against whatever is already at
+/// `*pixel`; `AlphaBlend` does a standard "source over destination" alpha
+/// composite using `color`'s own top byte as its alpha (confirmed exactly
+/// via `(dst * (255 - alpha) + src * alpha) / 255` per channel, integer
+/// *truncating* division - `RGB()` always packs alpha `0` there, so a
+/// plain `RGB()` color is fully invisible under this mode unless
+/// `RGBA()` sets a real alpha explicitly). Every other mode (`Default`,
+/// `Transparent`, and every bit this slice doesn't behaviorally
+/// implement) falls back to a plain opaque overwrite, ignoring `color`'s
+/// own alpha byte entirely - oracle-confirmed directly for `Transparent`
+/// on a plain shape fill (no visible difference from `Default` at all;
+/// `Transparent` only has a real effect on `DrawText`'s own background
+/// fill, handled separately in `pbDrawText` itself, not here). Both
+/// `XOr` and `AlphaBlend` set simultaneously is untested - `XOr` wins
+/// here, arbitrarily, since nothing suggests either is more "correct".
+inline void blendPixelWithMode(std::uint32_t* pixel, std::int64_t color, std::int64_t mode) {
+    if ((mode & 2) != 0) { // #PB_2DDrawing_XOr
+        std::uint32_t srcRgb = colorToArgb(color) & 0x00FFFFFFU;
+        *pixel = 0xFF000000U | ((*pixel & 0x00FFFFFFU) ^ srcRgb);
+    } else if ((mode & 16) != 0) { // #PB_2DDrawing_AlphaBlend
+        std::uint32_t alpha = static_cast<std::uint32_t>((color >> 24) & 0xff);
+        std::uint32_t srcR = static_cast<std::uint32_t>(color & 0xff);
+        std::uint32_t srcG = static_cast<std::uint32_t>((color >> 8) & 0xff);
+        std::uint32_t srcB = static_cast<std::uint32_t>((color >> 16) & 0xff);
+        std::uint32_t dst = *pixel;
+        std::uint32_t dstR = (dst >> 16) & 0xffU;
+        std::uint32_t dstG = (dst >> 8) & 0xffU;
+        std::uint32_t dstB = dst & 0xffU;
+        std::uint32_t newR = (dstR * (255 - alpha) + srcR * alpha) / 255;
+        std::uint32_t newG = (dstG * (255 - alpha) + srcG * alpha) / 255;
+        std::uint32_t newB = (dstB * (255 - alpha) + srcB * alpha) / 255;
+        *pixel = 0xFF000000U | (newR << 16) | (newG << 8) | newB;
+    } else {
+        *pixel = colorToArgb(color);
+    }
+}
+
+/// Rasterizes a filled (or, under `#PB_2DDrawing_Outlined`, boundary-
+/// only) shape directly onto `backing`'s own raw pixel buffer, within
+/// `[minPx, maxPx] x [minPy, maxPy]` (already clamped to the canvas's own
+/// bounds and the shape's own bounding box by the caller), using `inside`
+/// (a `bool(std::int64_t px, std::int64_t py)` predicate) as the shape's
+/// own membership test and `blendPixelWithMode` for each written pixel.
+/// Shared by `Box`/`Circle`/`Ellipse`/`RoundBox`/`Plot` so `Outlined`/
+/// `XOr`/`AlphaBlend` only need to be implemented once. `Outlined`
+/// (oracle-verified directly for `Box`/`Circle`/`Ellipse`/`RoundBox`: a
+/// shape's own *interior* reads back as untouched background, only its
+/// 1-pixel-wide boundary is drawn) is implemented as "inside AND at least
+/// one of this pixel's own 4-connected neighbors is not inside" - the
+/// boundary of the exact same already-oracle-matched filled region
+/// `inside` defines, so it can never disagree with this project's own
+/// `Default`-mode fill about where that boundary actually is.
+template <typename InsidePredicate>
+inline void rasterizeShape(cairo_surface_t* backing, std::int64_t minPx, std::int64_t maxPx, std::int64_t minPy,
+                            std::int64_t maxPy, std::int64_t color, std::int64_t mode, InsidePredicate inside) {
+    cairo_surface_flush(backing);
+    auto* data = cairo_image_surface_get_data(backing);
+    int stride = cairo_image_surface_get_stride(backing);
+    bool outlined = (mode & 4) != 0; // #PB_2DDrawing_Outlined
+    for (std::int64_t py = minPy; py <= maxPy; ++py) {
+        auto* row = reinterpret_cast<std::uint32_t*>(data + py * stride);
+        for (std::int64_t px = minPx; px <= maxPx; ++px) {
+            if (!inside(px, py)) {
+                continue;
+            }
+            if (outlined && inside(px - 1, py) && inside(px + 1, py) && inside(px, py - 1) && inside(px, py + 1)) {
+                continue; // Interior pixel, not on the boundary - skipped under Outlined.
+            }
+            blendPixelWithMode(&row[px], color, mode);
+        }
+    }
+    cairo_surface_mark_dirty(backing);
 }
 
 } // namespace detail
@@ -2767,6 +2865,7 @@ inline std::int64_t pbStartDrawing(std::int64_t output) {
     detail::activeDrawing().cr = cairo_create(backing);
     detail::activeDrawing().frontColor = 0;
     detail::activeDrawing().backColor = 0;
+    detail::activeDrawing().drawingMode = 0; // #PB_2DDrawing_Default - oracle-verified, resets like FrontColor/BackColor.
     return 1;
 }
 
@@ -2797,28 +2896,133 @@ inline std::int64_t pbBackColor(std::int64_t color) {
     return 0; // Oracle-verified no return value ("Aucune").
 }
 
+/// `DrawingMode(Mode)` - an ambient setting, like `FrontColor`/
+/// `BackColor` (persists across calls, resets to `#PB_2DDrawing_Default`
+/// on the next `StartDrawing`, both oracle-verified directly), that
+/// changes how every other drawing command here composites its own
+/// color against whatever is already on the canvas. Oracle-verified
+/// behaviorally for 4 of its real flags, each independently:
+///
+/// - **`#PB_2DDrawing_Outlined`**: `Box`/`Circle`/`Ellipse`/`RoundBox`
+///   draw only their own 1-pixel-wide boundary, not the filled
+///   interior (confirmed directly: a shape's own center reads back as
+///   untouched background). No effect on `Plot` (a single pixel has no
+///   "interior" to skip) or `Line`/`LineXY`/`DrawText` (confirmed
+///   directly on `LineXY` and `Plot`; `Line`'s own already-documented
+///   zero-delta quirk makes it easy to mistake for an effect here, so
+///   this needs a genuinely non-degenerate `Line` call to confirm
+///   cleanly - also confirmed).
+/// - **`#PB_2DDrawing_XOr`**: every pixel actually written gets a plain
+///   per-channel bitwise XOR of the given color's own RGB bytes against
+///   whatever is already there, instead of a plain overwrite - confirmed
+///   directly on `Box`/`LineXY`/`DrawText`'s own background fill, and
+///   (combined with `Outlined`) on `Box`'s own outline pixels too. Only
+///   implemented for the commands already rasterized directly onto the
+///   raw pixel buffer here (`Box`/`Circle`/`Ellipse`/`RoundBox`/`Plot`/
+///   `FillArea`) - `Line`/`LineXY`/`DrawText` remain Cairo/Pango-
+///   rendered and have no real per-pixel compositing hook exposed for
+///   this (Cairo's own `CAIRO_OPERATOR_XOR` is a Porter-Duff alpha XOR,
+///   not a bitwise RGB one, and produces nothing at all when both sides
+///   are fully opaque - confirmed by reasoning about it, not shipped),
+///   so they're a documented, narrow gap: still drawn, just without
+///   `XOr`'s own compositing.
+/// - **`#PB_2DDrawing_AlphaBlend`**: a standard "source over destination"
+///   alpha composite, using the color's own top byte as its alpha -
+///   confirmed directly via `(dst * (255 - alpha) + src * alpha) / 255`
+///   per channel, integer *truncating* division, at alpha `0`/`100`/
+///   `255`. `RGB()` always packs `0` there (so a plain `RGB()` color is
+///   fully invisible under this mode), `RGBA()` sets it explicitly.
+///   Implemented uniformly for *every* drawing command here, including
+///   `Line`/`LineXY`/`DrawText` - unlike `XOr`, this one is cheap for
+///   Cairo's own native rendering too (`cairo_set_source_rgba` with the
+///   same alpha already does exactly this composite against an opaque
+///   destination, confirmed to match the oracle's own formula exactly).
+/// - **`#PB_2DDrawing_Transparent`**: no effect on `Box`/`Circle`/
+///   `Ellipse`/`RoundBox`/`Plot`/`Line`/`LineXY` at all (confirmed
+///   directly on `Box` - opaque, normal fill, same as `Default`) - its
+///   real effect is narrower, on `DrawText` alone: the usual opaque
+///   `BackColor`-filled background box behind the glyphs is skipped
+///   entirely under this mode, letting whatever was already there show
+///   through (confirmed directly: a gray box drawn underneath first
+///   stays fully visible). Handled in `pbDrawText` itself, not here.
+///
+/// **Scope note**: `#PB_2DDrawing_AlphaChannel`/`AlphaClip`/`Gradient`/
+/// `CustomFilter`/`NativeText`/`FastText`/`AllChannels` are registered
+/// (so code using them still compiles) but not behaviorally implemented
+/// - `Gradient` needs its own gradient-definition functions this project
+/// hasn't built yet; `AlphaChannel` alone (without `AlphaBlend`) produced
+/// a confusing, hard-to-characterize result when probed directly that
+/// wasn't judged worth the further investigation it would take to
+/// nail down; the rest are about an internal rendering strategy choice
+/// (which text renderer, which image-scaling filter) with no
+/// meaningful GTK/Cairo equivalent, or tie into image-drawing commands
+/// this project hasn't implemented yet either - the same "narrow,
+/// documented gap" precedent used elsewhere in this project (e.g.
+/// `CanvasGadget`'s own `#PB_Canvas_Cursor`).
+inline std::int64_t pbDrawingMode(std::int64_t mode) {
+    if (detail::activeDrawing().cr == nullptr) {
+        return 0;
+    }
+    detail::activeDrawing().drawingMode = mode;
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+/// Rasterized directly onto the backing surface's own raw pixel buffer
+/// via `detail::rasterizeShape` (not `cairo_fill`, any more) so it
+/// participates in `DrawingMode`'s own `Outlined`/`XOr`/`AlphaBlend`
+/// (see `pbDrawingMode`'s own doc comment) the same way `Circle`/
+/// `Ellipse`/`RoundBox`/`Plot` all now do - a plain axis-aligned
+/// rectangle fill has no antialiasing-boundary ambiguity to begin with,
+/// so this is a behavior-preserving change under `#PB_2DDrawing_Default`.
 inline std::int64_t pbBox(std::int64_t x, std::int64_t y, std::int64_t width, std::int64_t height,
                            std::int64_t color = -1) {
     auto& drawing = detail::activeDrawing();
     if (drawing.cr == nullptr) {
         return 0;
     }
-    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
-    cairo_rectangle(drawing.cr, static_cast<double>(x), static_cast<double>(y), static_cast<double>(width),
-                     static_cast<double>(height));
-    cairo_fill(drawing.cr);
+    cairo_surface_t* backing = detail::canvasBackingSurface(drawing.drawingArea);
+    int w = cairo_image_surface_get_width(backing);
+    int h = cairo_image_surface_get_height(backing);
+    std::int64_t minPx = std::max<std::int64_t>(0, x);
+    std::int64_t maxPx = std::min<std::int64_t>(w - 1, x + width - 1);
+    std::int64_t minPy = std::max<std::int64_t>(0, y);
+    std::int64_t maxPy = std::min<std::int64_t>(h - 1, y + height - 1);
+    detail::rasterizeShape(backing, minPx, maxPx, minPy, maxPy, color == -1 ? drawing.frontColor : color,
+                            drawing.drawingMode, [&](std::int64_t px, std::int64_t py) {
+                                return px >= x && px < x + width && py >= y && py < y + height;
+                            });
     return 0; // Oracle-verified no return value ("Aucune").
 }
 
+/// Rasterized directly onto the raw pixel buffer via `detail::
+/// rasterizeShape`, reusing `Ellipse`'s own exact integer-inclusive test
+/// with `xRadius = yRadius = radius` (a circle *is* an ellipse with
+/// equal radii) - oracle-confirmed directly to match `Circle`'s own
+/// exact boundary too, not just `Ellipse`'s. This also fixes the same
+/// antialiased-edge imprecision `Ellipse` itself had with its own
+/// original `cairo_arc`+fill attempt, as a side effect - `Circle`'s own
+/// prior implementation had the identical issue, just never oracle-
+/// verified this precisely before (its own existing test only ever
+/// checked "one pixel inside" the edge).
 inline std::int64_t pbCircle(std::int64_t x, std::int64_t y, std::int64_t radius, std::int64_t color = -1) {
     auto& drawing = detail::activeDrawing();
     if (drawing.cr == nullptr) {
         return 0;
     }
-    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
-    cairo_arc(drawing.cr, static_cast<double>(x), static_cast<double>(y), static_cast<double>(radius), 0,
-               2 * 3.14159265358979323846);
-    cairo_fill(drawing.cr);
+    cairo_surface_t* backing = detail::canvasBackingSurface(drawing.drawingArea);
+    int w = cairo_image_surface_get_width(backing);
+    int h = cairo_image_surface_get_height(backing);
+    std::int64_t r2 = radius * radius;
+    std::int64_t minPx = std::max<std::int64_t>(0, x - radius);
+    std::int64_t maxPx = std::min<std::int64_t>(w - 1, x + radius);
+    std::int64_t minPy = std::max<std::int64_t>(0, y - radius);
+    std::int64_t maxPy = std::min<std::int64_t>(h - 1, y + radius);
+    detail::rasterizeShape(backing, minPx, maxPx, minPy, maxPy, color == -1 ? drawing.frontColor : color,
+                            drawing.drawingMode, [&](std::int64_t px, std::int64_t py) {
+                                std::int64_t dx = px - x;
+                                std::int64_t dy = py - y;
+                                return dx * dx + dy * dy <= r2;
+                            });
     return 0; // Oracle-verified no return value ("Aucune").
 }
 
@@ -2833,9 +3037,13 @@ inline std::int64_t pbPlot(std::int64_t x, std::int64_t y, std::int64_t color = 
     if (x < 0 || y < 0 || x >= w || y >= h) {
         return 0; // Oracle-verified fatal "outside the drawing area" error - not replicated.
     }
-    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
-    cairo_rectangle(drawing.cr, static_cast<double>(x), static_cast<double>(y), 1.0, 1.0);
-    cairo_fill(drawing.cr);
+    // Oracle-verified: Outlined has no effect on Plot (a single pixel
+    // has no "interior" to skip) - the inside-test below is a true
+    // single-point test (not "always true"), so rasterizeShape's own
+    // Outlined boundary check (every one of a pixel's 4 neighbors also
+    // "inside") never wrongly treats this one point as skippable.
+    detail::rasterizeShape(backing, x, x, y, y, color == -1 ? drawing.frontColor : color, drawing.drawingMode,
+                            [&](std::int64_t px, std::int64_t py) { return px == x && py == y; });
     return 0; // Oracle-verified no return value ("Aucune").
 }
 
@@ -2881,10 +3089,6 @@ inline std::int64_t pbEllipse(std::int64_t x, std::int64_t y, std::int64_t xRadi
     cairo_surface_t* backing = detail::canvasBackingSurface(drawing.drawingArea);
     int w = cairo_image_surface_get_width(backing);
     int h = cairo_image_surface_get_height(backing);
-    cairo_surface_flush(backing);
-    auto* data = cairo_image_surface_get_data(backing);
-    int stride = cairo_image_surface_get_stride(backing);
-    std::uint32_t argb = detail::colorToArgb(color == -1 ? drawing.frontColor : color);
     std::int64_t xr2 = xRadius * xRadius;
     std::int64_t yr2 = yRadius * yRadius;
     std::int64_t limit = xr2 * yr2;
@@ -2892,17 +3096,12 @@ inline std::int64_t pbEllipse(std::int64_t x, std::int64_t y, std::int64_t xRadi
     std::int64_t maxPx = std::min<std::int64_t>(w - 1, x + xRadius);
     std::int64_t minPy = std::max<std::int64_t>(0, y - yRadius);
     std::int64_t maxPy = std::min<std::int64_t>(h - 1, y + yRadius);
-    for (std::int64_t py = minPy; py <= maxPy; ++py) {
-        std::int64_t dy = py - y;
-        auto* row = reinterpret_cast<std::uint32_t*>(data + py * stride);
-        for (std::int64_t px = minPx; px <= maxPx; ++px) {
-            std::int64_t dx = px - x;
-            if (dx * dx * yr2 + dy * dy * xr2 <= limit) {
-                row[px] = argb;
-            }
-        }
-    }
-    cairo_surface_mark_dirty(backing);
+    detail::rasterizeShape(backing, minPx, maxPx, minPy, maxPy, color == -1 ? drawing.frontColor : color,
+                            drawing.drawingMode, [&](std::int64_t px, std::int64_t py) {
+                                std::int64_t dx = px - x;
+                                std::int64_t dy = py - y;
+                                return dx * dx * yr2 + dy * dy * xr2 <= limit;
+                            });
     return 0; // Oracle-verified no return value ("Aucune").
 }
 
@@ -2925,10 +3124,6 @@ inline std::int64_t pbRoundBox(std::int64_t x, std::int64_t y, std::int64_t widt
     cairo_surface_t* backing = detail::canvasBackingSurface(drawing.drawingArea);
     int w = cairo_image_surface_get_width(backing);
     int h = cairo_image_surface_get_height(backing);
-    cairo_surface_flush(backing);
-    auto* data = cairo_image_surface_get_data(backing);
-    int stride = cairo_image_surface_get_stride(backing);
-    std::uint32_t argb = detail::colorToArgb(color == -1 ? drawing.frontColor : color);
     std::int64_t cw2 = cornerWidth * cornerWidth;
     std::int64_t ch2 = cornerHeight * cornerHeight;
     std::int64_t cornerLimit = cw2 * ch2;
@@ -2947,28 +3142,33 @@ inline std::int64_t pbRoundBox(std::int64_t x, std::int64_t y, std::int64_t widt
     std::int64_t rightMargin = x + width - cornerWidth;
     std::int64_t topMargin = y + cornerHeight;
     std::int64_t bottomMargin = y + height - cornerHeight;
-    for (std::int64_t py = minPy; py <= maxPy; ++py) {
+    // The explicit own-bounds check at the top matters here beyond mere
+    // optimization: `Outlined` mode's own boundary test (see
+    // `detail::rasterizeShape`'s own doc comment) probes a pixel's own
+    // 4 neighbors, which can land just outside `[minPx, maxPx] x
+    // [minPy, maxPy]` - this predicate needs to say "not inside" for
+    // those too, not just within the already-clamped iteration range.
+    auto inside = [&](std::int64_t px, std::int64_t py) {
+        if (px < x || px > x + width - 1 || py < y || py > y + height - 1) {
+            return false;
+        }
         bool inTopBand = py < topMargin;
         bool inBottomBand = py >= bottomMargin;
-        auto* row = reinterpret_cast<std::uint32_t*>(data + py * stride);
-        for (std::int64_t px = minPx; px <= maxPx; ++px) {
-            if (inTopBand || inBottomBand) {
-                bool inLeftBand = px < leftMargin;
-                bool inRightBand = px >= rightMargin;
-                if (inLeftBand || inRightBand) {
-                    std::int64_t cx = inLeftBand ? leftMargin : rightMargin;
-                    std::int64_t cy = inTopBand ? topMargin : bottomMargin;
-                    std::int64_t dx = px - cx;
-                    std::int64_t dy = py - cy;
-                    if (dx * dx * ch2 + dy * dy * cw2 > cornerLimit) {
-                        continue;
-                    }
-                }
+        if (inTopBand || inBottomBand) {
+            bool inLeftBand = px < leftMargin;
+            bool inRightBand = px >= rightMargin;
+            if (inLeftBand || inRightBand) {
+                std::int64_t cx = inLeftBand ? leftMargin : rightMargin;
+                std::int64_t cy = inTopBand ? topMargin : bottomMargin;
+                std::int64_t dx = px - cx;
+                std::int64_t dy = py - cy;
+                return dx * dx * ch2 + dy * dy * cw2 <= cornerLimit;
             }
-            row[px] = argb;
         }
-    }
-    cairo_surface_mark_dirty(backing);
+        return true;
+    };
+    detail::rasterizeShape(backing, minPx, maxPx, minPy, maxPy, color == -1 ? drawing.frontColor : color,
+                            drawing.drawingMode, inside);
     return 0; // Oracle-verified no return value ("Aucune").
 }
 
@@ -2999,7 +3199,6 @@ inline std::int64_t pbFillArea(std::int64_t x, std::int64_t y, std::int64_t bord
     }
     std::int64_t fill = fillColor == -1 ? drawing.frontColor : fillColor;
     std::uint32_t borderArgb = detail::colorToArgb(borderColor);
-    std::uint32_t fillArgb = detail::colorToArgb(fill);
     cairo_surface_flush(backing);
     auto* data = cairo_image_surface_get_data(backing);
     int stride = cairo_image_surface_get_stride(backing);
@@ -3009,23 +3208,35 @@ inline std::int64_t pbFillArea(std::int64_t x, std::int64_t y, std::int64_t bord
     if (*pixelAt(static_cast<int>(x), static_cast<int>(y)) == borderArgb) {
         return 0; // Starting pixel already matches BorderColor - nothing to fill.
     }
+    // A `visited` bitmap, not a post-write color comparison, tracks
+    // which pixels are already handled - oracle-confirmed this also
+    // respects DrawingMode (XOr/AlphaBlend), so a pixel's own value
+    // after being written no longer reliably identifies "already
+    // filled" the way a plain, fixed `fillArgb` overwrite used to.
+    std::vector<std::uint8_t> visited(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0);
+    auto markVisited = [&](int px, int py) { visited[static_cast<std::size_t>(py) * w + px] = 1; };
+    auto isVisited = [&](int px, int py) { return visited[static_cast<std::size_t>(py) * w + px] != 0; };
     std::vector<std::pair<int, int>> stack;
     stack.emplace_back(static_cast<int>(x), static_cast<int>(y));
+    markVisited(static_cast<int>(x), static_cast<int>(y));
     while (!stack.empty()) {
         auto [px, py] = stack.back();
         stack.pop_back();
-        if (px < 0 || py < 0 || px >= w || py >= h) {
-            continue;
+        detail::blendPixelWithMode(pixelAt(px, py), fill, drawing.drawingMode);
+        static constexpr int dx[4] = {1, -1, 0, 0};
+        static constexpr int dy[4] = {0, 0, 1, -1};
+        for (int i = 0; i < 4; ++i) {
+            int nx = px + dx[i];
+            int ny = py + dy[i];
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h || isVisited(nx, ny)) {
+                continue;
+            }
+            if (*pixelAt(nx, ny) == borderArgb) {
+                continue;
+            }
+            markVisited(nx, ny);
+            stack.emplace_back(nx, ny);
         }
-        std::uint32_t* pixel = pixelAt(px, py);
-        if (*pixel == borderArgb || *pixel == fillArgb) {
-            continue;
-        }
-        *pixel = fillArgb;
-        stack.emplace_back(px + 1, py);
-        stack.emplace_back(px - 1, py);
-        stack.emplace_back(px, py + 1);
-        stack.emplace_back(px, py - 1);
     }
     cairo_surface_mark_dirty(backing);
     return 0; // Oracle-verified no return value ("Aucune").
@@ -3092,7 +3303,7 @@ inline std::int64_t pbLine(std::int64_t x, std::int64_t y, std::int64_t width, s
     cairo_set_antialias(drawing.cr, CAIRO_ANTIALIAS_NONE);
     cairo_set_line_width(drawing.cr, 1.0);
     cairo_set_line_cap(drawing.cr, CAIRO_LINE_CAP_SQUARE);
-    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
+    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color, drawing.drawingMode);
     // No `+0.5` pixel-centering here, unlike `pbLineXY` below - `Line`
     // can never be purely horizontal or vertical in the first place (the
     // early-return above already rules that out), so the specific
@@ -3117,7 +3328,7 @@ inline std::int64_t pbLineXY(std::int64_t x1, std::int64_t y1, std::int64_t x2, 
     cairo_set_antialias(drawing.cr, CAIRO_ANTIALIAS_NONE);
     cairo_set_line_width(drawing.cr, 1.0);
     cairo_set_line_cap(drawing.cr, CAIRO_LINE_CAP_SQUARE);
-    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color);
+    detail::cairoSetSourceFromColor(drawing.cr, color == -1 ? drawing.frontColor : color, drawing.drawingMode);
     cairo_move_to(drawing.cr, static_cast<double>(x1) + 0.5, static_cast<double>(y1) + 0.5);
     cairo_line_to(drawing.cr, static_cast<double>(x2) + 0.5, static_cast<double>(y2) + 0.5);
     cairo_stroke(drawing.cr);
@@ -3212,12 +3423,17 @@ inline double pbDrawText(std::int64_t x, std::int64_t y, const PBString& text, s
     int height = 0;
     pango_layout_get_pixel_size(layout, &width, &height);
 
-    detail::cairoSetSourceFromColor(drawing.cr, backColor);
-    cairo_rectangle(drawing.cr, static_cast<double>(x), static_cast<double>(y), static_cast<double>(width),
-                     static_cast<double>(height));
-    cairo_fill(drawing.cr);
+    // #PB_2DDrawing_Transparent (oracle-verified, DrawText-specific -
+    // see pbDrawingMode's own doc comment): skips this background fill
+    // entirely, leaving whatever was already there visible underneath.
+    if ((drawing.drawingMode & 1) == 0) {
+        detail::cairoSetSourceFromColor(drawing.cr, backColor, drawing.drawingMode);
+        cairo_rectangle(drawing.cr, static_cast<double>(x), static_cast<double>(y), static_cast<double>(width),
+                         static_cast<double>(height));
+        cairo_fill(drawing.cr);
+    }
 
-    detail::cairoSetSourceFromColor(drawing.cr, frontColor);
+    detail::cairoSetSourceFromColor(drawing.cr, frontColor, drawing.drawingMode);
     cairo_move_to(drawing.cr, static_cast<double>(x), static_cast<double>(y));
     pango_cairo_show_layout(drawing.cr, layout);
     g_object_unref(layout);

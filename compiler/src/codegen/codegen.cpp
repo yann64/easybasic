@@ -209,6 +209,7 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"line", "pbLine"}, {"linexy", "pbLineXY"}, {"drawtext", "pbDrawText"},
         {"textwidth", "pbTextWidth"}, {"textheight", "pbTextHeight"},
         {"ellipse", "pbEllipse"}, {"roundbox", "pbRoundBox"}, {"fillarea", "pbFillArea"},
+        {"drawingmode", "pbDrawingMode"},
         {"explorerlistgadget", "pbExplorerListGadget"}, {"explorercombogadget", "pbExplorerComboGadget"},
         {"explorertreegadget", "pbExplorerTreeGadget"},
         {"messagerequester", "pbMessageRequester"},
