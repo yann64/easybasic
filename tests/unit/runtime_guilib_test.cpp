@@ -943,6 +943,7 @@ TEST_CASE("StatusBarImage/StatusBarProgress each replace whatever a field was pr
     CHECK(GTK_IS_LABEL(gtk_bin_get_child(GTK_BIN(frame0))) != 0);
     CHECK(std::string(gtk_label_get_text(GTK_LABEL(gtk_bin_get_child(GTK_BIN(frame0))))) == "text again");
 
+    pbFreeImage(470);
     pbCloseWindow(953);
 }
 

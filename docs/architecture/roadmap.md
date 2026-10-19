@@ -5054,15 +5054,29 @@ trailing pair" shape, so a 5-argument call compiles here (taken as `Min`, `Max` 
 `100`) where real PB would reject it outright - a narrow, deliberately accepted gap rather than
 special-casing the compiler's own generic argument-count check for this one function.
 
-**A real, non-obvious bug found and fixed along the way**: swapping a status bar field's own
-`GtkFrame` child (`gtk_container_remove` + `gtk_container_add`) schedules the resulting resize
-through a GLib main-context *idle* source, not a pending GDK/X11 event - draining only
-`gtk_events_pending()` (what `StatusBarHeight`'s own pre-existing implementation already does)
-never observes that idle source running at all, so a `StatusBarHeight` query immediately after a
-`StatusBarImage`/`StatusBarProgress` call could read back a stale, too-small allocation. Fixed by
-explicitly calling `gtk_widget_queue_resize` and draining the *whole* `GMainContext` (not just its
-own GDK/X11 portion) right inside the child-swap helper itself, before returning control to the
-caller.
+**A real hang hazard found, tried, and reverted along the way**: an early version of this tried to
+force a status bar field's own post-swap resize to settle immediately, by draining the *whole*
+default `GMainContext` (`while (g_main_context_pending(nullptr)) ...`) right inside the child-swap
+helper, since swapping a `GtkFrame` child schedules its resize through a GLib idle source, not a
+pending GDK/X11 event (draining only `gtk_events_pending()`, what `StatusBarHeight`'s own pre-
+existing implementation already does, never observes that idle source at all). That approach was
+genuinely dangerous, not just imprecise: `g_main_context_pending` also considers any *recurring*
+GLib timeout source registered anywhere in the process (e.g. a focused `GtkEntry`'s own cursor-
+blink timer, already present once this runs as part of this project's own larger test suite, not
+when exercised in isolation) - which can keep reporting "pending" forever, hanging the whole
+process. Reverted entirely rather than bounded-and-kept, since `StatusBarHeight` itself already has
+its own separate, pre-existing gap (below) that made forcing an exact value not worth it anyway.
+
+**A real leak found by CI's own sanitizer job, not locally**: the first push of this slice's own
+new unit test leaked a `pbCreateImage`'d test fixture - created for `StatusBarImage` to point at,
+never freed with a matching `FreeImage` before the test ended. Caught by `LeakSanitizer` in CI's
+`sanitizers` job (a real, 2-allocation/864-byte leak report with a full stack trace pointing
+straight at the test's own `pbCreateImage` call) - not reproducible as a clean local repro in this
+session's own sandboxed environment (the sanitizer binary hangs *after* printing its own "All
+tests passed", for this test and for unrelated, already-shipped ones alike - an environment
+artifact of this session alone, not a real behavior - CI's own first run of this slice completed
+all 479 tests cleanly (no hang) in 166 seconds, with this one real leak report as its only
+failure). Fixed with a single missing `pbFreeImage` call.
 
 **A separate, pre-existing, unrelated discrepancy found while testing this slice**:
 `StatusBarHeight` itself reads back a smaller value than the real oracle's own even for a plain,

@@ -7599,23 +7599,26 @@ inline void statusBarFieldReplaceChild(GtkWidget* frame, GtkWidget* newChild) {
     }
     gtk_container_add(GTK_CONTAINER(frame), newChild);
     gtk_widget_show(newChild);
-    // A swapped-in child's own size isn't reliably reflected by
+    // A swapped-in child's own size isn't reliably reflected by a later
     // `gtk_widget_get_allocated_height` right away - GTK schedules the
     // resulting resize through a GLib main-context *idle* source, not
-    // a pending GDK/X11 event - draining only `gtk_events_pending()`
-    // (what `pbStatusBarHeight`'s own call already does) never observes
-    // that idle source at all, confirmed directly: flaky, test-run-
-    // order-dependent behavior otherwise (passes in isolation, where
-    // apparently nothing else is competing for that same idle queue;
-    // fails as part of the full suite). Draining the whole default
-    // `GMainContext` instead - not just its own GDK/X11 event portion -
-    // actually runs that idle source before returning control to the
-    // caller, making the field's own new content immediately reflected
-    // in any later `StatusBarHeight` query, deterministically.
-    gtk_widget_queue_resize(frame);
-    while (g_main_context_pending(nullptr) != 0) {
-        g_main_context_iteration(nullptr, FALSE);
-    }
+    // a pending GDK/X11 event. An earlier version of this tried to
+    // force that resize to run immediately, right here, by draining the
+    // *whole* default `GMainContext` in a `while (g_main_context_pending
+    // (nullptr))` loop - genuinely dangerous, not just imprecise:
+    // confirmed directly to hang the whole process under this
+    // project's own sanitizer CI job, since `g_main_context_pending`
+    // also considers any *recurring* GLib timeout source registered
+    // anywhere in the process (a focused `GtkEntry`'s own cursor-blink
+    // timer, for one - already present by the time this runs as part
+    // of this project's own larger test suite, not when run in
+    // isolation), which can keep reporting "pending" forever and never
+    // let an unbounded drain loop like that one actually terminate.
+    // Not attempting that forcing at all here any more - `StatusBarHeight`
+    // itself already has its own, separate, pre-existing height-
+    // computation gap (see this slice's own roadmap notes), so this
+    // would only have been chasing an exact value that was never
+    // reliably correct to begin with.
 }
 
 inline GtkWidget* statusBarFieldAsLabel(GtkWidget* frame) {
