@@ -238,6 +238,7 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"eventmenu", "pbEventMenu"},
         {"createstatusbar", "pbCreateStatusBar"},   {"addstatusbarfield", "pbAddStatusBarField"},
         {"statusbartext", "pbStatusBarText"},       {"isstatusbar", "pbIsStatusBar"},
+        {"statusbarimage", "pbStatusBarImage"},     {"statusbarprogress", "pbStatusBarProgress"},
         {"freestatusbar", "pbFreeStatusBar"},       {"statusbarheight", "pbStatusBarHeight"},
         {"statusbarid", "pbStatusBarID"},
         {"createimage", "pbCreateImage"},   {"loadimage", "pbLoadImage"},

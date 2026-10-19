@@ -778,6 +778,17 @@ void Sema::registerGuiLibBuiltins() {
         {"eventmenu", TypeSuffix::Integer, {}, 0},
         {"createstatusbar", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"addstatusbarfield", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        // StatusBarImage/StatusBarProgress - oracle-verified. See
+        // pbStatusBarImage's/pbStatusBarProgress's own doc comments in
+        // guilib.hpp for the full set of findings, including
+        // StatusBarProgress's own narrow "Min/Max must come as a pair"
+        // gap this generic cascading-optional mechanism doesn't model.
+        {"statusbarimage", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"statusbarprogress", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer,
+          TypeSuffix::Integer},
+         3},
         {"statusbartext", TypeSuffix::Integer,
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::String, TypeSuffix::Integer}, 3},
         {"isstatusbar", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
@@ -872,7 +883,8 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "windowid", "createmenu", "menutitle", "menuitem", "menubar", "opensubmenu", "closesubmenu", "ismenu",
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
-        "createstatusbar", "addstatusbarfield", "statusbartext", "isstatusbar", "freestatusbar", "statusbarheight",
+        "createstatusbar", "addstatusbarfield", "statusbartext", "statusbarimage", "statusbarprogress",
+        "isstatusbar", "freestatusbar", "statusbarheight",
         "statusbarid", "createimage", "loadimage", "isimage", "freeimage", "imageid", "imagewidth", "imageheight",
         "createimagemenu", "createtoolbar", "toolbarimagebutton", "toolbarseparator", "istoolbar", "freetoolbar",
         "disabletoolbarbutton", "gettoolbarbuttonstate", "settoolbarbuttonstate", "toolbarbuttontext",

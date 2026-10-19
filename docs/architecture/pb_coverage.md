@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **268 / 1848** procedures implemented (14%).
+**Summary**: **270 / 1848** procedures implemented (14%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -120,7 +120,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [Spline](#spline) | 0 | 13 | 0% |
 | [Sprite](#sprite) | 0 | 25 | 0% |
 | [StaticGeometry](#staticgeometry) | 0 | 5 | 0% |
-| [StatusBar](#statusbar) | 7 | 9 | 77% |
+| [StatusBar](#statusbar) | 9 | 9 | 100% |
 | [String](#string) | 15 | 37 | 40% |
 | [StringBuilder](#stringbuilder) | 0 | 7 | 0% |
 | [System](#system) | 2 | 9 | 22% |
@@ -2360,7 +2360,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## StatusBar
 
-7/9 implemented.
+9/9 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -2370,8 +2370,8 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `IsStatusBar` | (#StatusBar) - Test if the given '#StatusBar' is an initialized statusbar object. |
 | Yes | `StatusBarHeight` | (#StatusBar) - Return the height of the statusbar. |
 | Yes | `StatusBarID` | (#StatusBar) - Return the unique ID which identifies the statusbar in the operating system. |
-| No | `StatusBarImage` | (#StatusBar, Field, ImageID [, Appearance]) - Set an image to display in the specified statusbar field. |
-| No | `StatusBarProgress` | (#StatusBar, Field, Value [, Appearance [, Min, Max]]) - Set the specified 'Field' to display a progressbar. |
+| Yes | `StatusBarImage` | (#StatusBar, Field, ImageID [, Appearance]) - Set an image to display in the specified statusbar field. |
+| Yes | `StatusBarProgress` | (#StatusBar, Field, Value [, Appearance [, Min, Max]]) - Set the specified 'Field' to display a progressbar. |
 | Yes | `StatusBarText` | (#StatusBar, Field, Text$ [, Appearance]) - Change the text of the specified 'Field' in the given '#StatusBar'. |
 
 ## String

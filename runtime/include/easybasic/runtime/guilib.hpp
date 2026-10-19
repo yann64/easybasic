@@ -7577,6 +7577,93 @@ inline std::int64_t pbAddStatusBarField(std::int64_t width) {
 /// `GtkFrame` shadow style (mutually exclusive in practice; `BorderLess`
 /// wins if a caller somehow sets both) and `Center`/`Right` the label's own
 /// horizontal alignment (likewise mutually exclusive, `Right` winning).
+namespace detail {
+
+/// `StatusBarText`/`StatusBarImage`/`StatusBarProgress` all target the
+/// same field, each as a different `GtkFrame` child type (`GtkLabel`/
+/// `GtkImage`/`GtkProgressBar`) - whichever was called most recently
+/// replaces whatever the field was previously showing, the natural,
+/// mutually-exclusive interpretation for a single small status bar
+/// field (not independently oracle-verifiable beyond "doesn't crash
+/// either way, in either calling order" - no `GetStatusBarXxx` of any
+/// kind exists to read a field's own displayed content back at all;
+/// the same scope limit `ContainerGadget`'s own `Flags`-to-shadow-type
+/// mapping already accepts).
+inline void statusBarFieldReplaceChild(GtkWidget* frame, GtkWidget* newChild) {
+    GtkWidget* old = gtk_bin_get_child(GTK_BIN(frame));
+    if (old == newChild) {
+        return;
+    }
+    if (old != nullptr) {
+        gtk_container_remove(GTK_CONTAINER(frame), old);
+    }
+    gtk_container_add(GTK_CONTAINER(frame), newChild);
+    gtk_widget_show(newChild);
+    // A swapped-in child's own size isn't reliably reflected by
+    // `gtk_widget_get_allocated_height` right away - GTK schedules the
+    // resulting resize through a GLib main-context *idle* source, not
+    // a pending GDK/X11 event - draining only `gtk_events_pending()`
+    // (what `pbStatusBarHeight`'s own call already does) never observes
+    // that idle source at all, confirmed directly: flaky, test-run-
+    // order-dependent behavior otherwise (passes in isolation, where
+    // apparently nothing else is competing for that same idle queue;
+    // fails as part of the full suite). Draining the whole default
+    // `GMainContext` instead - not just its own GDK/X11 event portion -
+    // actually runs that idle source before returning control to the
+    // caller, making the field's own new content immediately reflected
+    // in any later `StatusBarHeight` query, deterministically.
+    gtk_widget_queue_resize(frame);
+    while (g_main_context_pending(nullptr) != 0) {
+        g_main_context_iteration(nullptr, FALSE);
+    }
+}
+
+inline GtkWidget* statusBarFieldAsLabel(GtkWidget* frame) {
+    GtkWidget* child = gtk_bin_get_child(GTK_BIN(frame));
+    if (child != nullptr && GTK_IS_LABEL(child) != 0) {
+        return child;
+    }
+    GtkWidget* label = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0F);
+    statusBarFieldReplaceChild(frame, label);
+    return label;
+}
+
+inline GtkWidget* statusBarFieldAsImage(GtkWidget* frame) {
+    GtkWidget* child = gtk_bin_get_child(GTK_BIN(frame));
+    if (child != nullptr && GTK_IS_IMAGE(child) != 0) {
+        return child;
+    }
+    GtkWidget* image = gtk_image_new();
+    statusBarFieldReplaceChild(frame, image);
+    return image;
+}
+
+inline GtkWidget* statusBarFieldAsProgressBar(GtkWidget* frame) {
+    GtkWidget* child = gtk_bin_get_child(GTK_BIN(frame));
+    if (child != nullptr && GTK_IS_PROGRESS_BAR(child) != 0) {
+        return child;
+    }
+    GtkWidget* bar = gtk_progress_bar_new();
+    statusBarFieldReplaceChild(frame, bar);
+    return bar;
+}
+
+/// `#PB_StatusBar_Raised`(`1`)/`BorderLess`(`2`) both pick a field's own
+/// `GtkFrame` shadow style - shared by all three of `StatusBarText`/
+/// `StatusBarImage`/`StatusBarProgress`.
+inline GtkShadowType statusBarShadowFromFlags(std::int64_t flags) {
+    if ((flags & 2) != 0) {
+        return GTK_SHADOW_NONE; // #PB_StatusBar_BorderLess
+    }
+    if ((flags & 1) != 0) {
+        return GTK_SHADOW_OUT; // #PB_StatusBar_Raised
+    }
+    return GTK_SHADOW_IN;
+}
+
+} // namespace detail
+
 inline std::int64_t pbStatusBarText(std::int64_t barId, std::int64_t field, const PBString& text,
                                      std::int64_t flags = 0) {
     auto it = detail::statusBarFieldFrames().find(barId);
@@ -7585,7 +7672,7 @@ inline std::int64_t pbStatusBarText(std::int64_t barId, std::int64_t field, cons
         return 0;
     }
     GtkWidget* frame = it->second[static_cast<std::size_t>(field)];
-    GtkWidget* label = gtk_bin_get_child(GTK_BIN(frame));
+    GtkWidget* label = detail::statusBarFieldAsLabel(frame);
     gtk_label_set_text(GTK_LABEL(label), text.bytes().c_str());
 
     float xalign = 0.0F;
@@ -7595,15 +7682,92 @@ inline std::int64_t pbStatusBarText(std::int64_t barId, std::int64_t field, cons
         xalign = 0.5F; // #PB_StatusBar_Center
     }
     gtk_label_set_xalign(GTK_LABEL(label), xalign);
-
-    GtkShadowType shadow = GTK_SHADOW_IN;
-    if ((flags & 2) != 0) {
-        shadow = GTK_SHADOW_NONE; // #PB_StatusBar_BorderLess
-    } else if ((flags & 1) != 0) {
-        shadow = GTK_SHADOW_OUT; // #PB_StatusBar_Raised
-    }
-    gtk_frame_set_shadow_type(GTK_FRAME(frame), shadow);
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), detail::statusBarShadowFromFlags(flags));
     return 1;
+}
+
+/// `StatusBarImage(#StatusBar, Field, ImageID [, Appearance])` -
+/// oracle-verified directly: returns `0` (no return value, "Aucune"),
+/// `StatusBarHeight` unaffected by a real image either way (confirmed
+/// directly - both before and after read back the exact same value,
+/// though that shared value itself happens to differ from this
+/// project's own, for a separate, pre-existing reason unrelated to
+/// `StatusBarImage` entirely - see this slice's own roadmap notes).
+/// `Appearance`'s own bits reuse `StatusBarText`'s own (`Raised`/
+/// `BorderLess`/`Center`/`Right`) - oracle-confirmed to accept the full
+/// `0`-`15` range without error, unlike `StatusBarProgress` below. An
+/// `ImageID` of `0` is a real fatal "'ImageID' is null" error in real
+/// PB (confirmed directly) - not replicated here: this project's own
+/// `setImageGadgetPixbuf` (the same helper `ImageGadget`/
+/// `ButtonImageGadget` already share) treats `0` as "clear the image"
+/// instead, a graceful divergence consistent with this project's own
+/// "fatal errors aren't replicated" precedent, not an attempt to
+/// reproduce a real, documented `0`-means-clear convention here.
+inline std::int64_t pbStatusBarImage(std::int64_t barId, std::int64_t field, std::int64_t imageHandle,
+                                       std::int64_t flags = 0) {
+    auto it = detail::statusBarFieldFrames().find(barId);
+    if (it == detail::statusBarFieldFrames().end() || field < 0 ||
+        static_cast<std::size_t>(field) >= it->second.size()) {
+        return 0;
+    }
+    GtkWidget* frame = it->second[static_cast<std::size_t>(field)];
+    GtkWidget* image = detail::statusBarFieldAsImage(frame);
+    detail::setImageGadgetPixbuf(image, imageHandle);
+
+    GtkAlign align = GTK_ALIGN_START;
+    if ((flags & 8) != 0) {
+        align = GTK_ALIGN_END; // #PB_StatusBar_Right
+    } else if ((flags & 4) != 0) {
+        align = GTK_ALIGN_CENTER; // #PB_StatusBar_Center
+    }
+    gtk_widget_set_halign(image, align);
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), detail::statusBarShadowFromFlags(flags));
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
+/// `StatusBarProgress(#StatusBar, Field, Value [, Appearance [, Min,
+/// Max]])` - oracle-verified directly: its own real return value is
+/// undefined/native-handle-ish content (confirmed directly - a fixed,
+/// deterministic non-zero number, not random/garbage the way
+/// `ScrollAreaGadget`'s own `GetGadgetColor` is, but still clearly not
+/// a meaningful value either), simplified to a clean `0` here, the
+/// same established "no real return value" divergence this project's
+/// own drawing commands/gadget-creation functions already use
+/// throughout. `Appearance` only
+/// accepts `0`-`3` in real PB (`#PB_StatusBar_Raised`/`BorderLess` only,
+/// unlike `StatusBarText`'s/`StatusBarImage`'s own full `0`-`15` range) -
+/// a real fatal "invalid value" error for `4`+ there, not replicated
+/// here (every value accepted, any extra bits simply ignored), the same
+/// established "fatal errors aren't replicated" precedent used
+/// throughout this project. `Min`/`Max` must be given together or not
+/// at all in real PB (a 5-argument call is a real "Incorrect number of
+/// parameters" compile error) - this project's own generic optional-
+/// argument mechanism doesn't model that "all-or-nothing trailing pair"
+/// shape, only a plain cascading tail, so a 5-argument call compiles
+/// here (taken as `Min`, with `Max` defaulting to `100`) where real PB
+/// would reject it outright - a narrow, deliberately accepted gap
+/// rather than special-casing the compiler's own generic argument-count
+/// check for this one function. `Min`/`Max` default to `0`/`100` when
+/// omitted entirely - not independently oracle-verifiable (no
+/// `GetStatusBarXxx` accessor exists to read the resulting fraction
+/// back), the most natural assumption given every other percentage-
+/// style range in this project defaults the same way.
+inline std::int64_t pbStatusBarProgress(std::int64_t barId, std::int64_t field, std::int64_t value,
+                                          std::int64_t flags = 0, std::int64_t minimum = 0,
+                                          std::int64_t maximum = 100) {
+    auto it = detail::statusBarFieldFrames().find(barId);
+    if (it == detail::statusBarFieldFrames().end() || field < 0 ||
+        static_cast<std::size_t>(field) >= it->second.size()) {
+        return 0;
+    }
+    GtkWidget* frame = it->second[static_cast<std::size_t>(field)];
+    GtkWidget* bar = detail::statusBarFieldAsProgressBar(frame);
+    double range = static_cast<double>(maximum - minimum);
+    double fraction = range != 0.0 ? (static_cast<double>(value - minimum) / range) : 0.0;
+    fraction = std::clamp(fraction, 0.0, 1.0);
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(bar), fraction);
+    gtk_frame_set_shadow_type(GTK_FRAME(frame), detail::statusBarShadowFromFlags(flags));
+    return 0; // Oracle-verified no return value ("Aucune").
 }
 
 /// Oracle-verified: real PB's own `IsStatusBar` also returns a native-

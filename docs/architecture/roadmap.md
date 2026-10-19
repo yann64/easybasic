@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`) - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-one slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library) - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -5026,4 +5026,58 @@ support matrix plus `GadgetToolTip`/`DisableGadgetRedraw`. One new golden e2e ca
 deliberately-scoped-out `ScrollAreaGadget` garbage and `HyperLinkGadget` off-by-one, neither included
 in the golden comparison, both covered - and the divergence explained - in the unit test instead)
 before being pinned.
+
+## M7b Implementation Notes (StatusBarImage/StatusBarProgress)
+
+**Scope landed**: `StatusBarImage`/`StatusBarProgress`, closing out the `StatusBar` library to
+9/9. Both return undefined/native-handle-ish content in real PB (confirmed directly: a fixed,
+deterministic non-zero number across repeated runs, not random garbage) - simplified to a clean
+`0`, the same established divergence this project's own drawing commands/gadget-creation functions
+already use throughout.
+
+**The model**: `StatusBarText`/`StatusBarImage`/`StatusBarProgress` all target the very same field,
+each as a different `GtkFrame` child type (`GtkLabel`/`GtkImage`/`GtkProgressBar`) - whichever was
+called most recently replaces whatever the field was previously showing, confirmed directly to
+never crash calling any of the three on the same field right after any other. No `GetStatusBarXxx`
+accessor of any kind exists to read a field's own displayed content back, so this (the natural,
+mutually-exclusive interpretation for one small status bar field) isn't independently oracle-
+verifiable beyond "doesn't crash either way" - the same scope limit `ContainerGadget`'s own
+`Flags`-to-shadow-type mapping already accepts.
+
+**`StatusBarImage`'s own `Appearance`** reuses `StatusBarText`'s own bits (`Raised`/`BorderLess`/
+`Center`/`Right`) and accepts the full `0`-`15` range without error - unlike **`StatusBarProgress`'s
+own**, which real PB only accepts `0`-`3` for (`Raised`/`BorderLess` only - a real fatal "invalid
+value" error for `4`+, not replicated here). `StatusBarProgress`'s own `Min`/`Max` must be given
+together or not at all in real PB (a 5-argument call is a real compile error) - this project's own
+generic optional-argument mechanism only models a plain cascading tail, not that "all-or-nothing
+trailing pair" shape, so a 5-argument call compiles here (taken as `Min`, `Max` defaulting to
+`100`) where real PB would reject it outright - a narrow, deliberately accepted gap rather than
+special-casing the compiler's own generic argument-count check for this one function.
+
+**A real, non-obvious bug found and fixed along the way**: swapping a status bar field's own
+`GtkFrame` child (`gtk_container_remove` + `gtk_container_add`) schedules the resulting resize
+through a GLib main-context *idle* source, not a pending GDK/X11 event - draining only
+`gtk_events_pending()` (what `StatusBarHeight`'s own pre-existing implementation already does)
+never observes that idle source running at all, so a `StatusBarHeight` query immediately after a
+`StatusBarImage`/`StatusBarProgress` call could read back a stale, too-small allocation. Fixed by
+explicitly calling `gtk_widget_queue_resize` and draining the *whole* `GMainContext` (not just its
+own GDK/X11 portion) right inside the child-swap helper itself, before returning control to the
+caller.
+
+**A separate, pre-existing, unrelated discrepancy found while testing this slice**:
+`StatusBarHeight` itself reads back a smaller value than the real oracle's own even for a plain,
+image/progress-free status bar with real field text already set (confirmed directly: `21` here,
+`29` in the real oracle, for the exact same setup) - already present before this slice, not
+something this slice's own additions caused or could reasonably fix as part of this scope. Left
+as a known, documented gap for a future slice; this slice's own new golden e2e case and unit test
+both deliberately avoid asserting any exact `StatusBarHeight` value because of it (checking real
+widget-type swapping directly instead, a robust, meaningful property that doesn't depend on
+`StatusBarHeight`'s own correctness at all).
+
+**Testing**: one new `runtime_guilib_test.cpp` case checking the real widget-type swap for all
+three content types on the same field, the `ImageID = 0` graceful divergence, and out-of-range
+field numbers. One new golden e2e case (`tests/e2e/gui_statusbar_image_progress`), confirmed
+line-for-line against the real oracle (aside from the undefined-return-value lines, normalized to
+a clean `0` per this project's established divergence, and the `ImageID = 0` fatal-error case,
+excluded from the golden comparison and covered in the unit test instead) before being pinned.
 
