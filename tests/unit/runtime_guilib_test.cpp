@@ -142,6 +142,118 @@ TEST_CASE("pbIsWindow/pbCloseWindow return a harmless default for an unknown win
     CHECK(pbCloseWindow(999999) == 0);
 }
 
+TEST_CASE("WindowX/WindowY/WindowWidth/WindowHeight read the real, current geometry",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(956, 50, 60, 300, 200, PBString("Test"));
+    CHECK(pbWindowX(956) == 50);
+    CHECK(pbWindowY(956) == 60);
+    CHECK(pbWindowWidth(956) == 300);
+    CHECK(pbWindowHeight(956) == 200);
+
+    // Mode is accepted but not acted on (see pbWindowX's own doc
+    // comment on why - no window manager in this headless environment
+    // to create a real frame/inner difference to measure).
+    CHECK(pbWindowX(956, 1) == 50);
+
+    CHECK(pbWindowX(999999) == 0); // unknown window id - a harmless default
+    pbCloseWindow(956);
+}
+
+TEST_CASE("GetWindowTitle/SetWindowTitle round-trip a window's real title", "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(957, 10, 10, 200, 200, PBString("Original"));
+    CHECK(pbGetWindowTitle(957).bytes() == "Original");
+    CHECK(pbSetWindowTitle(957, PBString("Changed")) == 0); // Oracle-verified no return value.
+    CHECK(pbGetWindowTitle(957).bytes() == "Changed");
+    CHECK(pbGetWindowTitle(999999).bytes().empty()); // unknown window id
+    pbCloseWindow(957);
+}
+
+TEST_CASE("GetWindowData/SetWindowData round-trip an arbitrary per-window integer, defaulting to 0",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(958, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbGetWindowData(958) == 0);
+    CHECK(pbSetWindowData(958, 12345) == 0);
+    CHECK(pbGetWindowData(958) == 12345);
+    pbCloseWindow(958);
+}
+
+TEST_CASE("GetActiveWindow/SetActiveWindow use real GTK focus state, not a separately tracked flag",
+          "[runtime][guilib]") {
+    // Oracle-verified: under this project's own headless Xvfb test
+    // environment (no window manager to ever actually grant real
+    // input focus), real PB's own GetActiveWindow stays -1 regardless
+    // of any SetActiveWindow call first - this implementation matches
+    // that in the same environment for the same reason.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(959, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbGetActiveWindow() == -1);
+    CHECK(pbSetActiveWindow(959) == 1);
+    CHECK(pbGetActiveWindow() == -1);
+    CHECK(pbSetActiveWindow(999999) == 0); // unknown window id
+    pbCloseWindow(959);
+}
+
+TEST_CASE("GetWindowState/SetWindowState use real GTK window-manager state, not a separately "
+          "tracked flag",
+          "[runtime][guilib]") {
+    // Oracle-verified: under this project's own headless Xvfb test
+    // environment (no window manager to ever actually process a
+    // maximize/iconify request), real PB's own GetWindowState stays
+    // #PB_Window_Normal regardless of any SetWindowState call first -
+    // this implementation matches that in the same environment for the
+    // same reason.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(960, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbGetWindowState(960) == 0); // #PB_Window_Normal
+    CHECK(pbSetWindowState(960, 512) == 1); // #PB_Window_Maximize
+    CHECK(pbGetWindowState(960) == 0);
+    CHECK(pbSetWindowState(960, 1024) == 1); // #PB_Window_Minimize
+    CHECK(pbGetWindowState(960) == 0);
+    CHECK(pbGetWindowState(999999) == 0); // unknown window id
+    pbCloseWindow(960);
+}
+
+TEST_CASE("GetWindowColor/SetWindowColor round-trip a real, visible background color",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(961, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbGetWindowColor(961) == -1);
+    CHECK(pbSetWindowColor(961, pbRGB(10, 20, 30)) == 0); // Oracle-verified no return value.
+    CHECK(pbGetWindowColor(961) == pbRGB(10, 20, 30));
+    CHECK(pbGetWindowColor(999999) == -1); // unknown window id
+    pbCloseWindow(961);
+}
+
+TEST_CASE("DisableWindow is a plain gtk_widget_set_sensitive, oracle-verified to carry no "
+          "meaningful return value",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(962, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbDisableWindow(962, 1) == 0);
+    CHECK(gtk_widget_get_sensitive(detail::windowTable()[962]) == FALSE);
+    CHECK(pbDisableWindow(962, 0) == 0);
+    CHECK(gtk_widget_get_sensitive(detail::windowTable()[962]) == TRUE);
+    CHECK(pbDisableWindow(999999, 1) == 0); // unknown window id
+    pbCloseWindow(962);
+}
+
 TEST_CASE("pbWindowEvent returns 0 when no event is pending", "[runtime][guilib]") {
     if (!hasDisplay()) {
         SKIP("no usable display available in this environment");

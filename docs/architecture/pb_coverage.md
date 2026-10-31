@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **282 / 1850** procedures implemented (15%).
+**Summary**: **297 / 1850** procedures implemented (16%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -136,7 +136,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [Vehicle](#vehicle) | 0 | 8 | 0% |
 | [VertexAnimation](#vertexanimation) | 0 | 8 | 0% |
 | [WebView](#webview) | 0 | 5 | 0% |
-| [Window](#window) | 8 | 40 | 20% |
+| [Window](#window) | 23 | 40 | 57% |
 | [World](#world) | 0 | 36 | 0% |
 | [Xml](#xml) | 0 | 57 | 0% |
 
@@ -2713,36 +2713,36 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Window
 
-8/40 implemented.
+23/40 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
 | No | `AddKeyboardShortcut` | (#Window, Key, Event) - Add a keyboard shortcut to the specified window. |
 | No | `AddWindowTimer` | (#Window, Timer, Timeout) - Add a timer event to the window. |
 | Yes | `CloseWindow` | (#Window) - Close the specified window. |
-| No | `DisableWindow` | (#Window, State) - Disable or enable all user input to the window. |
-| No | `GetActiveWindow` | () - Return the currently active window (the one with the focus). |
-| No | `GetWindowColor` | (#Window) - Get the background color of the window. |
-| No | `GetWindowData` | (#Window) - Return the value previously stored for the window. |
-| No | `GetWindowState` | (#Window) - Get the minimized/maximized state of the window. |
-| No | `GetWindowTitle` | (#Window) - Get the current window title. |
+| Yes | `DisableWindow` | (#Window, State) - Disable or enable all user input to the window. |
+| Yes | `GetActiveWindow` | () - Return the currently active window (the one with the focus). |
+| Yes | `GetWindowColor` | (#Window) - Get the background color of the window. |
+| Yes | `GetWindowData` | (#Window) - Return the value previously stored for the window. |
+| Yes | `GetWindowState` | (#Window) - Get the minimized/maximized state of the window. |
+| Yes | `GetWindowTitle` | (#Window) - Get the current window title. |
 | Yes | `HideWindow` | (#Window, State [, Flags]) - Hide or show the specified window. |
 | Yes | `IsWindow` | (#Window) - Test if the given window is an initialized window object. |
 | Yes | `OpenWindow` | (#Window, x, y, InnerWidth, InnerHeight, Title$ [, Flags [, ParentID]]) - Open a new window according to the specified parameters. |
 | No | `RemoveKeyboardShortcut` | (#Window, Key) - Remove a keyboard shortcut from the specified window. |
 | No | `RemoveWindowTimer` | (#Window, Timer) - Remove the timer event from the window. |
 | Yes | `ResizeWindow` | (#Window, x, y, Width, Height) - Move and resize the specified window to the given position and dimensions. |
-| No | `SetActiveWindow` | (#Window) - Activate the specified window. This means that focus has been put on this window. |
-| No | `SetWindowColor` | (#Window, Color) - Set the background color of the window. |
-| No | `SetWindowData` | (#Window, Value) - Store a value for the window. |
-| No | `SetWindowState` | (#Window, State) - Set the minimized/maximized state of the window. |
-| No | `SetWindowTitle` | (#Window, Title$) - Change the current window title. |
+| Yes | `SetActiveWindow` | (#Window) - Activate the specified window. This means that focus has been put on this window. |
+| Yes | `SetWindowColor` | (#Window, Color) - Set the background color of the window. |
+| Yes | `SetWindowData` | (#Window, Value) - Store a value for the window. |
+| Yes | `SetWindowState` | (#Window, State) - Set the minimized/maximized state of the window. |
+| Yes | `SetWindowTitle` | (#Window, Title$) - Change the current window title. |
 | No | `SmartWindowRefresh` | (#Window, State) - Activate or deactivate the smart window refresh. |
 | No | `StickyWindow` | (#Window, State) - Make the window stay in front of all other windows. |
 | Yes | `WaitWindowEvent` | ([Timeout]) - Wait until an event occurs on any of the opened windows. |
 | No | `WindowBounds` | (#Window, MinimumWidth, MinimumHeight, MaximumWidth, MaximumHeight) - Set the window bounds. |
 | Yes | `WindowEvent` | () - Check if an event has occurred on any of the opened windows. |
-| No | `WindowHeight` | (#Window [, Flags]) - Return the height, in pixels, of the specified window. |
+| Yes | `WindowHeight` | (#Window [, Flags]) - Return the height, in pixels, of the specified window. |
 | Yes | `WindowID` | (#Window) - Return the unique ID which identifies the window in the operating system. |
 | No | `WindowMouseX` | (#Window) - Return the mouse position relative to the left of the specified window. |
 | No | `WindowMouseY` | (#Window) - Return the mouse position relative to the top of the specified window. |
@@ -2754,9 +2754,9 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | No | `WindowUnscaledX` | (#Window, x) - Unscale a value on the 'x' axis according to the DPI of the screen the specified window is on. |
 | No | `WindowUnscaledY` | (#Window, y) - Unscale a value on the 'y' axis according to the DPI of the screen the specified window is on. |
 | No | `WindowVectorOutput` | (#Window [, Unit]) - Return the OutputID of the specified window to perform vector drawing on it. |
-| No | `WindowWidth` | (#Window [, Flags]) - Return the width, in pixels, of the specified window. |
-| No | `WindowX` | (#Window [, Mode]) - Return the left position, in pixels, of the specified window. |
-| No | `WindowY` | (#Window [, Mode]) - Return the top position, in pixels, of the specified window. |
+| Yes | `WindowWidth` | (#Window [, Flags]) - Return the width, in pixels, of the specified window. |
+| Yes | `WindowX` | (#Window [, Mode]) - Return the left position, in pixels, of the specified window. |
+| Yes | `WindowY` | (#Window [, Mode]) - Return the top position, in pixels, of the specified window. |
 
 ## World
 

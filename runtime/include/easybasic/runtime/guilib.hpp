@@ -260,6 +260,10 @@ inline GtkWindow* parentWindowFromId(std::int64_t parentId) {
 // GtkWidget* belongs to, without a second id->widget-reversed lookup table.
 inline const char* windowIdKey() { return "pbcxx-window-id"; }
 inline const char* windowStateKey() { return "pbcxx-window-state"; }
+/// `GetWindowData`/`SetWindowData`'s own arbitrary per-window integer
+/// tag - the same shape `gadgetDataKey()`'s own already is, one level
+/// up.
+inline const char* windowDataKey() { return "pbcxx-window-data"; }
 // Same idea, for gadgets: a gadget's own PB ID, and the ID of the window it
 // was placed into (needed so a gadget event can also set `EventWindow()` -
 // oracle-verified that it does, not just `EventGadget()`).
@@ -302,12 +306,18 @@ inline const char* splitterSecondResizeKey() { return "pbcxx-splitter-second-res
 /// for *any* geometry change without saying which part changed, so this is
 /// diffed against on every event to decide whether to queue
 /// `#PB_Event_MoveWindow`, `#PB_Event_SizeWindow`, or (if both actually
-/// changed at once) both.
+/// changed at once) both. Also doubles as `GetWindowColor`/
+/// `SetWindowColor`'s own per-window color state (`-1` meaning unset,
+/// oracle-verified), the same `GtkCssProvider`-per-widget pattern
+/// `GadgetColorState` already established, reused here rather than
+/// adding a second per-window struct/key for one more field.
 struct WindowState {
     std::int64_t x = 0;
     std::int64_t y = 0;
     std::int64_t width = 0;
     std::int64_t height = 0;
+    std::int64_t color = -1;
+    GtkCssProvider* colorProvider = nullptr;
 };
 
 inline gboolean onDeleteEvent(GtkWidget* widget, GdkEvent*, gpointer) {
@@ -677,6 +687,9 @@ inline void onMenuItemToggled(GtkWidget* item, gpointer) {
 /// is scanned for and erased first.
 inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
     auto* state = static_cast<WindowState*>(g_object_get_data(G_OBJECT(window), windowStateKey()));
+    if (state != nullptr && state->colorProvider != nullptr) {
+        g_object_unref(state->colorProvider);
+    }
     delete state;
     for (auto it = gadgetTable().begin(); it != gadgetTable().end();) {
         auto owner = reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(it->second), gadgetWindowIdKey()));
@@ -1668,6 +1681,228 @@ inline std::int64_t pbHideWindow(std::int64_t windowId, std::int64_t state) {
         gtk_widget_show(it->second);
     }
     return 1;
+}
+
+/// `WindowX`/`WindowY`/`WindowWidth`/`WindowHeight(#Window [, Mode])` -
+/// read straight off `WindowState`'s own `configure-event`-maintained
+/// x/y/width/height, the same data `pbResizeWindow`'s own callers rely
+/// on being kept current already. `Mode`'s own `#PB_Window_
+/// FrameCoordinate`(`0`, the default)/`InnerCoordinate`(`1`) distinguish
+/// the outer, decorated frame from the inner client area on a real
+/// desktop - oracle-verified directly to be *identical* under this
+/// project's own headless `Xvfb` test environment (no window manager
+/// running to draw any decoration at all, so there's no frame/inner
+/// difference to measure in the first place) - not independently
+/// verified against a real, decorated desktop either way, so `Mode` is
+/// accepted but not acted on here, a narrow, honest gap rather than a
+/// guess at a difference this project's own oracle can't itself see.
+inline std::int64_t pbWindowX(std::int64_t windowId, std::int64_t /*mode*/ = 0) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    auto* state = static_cast<detail::WindowState*>(g_object_get_data(G_OBJECT(it->second), detail::windowStateKey()));
+    return state != nullptr ? state->x : 0;
+}
+
+inline std::int64_t pbWindowY(std::int64_t windowId, std::int64_t /*mode*/ = 0) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    auto* state = static_cast<detail::WindowState*>(g_object_get_data(G_OBJECT(it->second), detail::windowStateKey()));
+    return state != nullptr ? state->y : 0;
+}
+
+inline std::int64_t pbWindowWidth(std::int64_t windowId, std::int64_t /*mode*/ = 0) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    auto* state = static_cast<detail::WindowState*>(g_object_get_data(G_OBJECT(it->second), detail::windowStateKey()));
+    return state != nullptr ? state->width : 0;
+}
+
+inline std::int64_t pbWindowHeight(std::int64_t windowId, std::int64_t /*mode*/ = 0) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    auto* state = static_cast<detail::WindowState*>(g_object_get_data(G_OBJECT(it->second), detail::windowStateKey()));
+    return state != nullptr ? state->height : 0;
+}
+
+inline PBString pbGetWindowTitle(std::int64_t windowId) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return PBString("");
+    }
+    const char* title = gtk_window_get_title(GTK_WINDOW(it->second));
+    return PBString(title != nullptr ? title : "");
+}
+
+inline std::int64_t pbSetWindowTitle(std::int64_t windowId, const PBString& title) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    gtk_window_set_title(GTK_WINDOW(it->second), title.bytes().c_str());
+    return 0; // Oracle-verified no real/meaningful return value ("Aucune").
+}
+
+/// `GetWindowData`/`SetWindowData(#Window [, Value])` - an arbitrary
+/// per-window integer tag, the same shape `GetGadgetData`/
+/// `SetGadgetData` already is one level down, defaulting to `0`
+/// (oracle-verified - unlike colors, which default to `-1`).
+inline std::int64_t pbGetWindowData(std::int64_t windowId) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    return reinterpret_cast<std::int64_t>(g_object_get_data(G_OBJECT(it->second), detail::windowDataKey()));
+}
+
+inline std::int64_t pbSetWindowData(std::int64_t windowId, std::int64_t value) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    g_object_set_data(G_OBJECT(it->second), detail::windowDataKey(), reinterpret_cast<gpointer>(value));
+    return 0; // Oracle-verified no real/meaningful return value ("Aucune").
+}
+
+/// `GetActiveWindow()`/`SetActiveWindow(#Window)` - oracle-verified
+/// directly via real `gtk_window_is_active`/`gtk_window_present`, not a
+/// separately tracked "last activated" flag of this project's own -
+/// under this project's own headless `Xvfb` test environment (no window
+/// manager running to ever actually grant real input focus to any
+/// window at all), real PB's own `GetActiveWindow` is itself oracle-
+/// confirmed to stay `-1` *regardless* of any `SetActiveWindow` call
+/// first - this implementation naturally matches that in the same
+/// environment, for the same underlying reason (`gtk_window_is_active`
+/// reports real WM-granted focus, which never arrives here either), while
+/// still being the real, correct mechanism on an actual desktop.
+inline std::int64_t pbGetActiveWindow() {
+    for (auto& [windowId, widget] : detail::windowTable()) {
+        if (gtk_window_is_active(GTK_WINDOW(widget)) != 0) {
+            return windowId;
+        }
+    }
+    return -1;
+}
+
+inline std::int64_t pbSetActiveWindow(std::int64_t windowId) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    gtk_window_present(GTK_WINDOW(it->second));
+    return 1;
+}
+
+/// `GetWindowState`/`SetWindowState(#Window [, State])` - oracle-
+/// verified directly via real `gtk_window_maximize`/`gtk_window_
+/// iconify`/`gdk_window_get_state`, not a separately tracked flag of
+/// this project's own - under this project's own headless `Xvfb` test
+/// environment (no window manager running to ever actually process a
+/// maximize/iconify *request* at all), real PB's own `GetWindowState`
+/// is itself oracle-confirmed to stay `#PB_Window_Normal`(`0`)
+/// regardless of any `SetWindowState` call first - this implementation
+/// naturally matches that in the same environment, for the same
+/// underlying reason, while still being the real, correct mechanism on
+/// an actual desktop (where a real WM actually honors the request).
+inline std::int64_t pbGetWindowState(std::int64_t windowId) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    GdkWindow* gdkWindow = gtk_widget_get_window(it->second);
+    if (gdkWindow == nullptr) {
+        return 0; // #PB_Window_Normal
+    }
+    GdkWindowState gdkState = gdk_window_get_state(gdkWindow);
+    if ((gdkState & GDK_WINDOW_STATE_ICONIFIED) != 0) {
+        return 1024; // #PB_Window_Minimize
+    }
+    if ((gdkState & GDK_WINDOW_STATE_MAXIMIZED) != 0) {
+        return 512; // #PB_Window_Maximize
+    }
+    return 0; // #PB_Window_Normal
+}
+
+inline std::int64_t pbSetWindowState(std::int64_t windowId, std::int64_t state) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    if (state == 1024) { // #PB_Window_Minimize
+        gtk_window_iconify(GTK_WINDOW(it->second));
+    } else if (state == 512) { // #PB_Window_Maximize
+        gtk_window_maximize(GTK_WINDOW(it->second));
+    } else { // #PB_Window_Normal
+        gtk_window_deiconify(GTK_WINDOW(it->second));
+        gtk_window_unmaximize(GTK_WINDOW(it->second));
+    }
+    return 1;
+}
+
+/// `GetWindowColor`/`SetWindowColor(#Window, Color)` - a plain
+/// background color, oracle-verified to default to `-1` (unset), reusing
+/// the exact `GtkCssProvider`-per-widget pattern `SetGadgetColor`'s own
+/// `applyGadgetColorCss` already established (`WindowState`'s own
+/// `color`/`colorProvider` fields - see its own doc comment for why
+/// they live there rather than in a second per-window struct).
+inline std::int64_t pbGetWindowColor(std::int64_t windowId) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return -1;
+    }
+    auto* state = static_cast<detail::WindowState*>(g_object_get_data(G_OBJECT(it->second), detail::windowStateKey()));
+    return state != nullptr ? state->color : -1;
+}
+
+inline std::int64_t pbSetWindowColor(std::int64_t windowId, std::int64_t color) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    auto* state = static_cast<detail::WindowState*>(g_object_get_data(G_OBJECT(it->second), detail::windowStateKey()));
+    if (state == nullptr) {
+        return 0;
+    }
+    state->color = color;
+    GtkStyleContext* context = gtk_widget_get_style_context(it->second);
+    if (state->colorProvider != nullptr) {
+        gtk_style_context_remove_provider(context, GTK_STYLE_PROVIDER(state->colorProvider));
+        g_object_unref(state->colorProvider);
+    }
+    // `detail::cssColorString` isn't usable here - it's defined later in
+    // this header (first needed by `applyGadgetColorCss`), and C++
+    // requires a prior declaration/definition for an ordinary (non-
+    // template) inline function call - so the same small `rgb(r,g,b)`
+    // conversion is just written out directly instead.
+    std::string css = "* { background-color: rgb(" + std::to_string(color & 0xff) + "," +
+                       std::to_string((color >> 8) & 0xff) + "," + std::to_string((color >> 16) & 0xff) + "); }";
+    state->colorProvider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(state->colorProvider, css.c_str(), -1, nullptr);
+    gtk_style_context_add_provider(context, GTK_STYLE_PROVIDER(state->colorProvider),
+                                    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    return 0; // Oracle-verified no real/meaningful return value ("Aucune").
+}
+
+/// `DisableWindow(#Window, State)` - oracle-verified directly: a plain
+/// `gtk_widget_set_sensitive`. Its own return value carries no real
+/// signal (an inconsistent small number across repeated calls, not a
+/// clean previous-state/success flag of any shape that held up across
+/// several probes) - simplified to a clean `0`, the established
+/// "Aucune" convention.
+inline std::int64_t pbDisableWindow(std::int64_t windowId, std::int64_t state) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    gtk_widget_set_sensitive(it->second, state == 0 ? TRUE : FALSE);
+    return 0;
 }
 
 /// Non-blocking poll - oracle-verified to return `0` immediately when no

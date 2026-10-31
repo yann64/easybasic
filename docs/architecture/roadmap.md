@@ -32,7 +32,10 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`/`ThreadPriority` - the `Thread` library is now 18/18 - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-five slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID`, the
+`Window` geometry/data/state/color cluster (`WindowX`/`Y`/`Width`/`Height`, `Get`/`SetWindowTitle`,
+`Get`/`SetWindowData`, `Get`/`SetActiveWindow`, `Get`/`SetWindowState`, `Get`/`SetWindowColor`,
+`DisableWindow`) - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -5254,4 +5257,44 @@ golden e2e case (`tests/e2e/gui_usegadgetlist_itemid`), confirmed line-for-line 
 oracle before being pinned - the real, fatal "closed window"/"invalid #Gadget" error cases are
 covered only in the unit tests instead, since triggering them for real would crash the oracle
 binary this golden case is diffed against.
+
+## M7b Implementation Notes (Window geometry/data/state/color cluster)
+
+**`WindowX`/`WindowY`/`WindowWidth`/`WindowHeight(#Window [, Mode])`**: read straight off the
+already-existing `WindowState` struct (`configure-event`-maintained x/y/width/height, kept current
+since the very first GUI slice). `Mode`'s own `#PB_Window_FrameCoordinate`(`0`, default)/
+`InnerCoordinate`(`1`) distinguish the outer, decorated frame from the inner client area on a real
+desktop - oracle-verified directly to be *identical* under this project's own headless `Xvfb` test
+environment (no window manager running to draw any decoration at all, so there's no frame/inner
+difference to measure in the first place). Accepted but not acted on - a narrow, honest gap rather
+than a guess at a difference this project's own oracle can't itself see either.
+
+**`GetActiveWindow()`/`SetActiveWindow(#Window)`** and **`GetWindowState`/`SetWindowState(#Window
+[, State])`**: both implemented via the real GTK mechanism (`gtk_window_is_active`/`gtk_window_
+present`; `gdk_window_get_state`/`gtk_window_maximize`/`iconify`), not a separately tracked flag of
+this project's own. Both are also oracle-confirmed to stay unchanged in this environment regardless
+of a `Set` call first (`GetActiveWindow` stays `-1`; `GetWindowState` stays `#PB_Window_Normal`) -
+not a guess or a coincidence, but the direct, expected consequence of this project's own headless
+`Xvfb` test environment having no window manager running to ever actually grant real focus or
+honor a maximize/iconify *request* - the real GTK calls this implementation uses are affected by
+that absence in exactly the same way the oracle's own are, so the two stay consistent by
+construction rather than needing a special case.
+
+**`GetWindowColor`/`SetWindowColor(#Window, Color)`**: a plain background color, oracle-verified
+to default to `-1` (unset) and round-trip exactly - reuses the exact `GtkCssProvider`-per-widget
+pattern `SetGadgetColor`'s own `applyGadgetColorCss` already established, with `WindowState`
+itself extended with `color`/`colorProvider` fields rather than adding a second per-window
+struct/key for one more piece of state.
+
+**`DisableWindow(#Window, State)`**: a plain `gtk_widget_set_sensitive` - oracle-verified directly,
+but its own return value carries no real signal (an inconsistent small number across several
+repeated-call probes, not a clean previous-state/success flag of any shape that held up) -
+simplified to a clean `0`, the established "Aucune" convention.
+
+**Testing**: seven new `runtime_guilib_test.cpp` cases covering every function's own round-trip/
+default/unknown-window-id behavior. One new golden e2e case (`tests/e2e/gui_window_cluster`),
+confirmed line-for-line against the real oracle before being pinned - `DisableWindow`'s own
+return value is deliberately left out of that golden comparison (covered in the unit test
+instead), since it's the one function in this cluster whose real return value doesn't hold up to
+a byte-exact comparison at all.
 

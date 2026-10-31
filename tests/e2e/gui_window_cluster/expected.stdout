@@ -1,0 +1,24 @@
+[Debugger]  --- WindowX/Y/Width/Height ---
+[Debugger]  50
+[Debugger]  60
+[Debugger]  300
+[Debugger]  200
+[Debugger]  50
+[Debugger]  --- GetWindowTitle/SetWindowTitle ---
+[Debugger]  Original
+[Debugger]  Changed
+[Debugger]  --- GetWindowData/SetWindowData ---
+[Debugger]  0
+[Debugger]  12345
+[Debugger]  --- GetActiveWindow/SetActiveWindow ---
+[Debugger]  -1
+[Debugger]  -1
+[Debugger]  --- GetWindowState/SetWindowState ---
+[Debugger]  0
+[Debugger]  0
+[Debugger]  0
+[Debugger]  0
+[Debugger]  --- GetWindowColor/SetWindowColor ---
+[Debugger]  -1
+[Debugger]  1971210
+[Debugger]  done

@@ -354,6 +354,23 @@ void Sema::registerGuiLibBuiltins() {
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
          5},
         {"hidewindow", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        // WindowX()/WindowY()/WindowWidth()/WindowHeight()'s own Mode is
+        // optional (see pbWindowX's own doc comment in guilib.hpp).
+        {"windowx", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"windowy", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"windowwidth", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"windowheight", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
+        {"getwindowtitle", TypeSuffix::String, {TypeSuffix::Integer}, 1},
+        {"setwindowtitle", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::String}, 2},
+        {"getwindowdata", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"setwindowdata", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"getactivewindow", TypeSuffix::Integer, {}, 0},
+        {"setactivewindow", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"getwindowstate", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"setwindowstate", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"getwindowcolor", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"setwindowcolor", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"disablewindow", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"windowevent", TypeSuffix::Integer, {}, 0},
         // WaitWindowEvent's Timeout argument is optional (oracle-verified:
         // `WaitWindowEvent()` with no argument blocks indefinitely).
@@ -888,6 +905,9 @@ void Sema::registerGuiLibBuiltins() {
 bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
     static const std::unordered_set<std::string> names = {
         "openwindow",    "closewindow", "iswindow",         "resizewindow",   "hidewindow",
+        "windowx", "windowy", "windowwidth", "windowheight", "getwindowtitle", "setwindowtitle",
+        "getwindowdata", "setwindowdata", "getactivewindow", "setactivewindow",
+        "getwindowstate", "setwindowstate", "getwindowcolor", "setwindowcolor", "disablewindow",
         "windowevent",   "waitwindowevent", "eventwindow",  "eventgadget",    "eventtype",
         "buttongadget",  "textgadget",  "stringgadget",     "checkboxgadget", "framegadget",
         "isgadget",      "freegadget",  "resizegadget",     "hidegadget",     "disablegadget",
@@ -1030,6 +1050,16 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_window_maximizegadget", 16},
         {"pb_window_minimizegadget", 32},
         {"pb_window_screencentered", 64},
+        // WindowX()/WindowY()/WindowWidth()/WindowHeight()'s own Mode -
+        // oracle-verified identical in this project's own headless Xvfb
+        // test environment (see pbWindowX's own doc comment), accepted
+        // but not acted on.
+        {"pb_window_framecoordinate", 0},
+        {"pb_window_innercoordinate", 1},
+        // GetWindowState()/SetWindowState()'s own State.
+        {"pb_window_normal", 0},
+        {"pb_window_maximize", 512},
+        {"pb_window_minimize", 1024},
         // Oracle-verified via a direct `Debug #PB_EventType_Xxx` probe
         // (M7b's second GUI slice - gadget events' own EventType()
         // sub-codes). Note the "obvious"-looking guess for a checkbox
