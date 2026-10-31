@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`/`ThreadPriority` - the `Thread` library is now 18/18 - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-three slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-four slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -5222,4 +5222,36 @@ the row-identity fix specifically via a `RemoveGadgetItem`/`ClearGadgetItems` sc
 effect-on-ListView/ComboBox case, and `SetGadgetItemImage`'s own no-crash coverage across every
 dispatch branch). One new golden e2e case (`tests/e2e/gui_gadget_item_color`), confirmed line-for-
 line against the real oracle before being pinned.
+
+## M7b Implementation Notes (UseGadgetList/GadgetItemID)
+
+**`UseGadgetList(WindowID)`**: oracle-verified directly to switch which *already-open* window
+subsequent `AddXxxGadget` calls attach to, given that window's own real native handle (`WindowID
+()`'s own return value, not a plain `#Window` id) - confirmed with two simultaneously open
+windows, each receiving a gadget right after switching to it, and confirmed to be a real, binding
+attach (not just a coordinate-space quirk) by `CloseWindow`-ing one afterward and finding its own
+gadget genuinely gone. Also oracle-verified to reset the open gadget-list stack back to empty - a
+gadget created right after `UseGadgetList`, with no matching `CloseGadgetList` first, attaches
+directly to the new window's own top level, never still nested inside whatever `ContainerGadget`/
+`OpenGadgetList` happened to be open beforehand. A native handle that doesn't match any currently
+open window is a real, graceful no-op (oracle-confirmed: a subsequent gadget still gets created
+successfully, wherever the *previous* active window already was) - implemented by simply leaving
+the active-window state untouched in that case. Its own return value carries no real signal
+either (an undefined, native-handle-ish nonzero value) - simplified to a clean `0`, the
+established "Aucune" convention.
+
+**`GadgetItemID(#Gadget, Item)`**: oracle-verified directly to be a plain `0`, always, across
+every gadget type tried (`ListIconGadget`/`TreeGadget`/`ListViewGadget`, valid and invalid `Item`
+indices alike). Real PB's own documented "system ID" is a native, platform-level per-item handle
+(a Win32 listview's own per-row `HWND`-adjacent id), which has no `GtkTreeView` equivalent to
+expose at all on this platform - the same "Windows-only, zero on Linux" shape several other
+flags/functions already have (`#PB_Font_StrikeOut`, `#PB_ListIcon_FullRowSelect`, etc.), not a
+gap specific to this project's own implementation.
+
+**Testing**: five new `runtime_guilib_test.cpp` cases (`UseGadgetList`'s own window-switching/
+stack-reset/invalid-handle-no-op behavior, and `GadgetItemID`'s own always-`0` shape). One new
+golden e2e case (`tests/e2e/gui_usegadgetlist_itemid`), confirmed line-for-line against the real
+oracle before being pinned - the real, fatal "closed window"/"invalid #Gadget" error cases are
+covered only in the unit tests instead, since triggering them for real would crash the oracle
+binary this golden case is diffed against.
 

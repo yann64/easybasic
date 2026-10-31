@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **280 / 1850** procedures implemented (15%).
+**Summary**: **282 / 1850** procedures implemented (15%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -53,7 +53,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [FileSystem](#filesystem) | 3 | 29 | 10% |
 | [Font](#font) | 4 | 5 | 80% |
 | [Ftp](#ftp) | 0 | 23 | 0% |
-| [Gadget](#gadget) | 77 | 82 | 93% |
+| [Gadget](#gadget) | 79 | 82 | 96% |
 | [GadgetOpenGL](#gadgetopengl) | 0 | 1 | 0% |
 | [GadgetWeb](#gadgetweb) | 0 | 1 | 0% |
 | [Help](#help) | 0 | 2 | 0% |
@@ -919,7 +919,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Gadget
 
-77/82 implemented.
+79/82 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -949,7 +949,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `FreeGadget` | (#Gadget) - Free (remove) the #Gadget. |
 | Yes | `GadgetHeight` | (#Gadget [, Mode]) - Return the height of the #Gadget, in pixels. |
 | Yes | `GadgetID` | (#Gadget) - Return the ID of the #Gadget. |
-| No | `GadgetItemID` | (#Gadget, Item) - Return the system ID of the specified gadget item. |
+| Yes | `GadgetItemID` | (#Gadget, Item) - Return the system ID of the specified gadget item. |
 | Yes | `GadgetToolTip` | (#Gadget, Text$) - Associate the specified Text$ with the #Gadget. |
 | Yes | `GadgetType` | (#Gadget) - Return the type of the specified #Gadget. |
 | Yes | `GadgetWidth` | (#Gadget [, Mode]) - Return the width of the #Gadget, in pixels. |
@@ -1004,7 +1004,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `TrackBarGadget` | (#Gadget, x, y, Width, Height, Minimum, Maximum [, Flags]) - Create a TrackBar gadget in the current GadgetList. |
 | Yes | `TreeGadget` | (#Gadget, x, y, Width, Height [, Flags]) - Create a Tree gadget in the current GadgetList. |
 | No | `UnbindGadgetEvent` | (#Gadget, @Callback() [, EventType]) - Unbind a gadget event callback. |
-| No | `UseGadgetList` | (WindowID) - Make the specified WindowID the current gadget list to add gadgets on it. |
+| Yes | `UseGadgetList` | (WindowID) - Make the specified WindowID the current gadget list to add gadgets on it. |
 
 ## GadgetOpenGL
 

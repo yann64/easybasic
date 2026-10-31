@@ -5798,6 +5798,37 @@ inline std::int64_t pbCloseGadgetList() {
     return 1;
 }
 
+/// `UseGadgetList(WindowID)` - oracle-verified directly: switches which
+/// *already-open* window subsequent `AddXxxGadget` calls attach to,
+/// given that window's own real native handle (`WindowID()`'s own
+/// return value, not a plain `#Window` id) - confirmed with two
+/// simultaneously open windows, each receiving a gadget created right
+/// after switching to it, and confirmed to be a real, binding attach
+/// (not just a coordinate-space quirk) by `CloseWindow`-ing one
+/// afterward and finding its own gadget genuinely gone (a real, fatal
+/// "#Gadget is not initialised" error on further use - not replicated
+/// here, the same established "fatal errors aren't replicated"
+/// precedent `pbCloseGadgetList`'s own doc comment already covers).
+/// Also oracle-verified to reset `gadgetListStack()` back to empty -
+/// a gadget created right after `UseGadgetList`, with no matching
+/// `CloseGadgetList` first, attaches directly to the new window's own
+/// top level, never still nested inside whatever `ContainerGadget`/
+/// `OpenGadgetList` happened to be open beforehand. A native handle
+/// that doesn't match any currently open window is a real, graceful
+/// no-op (oracle-confirmed: a subsequent gadget still gets created
+/// successfully, wherever the *previous* active window already was) -
+/// matching that shape by simply leaving `activeWindowId()` untouched.
+inline std::int64_t pbUseGadgetList(std::int64_t windowNativeHandle) {
+    for (auto& [windowId, widget] : detail::windowTable()) {
+        if (reinterpret_cast<std::int64_t>(widget) == windowNativeHandle) {
+            detail::activeWindowId() = windowId;
+            detail::gadgetListStack().clear();
+            break;
+        }
+    }
+    return 0; // Oracle-verified no real/meaningful return value ("Aucune").
+}
+
 /// Oracle-verified: real PB's own `IsGadget` also returns a native-handle-
 /// ish nonzero value, not a clean `1` - simplified the same way
 /// `pbIsWindow`'s own is.
@@ -6068,6 +6099,20 @@ inline std::int64_t pbGadgetID(std::int64_t gadgetId) {
     auto it = detail::gadgetTable().find(gadgetId);
     return it != detail::gadgetTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
 }
+
+/// `GadgetItemID(#Gadget, Item)` - oracle-verified directly to be a
+/// plain `0`, always, across every gadget type tried (`ListIconGadget`/
+/// `TreeGadget`/`ListViewGadget`, valid and invalid `Item` indices
+/// alike) - real PB's own documented "system ID" is a native,
+/// platform-level per-item handle (a Win32 listview's own per-row
+/// `HWND`-adjacent id), which has no `GtkTreeView` equivalent to expose
+/// at all on this platform, the same "Windows-only, zero on Linux"
+/// shape several other flags/functions already have (`#PB_Font_
+/// StrikeOut`, `#PB_ListIcon_FullRowSelect`, etc.) - not a gap specific
+/// to this project's own implementation. An invalid `#Gadget` is a
+/// real, fatal error in real PB itself - not replicated here, the same
+/// established "fatal errors aren't replicated" precedent.
+inline std::int64_t pbGadgetItemID(std::int64_t, std::int64_t) { return 0; }
 
 /// `GadgetType(#Gadget)` - oracle-verified directly against all 29
 /// gadget types this project implements (every `#PB_GadgetType_Xxx`

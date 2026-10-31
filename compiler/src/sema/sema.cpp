@@ -434,6 +434,8 @@ void Sema::registerGuiLibBuiltins() {
          5},
         {"opengadgetlist", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 1},
         {"closegadgetlist", TypeSuffix::Integer, {}, 0},
+        {"usegadgetlist", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"gadgetitemid", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         // M7b's tenth GUI slice: PanelGadget - a tabbed box, the second of
         // the "gadget-list nesting" family. No Flags parameter at all,
         // oracle-verified directly against PanelGadget.html's own real
@@ -893,7 +895,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "setgadgetdata", "getgadgetdata", "getactivegadget", "setactivegadget",
         "setgadgetcolor", "getgadgetcolor", "gadgettooltip", "disablegadgetredraw",
         "setgadgettext", "getgadgettext", "setgadgetstate", "getgadgetstate", "messagerequester",
-        "containergadget", "opengadgetlist", "closegadgetlist",
+        "containergadget", "opengadgetlist", "closegadgetlist", "usegadgetlist", "gadgetitemid",
         "panelgadget", "addgadgetitem", "countgadgetitems", "removegadgetitem", "cleargadgetitems",
         "getgadgetitemtext", "setgadgetitemtext",
         "splittergadget", "getgadgetattribute", "setgadgetattribute", "scrollareagadget",

@@ -1512,6 +1512,74 @@ TEST_CASE("CloseGadgetList with nothing open is a harmless no-op", "[runtime][gu
     pbCloseWindow(403);
 }
 
+TEST_CASE("UseGadgetList switches which already-open window new gadgets attach to",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(950, 10, 10, 200, 200, PBString("W0"));
+    pbOpenWindow(951, 250, 10, 200, 200, PBString("W1"));
+
+    CHECK(pbUseGadgetList(pbWindowID(950)) == 0); // Oracle-verified no real return value.
+    pbButtonGadget(1, 10, 10, 60, 20, PBString("In W0"));
+    CHECK(pbUseGadgetList(pbWindowID(951)) == 0);
+    pbButtonGadget(2, 10, 10, 60, 20, PBString("In W1"));
+
+    pbCloseWindow(950); // destroys gadget 1, which really belongs to window 950
+    CHECK(pbIsGadget(1) == 0);
+    CHECK(pbIsGadget(2) == 1); // gadget 2 (window 951) is unaffected
+
+    pbCloseWindow(951);
+}
+
+TEST_CASE("UseGadgetList resets the open gadget-list stack to the new window's top level",
+          "[runtime][guilib]") {
+    // Oracle-verified: a gadget created right after UseGadgetList, with
+    // no matching CloseGadgetList first, attaches directly to the new
+    // window's own top level, never still nested inside whatever
+    // ContainerGadget happened to be open beforehand.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(952, 10, 10, 200, 200, PBString("W0"));
+    pbOpenWindow(953, 250, 10, 200, 200, PBString("W1"));
+    pbContainerGadget(10, 10, 50, 150, 100); // left open on purpose - no CloseGadgetList
+
+    pbUseGadgetList(pbWindowID(953));
+    pbButtonGadget(11, 10, 10, 60, 20, PBString("In W1"));
+    CHECK(pbGadgetX(11) == 10);
+    CHECK(pbGadgetY(11) == 10);
+
+    pbCloseWindow(952);
+    pbCloseWindow(953);
+}
+
+TEST_CASE("UseGadgetList with a native handle that matches no open window is a harmless no-op",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(954, 10, 10, 200, 200, PBString("W0"));
+    CHECK(pbUseGadgetList(0) == 0);
+    CHECK(pbButtonGadget(1, 10, 10, 60, 20, PBString("Still works")) == 1);
+    pbCloseWindow(954);
+}
+
+TEST_CASE("GadgetItemID is always 0, the same Windows-only-system-ID gap several other "
+          "functions/flags already have",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(955, 10, 10, 300, 300, PBString("Test"));
+    pbListIconGadget(1, 10, 10, 200, 100, PBString("Col"), 100);
+    pbAddGadgetItem(1, 0, PBString("Row0"));
+    CHECK(pbGadgetItemID(1, 0) == 0);
+    CHECK(pbGadgetItemID(1, 999) == 0); // invalid item index
+    CHECK(pbGadgetItemID(999, 0) == 0); // invalid gadget id
+    pbCloseWindow(955);
+}
+
 TEST_CASE("PanelGadget starts with no tabs, and AddGadgetItem captures subsequently created gadgets",
           "[runtime][guilib]") {
     // Oracle-verified (PanelGadget.html's own "Remarques"): unlike

@@ -189,6 +189,7 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"setgadgetstate", "pbSetGadgetState"}, {"getgadgetstate", "pbGetGadgetState"},
         {"containergadget", "pbContainerGadget"}, {"opengadgetlist", "pbOpenGadgetList"},
         {"closegadgetlist", "pbCloseGadgetList"},
+        {"usegadgetlist", "pbUseGadgetList"}, {"gadgetitemid", "pbGadgetItemID"},
         {"panelgadget", "pbPanelGadget"}, {"addgadgetitem", "pbAddGadgetItem"},
         {"countgadgetitems", "pbCountGadgetItems"}, {"removegadgetitem", "pbRemoveGadgetItem"},
         {"cleargadgetitems", "pbClearGadgetItems"}, {"getgadgetitemtext", "pbGetGadgetItemText"},
