@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **270 / 1848** procedures implemented (14%).
+**Summary**: **271 / 1850** procedures implemented (14%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -118,7 +118,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [SoundPluginOpus](#soundpluginopus) | 0 | 2 | 0% |
 | [SpecialEffect](#specialeffect) | 0 | 12 | 0% |
 | [Spline](#spline) | 0 | 13 | 0% |
-| [Sprite](#sprite) | 0 | 25 | 0% |
+| [Sprite](#sprite) | 0 | 26 | 0% |
 | [StaticGeometry](#staticgeometry) | 0 | 5 | 0% |
 | [StatusBar](#statusbar) | 9 | 9 | 100% |
 | [String](#string) | 15 | 37 | 40% |
@@ -128,8 +128,8 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [SysTray](#systray) | 6 | 6 | 100% |
 | [Terrain](#terrain) | 0 | 24 | 0% |
 | [Text3D](#text3d) | 0 | 12 | 0% |
-| [Texture](#texture) | 0 | 16 | 0% |
-| [Thread](#thread) | 17 | 18 | 94% |
+| [Texture](#texture) | 0 | 17 | 0% |
+| [Thread](#thread) | 18 | 18 | 100% |
 | [ToolBar](#toolbar) | 12 | 12 | 100% |
 | [VectorDrawing](#vectordrawing) | 0 | 66 | 0% |
 | [VectorDrawingSvg](#vectordrawingsvg) | 0 | 1 | 0% |
@@ -327,8 +327,8 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | No | `CountCGICookies` | () - Get the number of cookies. |
 | No | `CountCGIParameters` | () - Get the number of CGI parameters. |
 | No | `FinishFastCGIRequest` | () - Finish the current FastCGI request. |
-| No | `InitCGI` | ([MaxRequestSize]) - Init the CGI library. |
-| No | `InitFastCGI` | (LocalPort [, BoundIP$]) - Init the FastCGI support. |
+| No | `InitCGI` | ([MaxRequestSize]) - Initialize the CGI library. |
+| No | `InitFastCGI` | (LocalPort [, BoundIP$]) - Initialize the FastCGI support. |
 | No | `ReadCGI` | () - Read the CGI web content. |
 | No | `WaitFastCGIRequest` | () - Wait for FastCGI request to process. |
 | No | `WriteCGIData` | (*Buffer, Size) - Write binary data to CGI output. |
@@ -502,7 +502,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `UseMySQLDatabase` | ([LibraryName$]) - Add MySQL support to the database commandset. |
+| No | `UseMySQLDatabase` | ([LibraryName$]) - Add MySQL support to the database command set. |
 
 ## DatabaseODBC
 
@@ -514,7 +514,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | No | `DatabaseDriverName` | () - Return the name of the current database driver. |
 | No | `ExamineDatabaseDrivers` | () - Examine the installed database drivers available on the system. |
 | No | `NextDatabaseDriver` | () - Retrieve information about the next available database driver. |
-| No | `UseODBCDatabase` | () - Add ODBC support to the database commandset. |
+| No | `UseODBCDatabase` | () - Add ODBC support to the database command set. |
 
 ## DatabasePostgreSQL
 
@@ -522,7 +522,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `UsePostgreSQLDatabase` | ([LibraryName$]) - Add PostgreSQL support to the database commandset. |
+| No | `UsePostgreSQLDatabase` | ([LibraryName$]) - Add PostgreSQL support to the database command set. |
 
 ## DatabaseSQLite
 
@@ -530,7 +530,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `UseSQLiteDatabase` | ([LibraryName$]) - Add SQLite support to the database commandset. |
+| No | `UseSQLiteDatabase` | ([LibraryName$]) - Add SQLite support to the database command set. |
 
 ## Date
 
@@ -687,7 +687,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 |---|---|---|
 | No | `Add3DArchive` | (Filename$, Type) - Add a new archive as path to search. |
 | No | `AntialiasingMode` | (Mode) - Set the fullscreen antialiasing mode for the 3D world. |
-| No | `InitEngine3D` | ([Flags [, LibraryName$]]) - Initialise the 3D environment for later use. |
+| No | `InitEngine3D` | ([Flags [, LibraryName$]]) - Initialize the 3D environment for later use. |
 | No | `Parse3DScripts` | () - Parse all the scripts found in the declared path or archives. |
 
 ## Entity
@@ -1843,7 +1843,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `UseBriefLZPacker` | () - Add BriefLZ support to the packer commandset. |
+| No | `UseBriefLZPacker` | () - Add BriefLZ support to the packer command set. |
 
 ## PackerJCALG1
 
@@ -1851,7 +1851,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `UseJCALG1Packer` | () - Add JCALG1 decompression support to the packer commandset. |
+| No | `UseJCALG1Packer` | () - Add JCALG1 decompression support to the packer command set. |
 
 ## PackerLZMA
 
@@ -1859,7 +1859,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `UseLZMAPacker` | () - Add LZMA support to the packer commandset. |
+| No | `UseLZMAPacker` | () - Add LZMA support to the packer command set. |
 
 ## PackerTAR
 
@@ -1867,7 +1867,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `UseTARPacker` | () - Add TAR support to the packer commandset. |
+| No | `UseTARPacker` | () - Add TAR support to the packer command set. |
 
 ## PackerZip
 
@@ -1875,7 +1875,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `UseZipPacker` | () - Add ZIP support to the packer commandset. |
+| No | `UseZipPacker` | () - Add ZIP support to the packer command set. |
 
 ## Particle
 
@@ -1952,7 +1952,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | No | `DefaultPrinter` | () - Use the default printer to print. |
 | No | `NewPrinterPage` | () - Start a new page. |
 | No | `PrinterOutput` | () - Return the printer drawing area, to be used with the 2DDrawing commands. |
-| No | `PrinterPageHeight` | ()  - Return the height of the drawing area, in pixels. |
+| No | `PrinterPageHeight` | () - Return the height of the drawing area, in pixels. |
 | No | `PrinterPageWidth` | () - Return the width of the drawing area, in pixels. |
 | No | `PrinterVectorOutput` | ([Unit]) - Return the printer drawing area for vector drawing output. |
 | No | `PrintRequester` | () - Open a print requester, necessary to print. |
@@ -2316,7 +2316,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Sprite
 
-0/25 implemented.
+0/26 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -2328,7 +2328,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | No | `DisplayTransparentSprite` | (#Sprite, x.f, y.f [, Intensity [, Color]]) - Display the #Sprite at the specified position on the current screen. |
 | No | `FreeSprite` | (#Sprite) - Remove the specified sprite from memory. |
 | No | `GrabSprite` | (#Sprite, x, y, Width, Height [, Mode]) - Grab the screen content at the area x,y,Width,Height, and create a new #Sprite. |
-| No | `InitSprite` | () - Init all the sprite environment for later use. |
+| No | `InitSprite` | () - Initialize the sprite environment for later use. |
 | No | `IsSprite` | (#Sprite) - Test if the given '#Sprite' is an initialized sprite object. |
 | No | `LoadSprite` | (#Sprite, FileName$ [, Mode]) - Load the specified sprite into the memory for immediate use. |
 | No | `RotateSprite` | (#Sprite, Angle.f, Mode) - Rotate the sprite. Angle varies from 0 to 360. |
@@ -2338,9 +2338,10 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | No | `SpriteDepth` | (#Sprite) - Return the depth of the specified sprite. |
 | No | `SpriteHeight` | (#Sprite) - Return the height in pixels of the specified sprite. |
 | No | `SpriteID` | (#Sprite) - Return the unique ID which identifies the sprite in the operating system. |
-| No | `SpriteOutput` | (#Sprite) - Return the output to the sprite, to be used with StartDrawing(). |
+| No | `SpriteOutput` | (#Sprite [, Flags]) - Return the output to the sprite, to be used with StartDrawing(). |
 | No | `SpritePixelCollision` | (#Sprite1, x1, y1, #Sprite2, x2, y2) - Test if the two sprites are overlapped. |
 | No | `SpriteQuality` | (Quality) - Set the level of rendering. 0=Lowest quality, 1=Bilinear filtering. |
+| No | `SpriteVectorOutput` | (#Sprite [, Flags]) - Return the OutputID of the #Sprite to perform 2D vector drawing operations on it. |
 | No | `SpriteWidth` | (#Sprite) - Return the width in pixels of the specified sprite. |
 | No | `TransformSprite` | (#Sprite, x1, y1 [, z1], x2, y2 [, z2], x3, y3 [, z3], x4, y4 [, z4]) - Transform the sprite to the new given dimensions. |
 | No | `TransparentSpriteColor` | (#Sprite, Color) - Change the sprite transparent color (when displayed with DisplayTransparentSprite). |
@@ -2521,7 +2522,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Texture
 
-0/16 implemented.
+0/17 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -2538,13 +2539,14 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | No | `SaveRenderTexture` | (#Texture, Filename$) - Save the specified #Texture. |
 | No | `TextureHeight` | (#Texture) - Return the height in pixels of the #Texture. |
 | No | `TextureID` | (#Texture) - Return the #Texture unique ID. |
-| No | `TextureOutput` | (#Texture) - Return the OutputID of the #Texture to perform a 2D rendering operation on it. |
+| No | `TextureOutput` | (#Texture [, Flags]) - Return the OutputID of the #Texture to perform a 2D rendering operation on it. |
+| No | `TextureVectorOutput` | (#Texture [, Flags]) - Return the OutputID of the #Texture to perform 2D vector drawing operations on it. |
 | No | `TextureWidth` | (#Texture) - Return the width in pixels of the #Texture. |
 | No | `UpdateRenderTexture` | (#Texture) - Update the #Texture content with the camera view. |
 
 ## Thread
 
-17/18 implemented.
+18/18 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -2560,7 +2562,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `ResumeThread` | (Thread) - Resume the thread execution. |
 | Yes | `SignalSemaphore` | (Semaphore) - Signal the semaphore object once (increment the count by 1). |
 | Yes | `ThreadID` | (Thread) - Get the OS handle for the thread. |
-| No | `ThreadPriority` | (Thread, Priority) - Change the thread priority and return the old priority. |
+| Yes | `ThreadPriority` | (Thread, Priority) - Change the thread priority and return the old priority. |
 | Yes | `TryLockMutex` | (Mutex) - Try to get ownership of the mutex object. Return 0 if unsuccessful. |
 | Yes | `TrySemaphore` | (Semaphore) - Decrement the semaphore count only if it is above 0, else return 0. |
 | Yes | `UnlockMutex` | (Mutex) - Release ownership of the mutex object. |

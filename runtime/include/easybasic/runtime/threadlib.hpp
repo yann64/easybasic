@@ -370,6 +370,31 @@ inline std::int64_t pbThreadID(std::int64_t threadId) {
     return id;
 }
 
+/// `ThreadPriority(Thread, Priority)` - oracle-verified directly, the
+/// hard way: tried several different `Priority` values (`5`, `0`, `-5`,
+/// `31`, `100`, `-100`) against several different real threads, in
+/// every order - every single call read back the exact same fixed `16`
+/// regardless of what `Priority` was just given, including the very
+/// *first* call on a brand new thread (so it's not "the old value
+/// before this call" either, the way the real docs describe it - at
+/// least not on Linux). Whatever real PB's own Linux backend does here
+/// internally, it doesn't appear to have any observable effect on this
+/// function's own return value at all - replicated as exactly that: a
+/// fixed `16`, regardless of `Priority` or which thread, no real OS-
+/// level priority change attempted (no effect to replicate, and real
+/// per-thread priority adjustment on Linux typically needs elevated
+/// privileges this project's own sandboxed test/CI environment can't
+/// assume anyway). A nonexistent `Thread` is a real, fatal "Thread does
+/// not exists" error in real PB - not replicated, the same "fatal
+/// errors aren't replicated" precedent used throughout this project.
+inline std::int64_t pbThreadPriority(std::int64_t threadId, std::int64_t /*priority*/) {
+    auto handle = detail::findThread(threadId);
+    if (!handle) {
+        return 0;
+    }
+    return 16;
+}
+
 inline std::int64_t pbCreateMutex() {
     auto mutex = std::make_unique<std::recursive_mutex>();
     std::scoped_lock<std::mutex> lock(detail::mutexTableMutex());

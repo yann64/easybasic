@@ -293,6 +293,7 @@ void Sema::registerThreadLibBuiltins() {
         {"pausethread", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"resumethread", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"threadid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"threadpriority", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"createmutex", TypeSuffix::Integer, {}, 0},
         {"lockmutex", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"unlockmutex", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
@@ -327,7 +328,7 @@ bool Sema::isThreadLibBuiltinName(const std::string& lowerName) {
         "createthread",  "isthread",        "waitthread",      "createmutex",    "lockmutex",
         "unlockmutex",   "trylockmutex",    "freemutex",       "createsemaphore", "signalsemaphore",
         "waitsemaphore", "trysemaphore",    "freesemaphore",   "delay",          "elapsedmilliseconds",
-        "killthread",    "pausethread",     "resumethread",    "threadid",
+        "killthread",    "pausethread",     "resumethread",    "threadid",        "threadpriority",
     };
     return names.contains(lowerName);
 }

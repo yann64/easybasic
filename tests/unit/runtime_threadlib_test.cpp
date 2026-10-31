@@ -80,6 +80,38 @@ TEST_CASE("pbThreadID returns a harmless default for an unknown thread ID", "[ru
     CHECK(pbThreadID(999999) == 0);
 }
 
+TEST_CASE("pbThreadPriority always returns a fixed 16, regardless of the Priority given or "
+          "which thread",
+          "[runtime][threadlib]") {
+    // Oracle-verified directly, the hard way: tried several different
+    // Priority values (5, 0, -5, 31, 100, -100) against several
+    // different real threads, in every order - every single call read
+    // back the exact same fixed 16 regardless of what Priority was
+    // just given, including the very first call on a brand new thread
+    // (so it's not "the old value before this call" either, the way
+    // the real docs describe it - at least not on Linux). See
+    // pbThreadPriority's own doc comment in threadlib.hpp for the full
+    // finding.
+    g_spin.store(true);
+    std::int64_t tid = pbCreateThread(reinterpret_cast<std::int64_t>(&spinUntilStopped), 0);
+    CHECK(pbThreadPriority(tid, 5) == 16);
+    CHECK(pbThreadPriority(tid, 0) == 16);
+    CHECK(pbThreadPriority(tid, -5) == 16);
+    CHECK(pbThreadPriority(tid, 31) == 16);
+    CHECK(pbThreadPriority(tid, 100) == 16);
+    CHECK(pbThreadPriority(tid, -100) == 16);
+    g_spin.store(false);
+    pbWaitThread(tid);
+}
+
+TEST_CASE("pbThreadPriority returns a harmless default for an unknown thread ID", "[runtime][threadlib]") {
+    // Oracle-verified: a nonexistent Thread is a real, fatal "Thread
+    // does not exists" error in real PB - not replicated here, the
+    // same "fatal errors aren't replicated" precedent used throughout
+    // this project.
+    CHECK(pbThreadPriority(999999, 5) == 0);
+}
+
 TEST_CASE("pbKillThread terminates a genuinely still-running thread", "[runtime][threadlib]") {
     // Oracle-verified (carefully, in an isolated subprocess): KillThread on
     // a running thread stops it immediately - its own counter observably

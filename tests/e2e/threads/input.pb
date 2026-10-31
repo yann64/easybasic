@@ -86,6 +86,16 @@ If id1 <> 0
 Else
   Debug 0
 EndIf
+
+; ThreadPriority - oracle-verified directly, the hard way: tried
+; several different Priority values against several different real
+; threads, in every order - every single call read back the exact
+; same fixed 16 regardless of what Priority was just given, including
+; the very first call on a brand new thread.
+Debug ThreadPriority(tid2, 5)
+Debug ThreadPriority(tid2, 0)
+Debug ThreadPriority(tid2, -100)
+
 KillThread(tid2)
 Delay(60)
 Debug IsThread(tid2)

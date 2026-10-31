@@ -162,6 +162,7 @@ std::string threadLibRuntimeName(const std::string& lowerName) {
         {"elapsedmilliseconds", "pbElapsedMilliseconds"},
         {"killthread", "pbKillThread"},       {"pausethread", "pbPauseThread"},
         {"resumethread", "pbResumeThread"},   {"threadid", "pbThreadID"},
+        {"threadpriority", "pbThreadPriority"},
     };
     return "easybasic::runtime::" + names.at(lowerName);
 }

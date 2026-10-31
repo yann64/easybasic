@@ -31,7 +31,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M4** | Core stdlib: String, Math, Memory, File, Date | Done - core String (M4a), Math (M4b), Memory (M4c), File (M4d), and Date (M4e) libraries all land |
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
-| **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID` - see M7a notes |
+| **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`/`ThreadPriority` - the `Thread` library is now 18/18 - see M7a notes |
 | **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-one slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library) - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
@@ -1782,6 +1782,30 @@ system identifier that PB's own docs call a "Handle", not anything meaningful to
 Copied as raw bytes rather than cast (`std::memcpy` into an `std::int64_t`, since the native handle
 type isn't guaranteed to itself be an integer or a pointer uniformly across platforms) - both fit in
 8 bytes on every target platform.
+
+## M7a Implementation Notes (Threads, third slice: `ThreadPriority`, closing out the `Thread` library)
+
+**Scope landed**: `ThreadPriority(Thread, Priority)` - the single remaining `Thread` library
+function, closing it out to 18/18.
+
+**The finding**: oracle-verified directly, the hard way - tried several different `Priority`
+values (`5`, `0`, `-5`, `31`, `100`, `-100`) against several different real threads, in every
+order. Every single call read back the exact same fixed `16`, regardless of what `Priority` was
+just given, including the very *first* call on a brand new thread - so it isn't "the old priority
+before this call" either, the way the real docs describe it (at least not observably, on Linux).
+Whatever real PB's own Linux backend does here internally, it has no effect on this function's own
+return value that could be detected this way. Implemented as exactly that: a fixed `16`, regardless
+of `Priority` or which thread, with no real OS-level priority change attempted at all - there's no
+observed effect to replicate, and real per-thread priority adjustment on Linux typically needs
+elevated privileges (`CAP_SYS_NICE`) this project's own sandboxed test/CI environment can't assume
+anyway. A nonexistent `Thread` is a real, fatal "Thread does not exists" error in real PB - not
+replicated, the same "fatal errors aren't replicated" precedent used throughout this project.
+
+**Testing**: two new `runtime_threadlib_test.cpp` cases (the fixed-`16` finding across several
+`Priority` values and threads; the harmless default for an unknown thread). Extended the existing
+`tests/e2e/threads` golden e2e case in place, rather than adding a new one, reusing an
+already-synchronized live thread - confirmed line-for-line against the real oracle before being
+re-pinned.
 
 ## M7b Implementation Notes (GUI core, first slice: Window + event core)
 
