@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **277 / 1850** procedures implemented (14%).
+**Summary**: **280 / 1850** procedures implemented (15%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -53,7 +53,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [FileSystem](#filesystem) | 3 | 29 | 10% |
 | [Font](#font) | 4 | 5 | 80% |
 | [Ftp](#ftp) | 0 | 23 | 0% |
-| [Gadget](#gadget) | 74 | 82 | 90% |
+| [Gadget](#gadget) | 77 | 82 | 93% |
 | [GadgetOpenGL](#gadgetopengl) | 0 | 1 | 0% |
 | [GadgetWeb](#gadgetweb) | 0 | 1 | 0% |
 | [Help](#help) | 0 | 2 | 0% |
@@ -919,7 +919,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Gadget
 
-74/82 implemented.
+77/82 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -961,7 +961,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `GetGadgetData` | (#Gadget) - Return the value previously stored for this Gadget. |
 | Yes | `GetGadgetFont` | (#Gadget) - Get the FontID associated with the specified gadget. |
 | Yes | `GetGadgetItemAttribute` | (#Gadget, Item, Attribute [, Column]) - Return the specified #Gadget item attribute value. |
-| No | `GetGadgetItemColor` | (#Gadget, Item, ColorType [, Column]) - Get the currently set color of the Gadget item. |
+| Yes | `GetGadgetItemColor` | (#Gadget, Item, ColorType [, Column]) - Get the currently set color of the Gadget item. |
 | Yes | `GetGadgetItemData` | (#Gadget, Item) - Return the value previously stored with this gadget item. |
 | Yes | `GetGadgetItemState` | (#Gadget, Position) - Return the #Gadget item state. |
 | Yes | `GetGadgetItemText` | (#Gadget, Position [, Column]) - Return the text content of the specified #Gadget item. |
@@ -989,9 +989,9 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `SetGadgetData` | (#Gadget, Value) - Store a value for the Gadget. |
 | Yes | `SetGadgetFont` | (#Gadget, FontID()) - Change the font which will be used by newly created gadgets. |
 | Yes | `SetGadgetItemAttribute` | (#Gadget, Item, Attribute, Value [, Column]) - Change the specified #Gadget item attribute. |
-| No | `SetGadgetItemColor` | (#Gadget, Item, ColorType, Color [, Column]) - Change a color in the Gadget item. |
+| Yes | `SetGadgetItemColor` | (#Gadget, Item, ColorType, Color [, Column]) - Change a color in the Gadget item. |
 | Yes | `SetGadgetItemData` | (#Gadget, Item, Value) - Store a Long value with this Gadget item. |
-| No | `SetGadgetItemImage` | (#Gadget, Item, ImageID) - Change the image of the specified gadget item. |
+| Yes | `SetGadgetItemImage` | (#Gadget, Item, ImageID) - Change the image of the specified gadget item. |
 | Yes | `SetGadgetItemState` | (#Gadget, Position, State) - Change the #Gadget item state. |
 | Yes | `SetGadgetItemText` | (#Gadget, Position, Text$ [, Column]) - Change the #Gadget item text content. |
 | Yes | `SetGadgetState` | (#Gadget, State) - Change the state of the #Gadget. |

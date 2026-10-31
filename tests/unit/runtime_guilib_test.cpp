@@ -2582,6 +2582,127 @@ TEST_CASE("RemoveGadgetItem on a TreeGadget removes the item and every descendan
     pbCloseWindow(908);
 }
 
+TEST_CASE("GetGadgetItemColor/SetGadgetItemColor round-trip real per-item colors on ListIconGadget",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(909, 10, 10, 300, 300, PBString("Test"));
+    pbListIconGadget(1, 10, 10, 250, 100, PBString("Col0"), 100);
+    pbAddGadgetItem(1, 0, PBString("Row0"));
+    pbAddGadgetItem(1, 1, PBString("Row1"));
+
+    CHECK(pbGetGadgetItemColor(1, 0, 1) == -1); // #PB_Gadget_FrontColor, never set
+    CHECK(pbSetGadgetItemColor(1, 0, 1, pbRGB(255, 0, 0)) == 0); // Oracle-verified no return value.
+    CHECK(pbGetGadgetItemColor(1, 0, 1) == pbRGB(255, 0, 0));
+    CHECK(pbGetGadgetItemColor(1, 1, 1) == -1); // a different item is unaffected
+
+    CHECK(pbGetGadgetItemColor(1, 0, 2) == -1); // #PB_Gadget_BackColor
+    pbSetGadgetItemColor(1, 0, 2, pbRGB(0, 0, 255));
+    CHECK(pbGetGadgetItemColor(1, 0, 2) == pbRGB(0, 0, 255));
+    CHECK(pbGetGadgetItemColor(1, 0, 1) == pbRGB(255, 0, 0)); // front untouched by the back write
+
+    CHECK(pbGetGadgetItemColor(1, 999, 1) == -1); // invalid item index
+    CHECK(pbSetGadgetItemColor(999, 0, 1, pbRGB(1, 2, 3)) == 0); // invalid gadget id
+
+    pbCloseWindow(909);
+}
+
+TEST_CASE("GetGadgetItemColor/SetGadgetItemColor round-trip real per-item colors on TreeGadget",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(910, 10, 10, 300, 300, PBString("Test"));
+    pbTreeGadget(2, 10, 10, 250, 100);
+    pbAddGadgetItem(2, -1, PBString("A"), 0, 0);
+    pbAddGadgetItem(2, -1, PBString("B"), 0, 0);
+
+    CHECK(pbGetGadgetItemColor(2, 0, 1) == -1);
+    pbSetGadgetItemColor(2, 0, 1, pbRGB(10, 20, 30));
+    CHECK(pbGetGadgetItemColor(2, 0, 1) == pbRGB(10, 20, 30));
+    CHECK(pbGetGadgetItemColor(2, 1, 1) == -1);
+
+    pbCloseWindow(910);
+}
+
+TEST_CASE("Item colors follow the row across RemoveGadgetItem/ClearGadgetItems, not a fixed position",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: real PB's own colors move *with* the
+    // row they were set on, not stay pinned to whatever numeric
+    // position that row started at - a plain external map keyed by
+    // item position was tried first and found to genuinely diverge
+    // here (see pbSetGadgetItemColor's own doc comment / this slice's
+    // roadmap.md notes).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(911, 10, 10, 300, 300, PBString("Test"));
+    pbListIconGadget(1, 10, 10, 250, 100, PBString("Col0"), 100);
+    pbAddGadgetItem(1, 0, PBString("Row0"));
+    pbAddGadgetItem(1, 1, PBString("Row1"));
+    pbSetGadgetItemColor(1, 0, 1, pbRGB(255, 0, 0)); // Row0 = red
+    pbSetGadgetItemColor(1, 1, 1, pbRGB(0, 255, 0)); // Row1 = green
+
+    pbRemoveGadgetItem(1, 0); // removes Row0 (red); Row1 (green) shifts down to position 0
+    CHECK(pbGetGadgetItemColor(1, 0, 1) == pbRGB(0, 255, 0));
+
+    pbClearGadgetItems(1);
+    pbAddGadgetItem(1, 0, PBString("Fresh"));
+    CHECK(pbGetGadgetItemColor(1, 0, 1) == -1); // a brand new row has no leftover color
+
+    pbCloseWindow(911);
+}
+
+TEST_CASE("GetGadgetItemColor/SetGadgetItemColor have no effect on ListViewGadget/ComboBoxGadget",
+          "[runtime][guilib]") {
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(912, 10, 10, 300, 300, PBString("Test"));
+    pbListViewGadget(1, 10, 10, 200, 60);
+    pbAddGadgetItem(1, 0, PBString("X"));
+    pbComboBoxGadget(2, 10, 80, 200, 30);
+    pbAddGadgetItem(2, 0, PBString("Y"));
+
+    pbSetGadgetItemColor(1, 0, 1, pbRGB(255, 0, 0));
+    CHECK(pbGetGadgetItemColor(1, 0, 1) == -1);
+    pbSetGadgetItemColor(2, 0, 1, pbRGB(255, 0, 0));
+    CHECK(pbGetGadgetItemColor(2, 0, 1) == -1);
+
+    pbCloseWindow(912);
+}
+
+TEST_CASE("SetGadgetItemImage is a harmless, no-crash call on ListIcon/Tree and an unrelated gadget type",
+          "[runtime][guilib]") {
+    // There's no GetGadgetItemImage counterpart in real PB at all, so
+    // this is purely a visual, write-only effect - not independently
+    // testable via Debug (see pbSetGadgetItemImage's own doc comment).
+    // This test only confirms the call is accepted without error/crash
+    // across every gadget type it dispatches on.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(913, 10, 10, 300, 300, PBString("Test"));
+    pbCreateImage(471, 16, 16);
+    pbListIconGadget(1, 10, 10, 200, 100, PBString("Col0"), 100);
+    pbAddGadgetItem(1, 0, PBString("Row0"));
+    pbTreeGadget(2, 10, 120, 200, 100);
+    pbAddGadgetItem(2, -1, PBString("A"), 0, 0);
+    pbListViewGadget(3, 10, 230, 200, 60);
+    pbAddGadgetItem(3, 0, PBString("X"));
+
+    CHECK(pbSetGadgetItemImage(1, 0, pbImageID(471)) == 0);
+    CHECK(pbSetGadgetItemImage(2, 0, pbImageID(471)) == 0);
+    CHECK(pbSetGadgetItemImage(3, 0, pbImageID(471)) == 0);
+    CHECK(pbSetGadgetItemImage(1, 0, 0) == 0); // clearing a previously set image
+    CHECK(pbSetGadgetItemImage(1, 999, pbImageID(471)) == 0); // invalid item index
+    CHECK(pbSetGadgetItemImage(999, 0, pbImageID(471)) == 0); // invalid gadget id
+
+    pbFreeImage(471);
+    pbCloseWindow(913);
+}
+
 TEST_CASE("ListIcon/Tree-only functions are a harmless failure on an unrelated gadget type",
           "[runtime][guilib]") {
     if (!hasDisplay()) {

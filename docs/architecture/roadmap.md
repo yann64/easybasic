@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`/`ThreadPriority` - the `Thread` library is now 18/18 - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-two slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-three slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -5173,4 +5173,53 @@ every raw native-handle value (`LoadFont`/`FontID`'s own return, `IsFont`'s own 
 truthy value, `GetGadgetFont`'s own default handles) is checked via a derived boolean/comparison
 rather than printed directly, the same convention `tests/e2e/threads`'s own `ThreadID` checks
 already use - confirmed line-for-line against the real oracle before being pinned.
+
+## M7b Implementation Notes (GetGadgetItemColor/SetGadgetItemColor/SetGadgetItemImage)
+
+**Scope landed**: all three are oracle-verified to be scoped to `ListIconGadget`/`TreeGadget`
+specifically - `ListViewGadget`/`ComboBoxGadget` silently accept the calls with no effect at all
+(`GetGadgetItemColor` stays `-1` regardless of any `Set` attempt first), the same per-gadget-type
+support split `SetGadgetColor`'s own `gadgetColorSupportFor` already has at the whole-gadget
+level.
+
+**The `Column` cascade, oracle-confirmed then deliberately simplified**: several disambiguating
+probes established real PB's own genuine behavior is a two-level fallback - an explicit `Column`
+reads/writes that column's *own* slot; an *omitted* `Column` on `Set` writes a separate row-level
+default slot instead, shared by every column with no override of its own; but an *omitted*
+`Column` on `Get` behaves exactly like an explicit `Column=0` (checks column 0's own override
+first, else the row-level default, else `-1`) - a real asymmetry, not assumed. This project's own
+implementation accepts `Column` (no error) but, rather than reproducing the full per-column
+override machinery, has every column of a row share that row's single front/back slot - a
+deliberate, narrower simplification, not independently oracle-verified either way, chosen to keep
+the model's own shape simple rather than add `listIconMaxColumns()`-many more fixed per-column
+slots for a comparatively narrow case.
+
+**A real divergence found and fixed mid-slice**: the first implementation tracked colors in an
+external map keyed by item *position*. Oracle-verified directly that this is wrong - real PB's
+own colors move *with* the row they were set on across `RemoveGadgetItem`/`ClearGadgetItems`, not
+stay pinned to a numeric position (confirmed: removing a colored row shifts a *different* row's
+own color into that position in real PB, never the stale value a position-keyed map would report).
+Fixed by storing colors directly as three new fixed model columns per gadget (front/back color,
+`-1` meaning unset; a raw `ImageID` handle for images, `0` meaning none) - the exact same row-
+identity property `GetGadgetItemData`'s own model-backed `DATA` column already gets for free, so
+the fix follows an existing, already-correct pattern in this codebase rather than inventing a new
+one. This also simplified the cell-data-func rendering path considerably: no external lookup or
+per-renderer context object is needed at all, since the color/image already lives directly on the
+`GtkTreeIter` every renderer already sees at render time.
+
+**`SetGadgetItemImage`**: no `GetGadgetItemImage` counterpart exists in real PB at all, so this is
+purely a visual, write-only effect - not independently testable via `Debug`, the same spirit as
+`SetGadgetColor`'s/`SetGadgetFont`'s own CSS-driven visual application. Rendered as a real 16x16
+`GdkPixbuf`, matching `attachMenuItemImage`'s own already-established icon size convention, hidden
+entirely for an item with no image set rather than reserving a blank icon-sized gap. Its own return
+value is oracle-confirmed to carry no real signal either (a stable but gadget-type-dependent `0`/
+`1` across repeated runs, `1` only for `ComboBoxGadget` specifically, `0` for every other type
+including genuinely successful calls on `ListIconGadget`) - simplified to a clean `0` uniformly,
+the established "Aucune" convention.
+
+**Testing**: five new `runtime_guilib_test.cpp` cases (ListIcon/Tree round-trip and isolation,
+the row-identity fix specifically via a `RemoveGadgetItem`/`ClearGadgetItems` scenario, the no-
+effect-on-ListView/ComboBox case, and `SetGadgetItemImage`'s own no-crash coverage across every
+dispatch branch). One new golden e2e case (`tests/e2e/gui_gadget_item_color`), confirmed line-for-
+line against the real oracle before being pinned.
 

@@ -223,6 +223,8 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"colorrequester", "pbColorRequester"}, {"fontrequester", "pbFontRequester"},
         {"loadfont", "pbLoadFont"}, {"fontid", "pbFontID"}, {"isfont", "pbIsFont"}, {"freefont", "pbFreeFont"},
         {"getgadgetfont", "pbGetGadgetFont"}, {"setgadgetfont", "pbSetGadgetFont"},
+        {"getgadgetitemcolor", "pbGetGadgetItemColor"}, {"setgadgetitemcolor", "pbSetGadgetItemColor"},
+        {"setgadgetitemimage", "pbSetGadgetItemImage"},
         {"selectedfontname", "pbSelectedFontName"}, {"selectedfontsize", "pbSelectedFontSize"},
         {"selectedfontstyle", "pbSelectedFontStyle"}, {"selectedfontcolor", "pbSelectedFontColor"},
         {"inputrequester", "pbInputRequester"}, {"openfilerequester", "pbOpenFileRequester"},

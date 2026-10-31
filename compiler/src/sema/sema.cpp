@@ -747,6 +747,19 @@ void Sema::registerGuiLibBuiltins() {
         {"freefont", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"getgadgetfont", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"setgadgetfont", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        // GetGadgetItemColor(#Gadget, Item, ColorType [, Column]) /
+        // SetGadgetItemColor(#Gadget, Item, ColorType, Color [, Column]) /
+        // SetGadgetItemImage(#Gadget, Item, ImageID) - oracle-verified
+        // scoped to ListIconGadget/TreeGadget (see guilib.hpp's own
+        // pbGetGadgetItemColor/pbSetGadgetItemColor/pbSetGadgetItemImage
+        // doc comments for the full Column-cascade findings).
+        {"getgadgetitemcolor", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"setgadgetitemcolor", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer},
+         4},
+        {"setgadgetitemimage", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
         {"inputrequester", TypeSuffix::String,
          {TypeSuffix::String, TypeSuffix::String, TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
         {"openfilerequester", TypeSuffix::String,
@@ -905,6 +918,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "toolbartooltip", "toolbarheight", "toolbarid", "createpopupmenu", "createpopupimagemenu",
         "addsystrayicon", "changesystrayicon", "issystrayicon", "removesystrayicon", "systrayiconmenu",
         "loadfont", "fontid", "isfont", "freefont", "getgadgetfont", "setgadgetfont",
+        "getgadgetitemcolor", "setgadgetitemcolor", "setgadgetitemimage",
         "systrayicontooltip", "colorrequester", "fontrequester", "selectedfontname", "selectedfontsize",
         "selectedfontstyle", "selectedfontcolor", "inputrequester", "openfilerequester", "savefilerequester",
         "nextselectedfilename", "selectedfilepattern", "pathrequester",

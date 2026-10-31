@@ -519,6 +519,34 @@ inline gboolean onComboBoxFocusOut(GtkWidget*, GdkEvent*, gpointer userData) {
 /// shape.
 inline int listIconCheckedColumn() { return 17; }
 inline int treeCheckedColumn() { return 2; }
+/// `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`'s own
+/// row-level storage - three more fixed model slots per gadget (front/
+/// back color, packed the same way `RGB()` is, `-1` meaning "unset";
+/// raw `ImageID` handle, `0` meaning "none"), tied to the row itself
+/// the same way `listIconDataColumn()`'s own `DATA` slot already is -
+/// oracle-verified to matter: a plain external map keyed by item
+/// *position* was tried first and found to genuinely diverge from real
+/// PB after `RemoveGadgetItem`/`ClearGadgetItems` (confirmed directly -
+/// real PB's own colors move *with* the row they were set on, not stay
+/// pinned to a numeric position), so this project's own storage needs
+/// the same row-identity property the model already gives `DATA` for
+/// free. A real, narrower, deliberately accepted simplification
+/// follows from reusing just one row-level slot rather than `Column`-
+/// indexed ones: `SetGadgetItemColor`'s own `Column` argument is
+/// accepted (no error) but every column of a given row shares that
+/// row's single front/back slot here, rather than each column keeping
+/// its own independent override the way real PB's own oracle-confirmed
+/// `Column`-cascade does (see `itemColorRowDefaultColumn()`'s own doc
+/// comment for that cascade's full shape) - not independently oracle-
+/// verified either way, chosen over the fixed-slot-per-column
+/// `listIconMaxColumns()`-style alternative to keep the model's own
+/// shape simple.
+inline int listIconFrontColorColumn() { return 18; }
+inline int listIconBackColorColumn() { return 19; }
+inline int listIconImageColumn() { return 20; }
+inline int treeFrontColorColumn() { return 3; }
+inline int treeBackColorColumn() { return 4; }
+inline int treeImageColumn() { return 5; }
 
 /// M7b's fourteenth GUI slice: `ListIconGadget`/`TreeGadget` share the
 /// same event wiring shape `ListViewGadget`'s own thirteenth slice
@@ -1012,8 +1040,9 @@ inline int itemDataColumn() { return 1; }
 /// keep every `ListIconGadget`'s own model shape uniform.
 inline int listIconMaxColumns() { return 16; }
 inline int listIconDataColumn() { return listIconMaxColumns(); }
-// listIconCheckedColumn() - defined earlier, see its own doc comment.
-inline int listIconTotalModelColumns() { return listIconMaxColumns() + 2; }
+// listIconCheckedColumn()/listIconFrontColorColumn()/listIconBackColorColumn()/
+// listIconImageColumn() - defined earlier, see their own doc comments.
+inline int listIconTotalModelColumns() { return listIconMaxColumns() + 5; }
 
 /// Tag on each `GtkTreeViewColumn` recording which of `ListIconGadget`'s
 /// own pre-allocated store slots it displays - `gtk_tree_view_get_columns`
@@ -4076,6 +4105,173 @@ inline std::int64_t pbComboBoxGadget(std::int64_t gadgetId, std::int64_t x, std:
     return 1;
 }
 
+namespace detail {
+
+inline GdkRGBA colorToGdkRgba(std::int64_t color) {
+    GdkRGBA rgba;
+    rgba.red = static_cast<double>(color & 0xff) / 255.0;
+    rgba.green = static_cast<double>((color >> 8) & 0xff) / 255.0;
+    rgba.blue = static_cast<double>((color >> 16) & 0xff) / 255.0;
+    rgba.alpha = 1.0;
+    return rgba;
+}
+
+/// The real inner `GtkTreeView` for `GetGadgetItemColor`/
+/// `SetGadgetItemColor`/`SetGadgetItemImage` - `nullptr` for a gadget
+/// that doesn't support any of them at all (`ListViewGadget`/
+/// `ComboBoxGadget` silently accept the calls with no effect at all -
+/// oracle-verified directly, the same per-gadget-type support split
+/// `SetGadgetColor`'s own `gadgetColorSupportFor` already has at the
+/// whole-gadget level). Resolved fresh on every call rather than
+/// cached, the same way `listIconTreeView`/`treeGadgetTreeView`
+/// themselves already are.
+inline GtkWidget* itemColorTargetWidget(GtkWidget* gadgetWidget) {
+    if (GtkWidget* treeView = listIconTreeView(gadgetWidget)) {
+        return treeView;
+    }
+    return treeGadgetTreeView(gadgetWidget);
+}
+
+/// Tied to the row itself via the model's own fixed `listIconFrontColor
+/// Column()`/`listIconBackColorColumn()`/`listIconImageColumn()` (or
+/// their `Tree` equivalents) - not an external map keyed by item
+/// *position*, which was tried first and found to genuinely diverge
+/// from real PB: real PB's own colors move *with* the row they were
+/// set on across `RemoveGadgetItem`/`ClearGadgetItems` (confirmed
+/// directly), not stay pinned to a numeric position, the same row-
+/// identity property `GetGadgetItemData`'s own model-backed `DATA`
+/// column already gets for free. A real, narrower, deliberately
+/// accepted simplification follows from using one row-level slot
+/// rather than `Column`-indexed ones: real PB's own oracle-confirmed
+/// `SetGadgetItemColor` lets each column of a row keep its own
+/// independent override (see this slice's own notes in `docs/
+/// architecture/roadmap.md` for that cascade's full, disambiguated
+/// shape) - here, `Column` is accepted (no error) but every column of
+/// a given row shares that row's single front/back slot instead, not
+/// independently oracle-verified either way, chosen to keep the
+/// model's own shape simple rather than add `listIconMaxColumns()`-many
+/// more fixed per-column slots for a comparatively narrow case.
+inline bool itemColorIterFor(GtkWidget* target, std::int64_t item, GtkTreeModel** outModel, GtkTreeIter* outIter) {
+    GtkTreeModel* model = gtk_tree_view_get_model(GTK_TREE_VIEW(target));
+    bool ok = GTK_IS_TREE_STORE(model) != 0 ? treeIterAtFlatIndex(model, static_cast<int>(item), outIter)
+                                             : gtk_tree_model_iter_nth_child(model, outIter, nullptr,
+                                                                              static_cast<int>(item)) != 0;
+    if (ok) {
+        *outModel = model;
+    }
+    return ok;
+}
+
+inline int itemFrontColorColumnFor(GtkTreeModel* model) {
+    return GTK_IS_TREE_STORE(model) != 0 ? treeFrontColorColumn() : listIconFrontColorColumn();
+}
+inline int itemBackColorColumnFor(GtkTreeModel* model) {
+    return GTK_IS_TREE_STORE(model) != 0 ? treeBackColorColumn() : listIconBackColorColumn();
+}
+inline int itemImageColumnFor(GtkTreeModel* model) {
+    return GTK_IS_TREE_STORE(model) != 0 ? treeImageColumn() : listIconImageColumn();
+}
+
+inline std::int64_t resolveItemColor(GtkWidget* target, std::int64_t item, bool front) {
+    GtkTreeModel* model;
+    GtkTreeIter iter;
+    if (!itemColorIterFor(target, item, &model, &iter)) {
+        return -1;
+    }
+    gint64 value = -1;
+    gtk_tree_model_get(model, &iter, front ? itemFrontColorColumnFor(model) : itemBackColorColumnFor(model), &value,
+                        -1);
+    return value;
+}
+
+inline void setItemColor(GtkWidget* target, std::int64_t item, bool front, std::int64_t color) {
+    GtkTreeModel* model;
+    GtkTreeIter iter;
+    if (!itemColorIterFor(target, item, &model, &iter)) {
+        return;
+    }
+    int col = front ? itemFrontColorColumnFor(model) : itemBackColorColumnFor(model);
+    if (GTK_IS_TREE_STORE(model) != 0) {
+        gtk_tree_store_set(GTK_TREE_STORE(model), &iter, col, static_cast<gint64>(color), -1);
+    } else {
+        gtk_list_store_set(GTK_LIST_STORE(model), &iter, col, static_cast<gint64>(color), -1);
+    }
+}
+
+inline void setItemImage(GtkWidget* target, std::int64_t item, std::int64_t imageId) {
+    GtkTreeModel* model;
+    GtkTreeIter iter;
+    if (!itemColorIterFor(target, item, &model, &iter)) {
+        return;
+    }
+    int col = itemImageColumnFor(model);
+    if (GTK_IS_TREE_STORE(model) != 0) {
+        gtk_tree_store_set(GTK_TREE_STORE(model), &iter, col, static_cast<gint64>(imageId), -1);
+    } else {
+        gtk_list_store_set(GTK_LIST_STORE(model), &iter, col, static_cast<gint64>(imageId), -1);
+    }
+}
+
+/// Reads `front`'s/`back`'s own current model-column value directly at
+/// render time (no external lookup needed at all, since the value
+/// already lives on the row `iter` itself) and applies it as a real,
+/// visible `GtkCellRendererText` foreground/background override - `-1`
+/// (never set) leaves the renderer's own normal theme color alone.
+inline void applyItemColorToTextRenderer(GtkTreeViewColumn*, GtkCellRenderer* renderer, GtkTreeModel* model,
+                                          GtkTreeIter* iter, gpointer) {
+    gint64 front = -1;
+    gint64 back = -1;
+    gtk_tree_model_get(model, iter, itemFrontColorColumnFor(model), &front, itemBackColorColumnFor(model), &back,
+                        -1);
+    if (front != -1) {
+        GdkRGBA rgba = colorToGdkRgba(front);
+        g_object_set(renderer, "foreground-rgba", &rgba, nullptr);
+    } else {
+        g_object_set(renderer, "foreground-set", FALSE, nullptr);
+    }
+    if (back != -1) {
+        GdkRGBA rgba = colorToGdkRgba(back);
+        g_object_set(renderer, "background-rgba", &rgba, nullptr);
+    } else {
+        g_object_set(renderer, "background-set", FALSE, nullptr);
+    }
+}
+
+/// Shared by every text renderer `pbListIconGadget`'s/
+/// `pbAddGadgetColumn`'s/`pbTreeGadget`'s own column setup creates -
+/// no per-column context needed at all (unlike an earlier external-
+/// map-based version of this), since the row-level color now lives
+/// directly on the model `iter` every renderer already sees.
+inline void hookItemColorRenderer(GtkTreeViewColumn* viewColumn, GtkCellRenderer* renderer) {
+    gtk_tree_view_column_set_cell_data_func(viewColumn, renderer, applyItemColorToTextRenderer, nullptr, nullptr);
+}
+
+/// `SetGadgetItemImage`'s own real visual application - a 16x16
+/// `GdkPixbuf`, matching `attachMenuItemImage`'s own already-established
+/// icon size convention. Hidden entirely (`"visible", FALSE`) for an
+/// item with no image set, rather than reserving a blank icon-sized gap.
+inline void applyItemImageToPixbufRenderer(GtkTreeViewColumn*, GtkCellRenderer* renderer, GtkTreeModel* model,
+                                            GtkTreeIter* iter, gpointer) {
+    gint64 imageHandle = 0;
+    gtk_tree_model_get(model, iter, itemImageColumnFor(model), &imageHandle, -1);
+    if (imageHandle == 0) {
+        g_object_set(renderer, "visible", FALSE, nullptr);
+        return;
+    }
+    auto* pixbuf = reinterpret_cast<GdkPixbuf*>(imageHandle);
+    GdkPixbuf* scaled = gdk_pixbuf_scale_simple(pixbuf, 16, 16, GDK_INTERP_BILINEAR);
+    g_object_set(renderer, "pixbuf", scaled, "visible", TRUE, nullptr);
+    if (scaled != nullptr) {
+        g_object_unref(scaled);
+    }
+}
+
+inline void hookItemImageRenderer(GtkTreeViewColumn* viewColumn, GtkCellRenderer* renderer) {
+    gtk_tree_view_column_set_cell_data_func(viewColumn, renderer, applyItemImageToPixbufRenderer, nullptr, nullptr);
+}
+
+} // namespace detail
+
 /// M7b's fourteenth GUI slice: `ListIconGadget` - a multi-column
 /// `GtkTreeView` (headers visible by default; `#PB_ListIcon_NoHeaders`
 /// hides them, `#PB_ListIcon_GridLines` maps directly onto
@@ -4105,6 +4301,9 @@ inline std::int64_t pbListIconGadget(std::int64_t gadgetId, std::int64_t x, std:
     }
     types[static_cast<std::size_t>(detail::listIconDataColumn())] = G_TYPE_INT64;
     types[static_cast<std::size_t>(detail::listIconCheckedColumn())] = G_TYPE_BOOLEAN;
+    types[static_cast<std::size_t>(detail::listIconFrontColorColumn())] = G_TYPE_INT64;
+    types[static_cast<std::size_t>(detail::listIconBackColorColumn())] = G_TYPE_INT64;
+    types[static_cast<std::size_t>(detail::listIconImageColumn())] = G_TYPE_INT64;
     GtkListStore* store = gtk_list_store_newv(static_cast<gint>(types.size()), types.data());
     GtkWidget* treeView = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
     g_object_unref(store);
@@ -4125,9 +4324,13 @@ inline std::int64_t pbListIconGadget(std::int64_t gadgetId, std::int64_t x, std:
         gtk_tree_view_column_pack_start(firstColumn, toggleRenderer, FALSE);
         gtk_tree_view_column_add_attribute(firstColumn, toggleRenderer, "active", detail::listIconCheckedColumn());
     }
+    GtkCellRenderer* iconRenderer = gtk_cell_renderer_pixbuf_new();
+    gtk_tree_view_column_pack_start(firstColumn, iconRenderer, FALSE);
+    detail::hookItemImageRenderer(firstColumn, iconRenderer);
     GtkCellRenderer* textRenderer = gtk_cell_renderer_text_new();
     gtk_tree_view_column_pack_start(firstColumn, textRenderer, TRUE);
     gtk_tree_view_column_add_attribute(firstColumn, textRenderer, "text", 0);
+    detail::hookItemColorRenderer(firstColumn, textRenderer);
     gtk_tree_view_column_set_clickable(firstColumn, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(treeView), firstColumn);
     g_object_set_data(G_OBJECT(firstColumn), detail::listIconColumnSlotKey(),
@@ -4183,6 +4386,7 @@ inline std::int64_t pbAddGadgetColumn(std::int64_t gadgetId, std::int64_t positi
     GtkCellRenderer* renderer = gtk_cell_renderer_text_new();
     gtk_tree_view_column_pack_start(column, renderer, TRUE);
     gtk_tree_view_column_add_attribute(column, renderer, "text", static_cast<int>(nextSlot));
+    detail::hookItemColorRenderer(column, renderer);
     gtk_tree_view_column_set_clickable(column, TRUE);
     int insertAt = position < 0 ? -1 : static_cast<int>(position);
     gtk_tree_view_insert_column(GTK_TREE_VIEW(treeView), column, insertAt);
@@ -4237,7 +4441,8 @@ inline std::int64_t pbRemoveGadgetColumn(std::int64_t gadgetId, std::int64_t col
 inline std::int64_t pbTreeGadget(std::int64_t gadgetId, std::int64_t x, std::int64_t y, std::int64_t width,
                                   std::int64_t height, std::int64_t flags = 0) {
     detail::ensureGtkInit();
-    GtkTreeStore* store = gtk_tree_store_new(3, G_TYPE_STRING, G_TYPE_INT64, G_TYPE_BOOLEAN);
+    GtkTreeStore* store = gtk_tree_store_new(6, G_TYPE_STRING, G_TYPE_INT64, G_TYPE_BOOLEAN, G_TYPE_INT64,
+                                              G_TYPE_INT64, G_TYPE_INT64);
     GtkWidget* treeView = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
     g_object_unref(store);
     g_object_set_data(G_OBJECT(treeView), detail::gadgetKindKey(), const_cast<char*>(detail::gadgetKindTree()));
@@ -4253,9 +4458,13 @@ inline std::int64_t pbTreeGadget(std::int64_t gadgetId, std::int64_t x, std::int
         gtk_tree_view_column_pack_start(column, toggleRenderer, FALSE);
         gtk_tree_view_column_add_attribute(column, toggleRenderer, "active", detail::treeCheckedColumn());
     }
+    GtkCellRenderer* iconRenderer = gtk_cell_renderer_pixbuf_new();
+    gtk_tree_view_column_pack_start(column, iconRenderer, FALSE);
+    detail::hookItemImageRenderer(column, iconRenderer);
     GtkCellRenderer* textRenderer = gtk_cell_renderer_text_new();
     gtk_tree_view_column_pack_start(column, textRenderer, TRUE);
     gtk_tree_view_column_add_attribute(column, textRenderer, "text", detail::treeTextColumn());
+    detail::hookItemColorRenderer(column, textRenderer);
     gtk_tree_view_append_column(GTK_TREE_VIEW(treeView), column);
 
     GtkWidget* scrolled = gtk_scrolled_window_new(nullptr, nullptr);
@@ -4343,6 +4552,8 @@ inline std::int64_t pbAddGadgetItem(std::int64_t gadgetId, std::int64_t position
         GtkTreeIter iter;
         int insertAt = position < 0 ? -1 : static_cast<int>(position);
         gtk_list_store_insert(store, &iter, insertAt);
+        gtk_list_store_set(store, &iter, detail::listIconFrontColorColumn(), static_cast<gint64>(-1),
+                            detail::listIconBackColorColumn(), static_cast<gint64>(-1), -1);
         auto parts = detail::splitByNewline(text.bytes());
         for (std::size_t visualPos = 0; visualPos < parts.size(); ++visualPos) {
             int slot = detail::listIconStoreSlotAtPosition(GTK_TREE_VIEW(treeView), static_cast<int>(visualPos));
@@ -4367,7 +4578,9 @@ inline std::int64_t pbAddGadgetItem(std::int64_t gadgetId, std::int64_t position
         GtkTreeIter iter;
         int insertAt = position < 0 ? -1 : static_cast<int>(position);
         gtk_tree_store_insert(store, &iter, parent, insertAt);
-        gtk_tree_store_set(store, &iter, detail::treeTextColumn(), text.bytes().c_str(), -1);
+        gtk_tree_store_set(store, &iter, detail::treeTextColumn(), text.bytes().c_str(),
+                            detail::treeFrontColorColumn(), static_cast<gint64>(-1), detail::treeBackColorColumn(),
+                            static_cast<gint64>(-1), -1);
         stack.resize(static_cast<std::size_t>(effectiveLevel) + 1);
         stack[static_cast<std::size_t>(effectiveLevel)] = iter;
         return 1;
@@ -4928,6 +5141,68 @@ inline std::int64_t pbSetGadgetItemData(std::int64_t gadgetId, std::int64_t elem
         return 1;
     }
     return 0;
+}
+
+/// `GetGadgetItemColor(#Gadget, Item, ColorType [, Column])`/
+/// `SetGadgetItemColor(#Gadget, Item, ColorType, Color [, Column])` -
+/// `Column` is accepted (for the real, oracle-confirmed signature's
+/// sake) but not acted on - see `itemColorIterFor`'s own doc comment
+/// for why (every column of a row shares that row's single front/back
+/// slot in this implementation, a deliberate, narrower simplification
+/// than real PB's own genuine per-column overrides).
+inline std::int64_t pbGetGadgetItemColor(std::int64_t gadgetId, std::int64_t item, std::int64_t colorType,
+                                          std::int64_t column = 0) {
+    (void)column;
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* target = detail::itemColorTargetWidget(it->second);
+    if (target == nullptr) {
+        return -1;
+    }
+    return detail::resolveItemColor(target, item, colorType == 1 /* #PB_Gadget_FrontColor */);
+}
+
+inline std::int64_t pbSetGadgetItemColor(std::int64_t gadgetId, std::int64_t item, std::int64_t colorType,
+                                          std::int64_t color, std::int64_t column = 0) {
+    (void)column;
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* target = detail::itemColorTargetWidget(it->second);
+    if (target == nullptr) {
+        return 0; // Oracle-verified no effect at all for an unsupported gadget type.
+    }
+    detail::setItemColor(target, item, colorType == 1 /* #PB_Gadget_FrontColor */, color);
+    return 0; // Oracle-verified no real/meaningful return value ("Aucune").
+}
+
+/// `SetGadgetItemImage(#Gadget, Item, ImageID)` - oracle-verified
+/// directly to be scoped to `ListIconGadget`/`TreeGadget` the same way
+/// `GetGadgetItemColor`/`SetGadgetItemColor` already are (confirmed:
+/// `ListViewGadget` is a real no-op; `ComboBoxGadget`'s own per-item
+/// image support is the already-documented `#PB_ComboBox_Image`
+/// deferred gap - see `pbAddGadgetItem`'s own doc comment - a different
+/// mechanism than this function regardless). There's no
+/// `GetGadgetItemImage` counterpart at all in real PB, so this is
+/// purely a visual, write-only effect - not independently testable via
+/// `Debug`, the same spirit as `SetGadgetColor`'s/`SetGadgetFont`'s own
+/// CSS-driven visual application. `ImageID = 0` clears a previously set
+/// image, matching `attachMenuItemImage`'s own `imageId == 0` no-op
+/// convention.
+inline std::int64_t pbSetGadgetItemImage(std::int64_t gadgetId, std::int64_t item, std::int64_t imageId) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    GtkWidget* target = detail::itemColorTargetWidget(it->second);
+    if (target == nullptr) {
+        return 0;
+    }
+    detail::setItemImage(target, item, imageId);
+    return 0; // Oracle-verified no real/meaningful return value ("Aucune").
 }
 
 /// `GetGadgetItemAttribute`/`SetGadgetItemAttribute(#Gadget, Element,
