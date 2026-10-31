@@ -6068,6 +6068,121 @@ inline std::int64_t pbGetGadgetColor(std::int64_t gadgetId, std::int64_t colorTy
     return -1;
 }
 
+namespace detail {
+
+struct GadgetFontState {
+    std::int64_t handle = 0; // a real SetGadgetFont-given FontID - 0 means "never explicitly set".
+    PangoFontDescription* cachedDefault = nullptr; // lazily computed/owned - see pbGetGadgetFont's own doc comment.
+    GtkCssProvider* provider = nullptr;
+    ~GadgetFontState() {
+        if (cachedDefault != nullptr) {
+            pango_font_description_free(cachedDefault);
+        }
+        if (provider != nullptr) {
+            g_object_unref(provider);
+        }
+    }
+};
+
+inline const char* gadgetFontStateKey() { return "pbcxx-gadget-font-state"; }
+
+inline GadgetFontState& gadgetFontState(GtkWidget* widget) {
+    auto* state = static_cast<GadgetFontState*>(g_object_get_data(G_OBJECT(widget), gadgetFontStateKey()));
+    if (state == nullptr) {
+        state = new GadgetFontState();
+        g_object_set_data_full(G_OBJECT(widget), gadgetFontStateKey(), state,
+                                [](gpointer p) { delete static_cast<GadgetFontState*>(p); });
+    }
+    return *state;
+}
+
+/// Applies `handle`'s own family/size as a real, visible CSS override,
+/// scoped to `widget` alone - the same `GtkCssProvider`-per-widget
+/// pattern `applyGadgetColorCss` already uses, for the same reason (a
+/// provider added to one widget's own style context in GTK3 never
+/// cascades to its children's own, separate contexts). Deliberately
+/// only maps family/size, not weight/style - a real, narrow scope
+/// limit, not independently verified against the oracle either way (no
+/// screenshot/pixel-diffing tool in this project's own test suite), the
+/// same spirit as `ContainerGadget`'s own `Flags`-to-shadow-type
+/// mapping already being "mapped by name, not screenshot-matched".
+inline void applyGadgetFontCss(GtkWidget* widget, GadgetFontState& state, PangoFontDescription* desc) {
+    GtkStyleContext* context = gtk_widget_get_style_context(widget);
+    if (state.provider != nullptr) {
+        gtk_style_context_remove_provider(context, GTK_STYLE_PROVIDER(state.provider));
+        g_object_unref(state.provider);
+        state.provider = nullptr;
+    }
+    if (desc == nullptr) {
+        return;
+    }
+    const char* family = pango_font_description_get_family(desc);
+    gint size = pango_font_description_get_size(desc);
+    if (family == nullptr || size <= 0) {
+        return;
+    }
+    // GTK's own CSS parser (confirmed directly) doesn't accept a `pt`
+    // suffix the way CSS3's own font-size grammar allows - "Not using
+    // units is deprecated. Assuming 'px'" plus a "Junk at end of value"
+    // warning, the whole rule silently dropped either way. `px`, as a
+    // plain integer (no decimal point, side-stepping any possible
+    // float-formatting quirk too), parses cleanly.
+    auto sizePx = static_cast<std::int64_t>(static_cast<double>(size) / PANGO_SCALE);
+    std::string css = "* { font-family: \"" + std::string(family) + "\"; font-size: " +
+                       std::to_string(sizePx) + "px; }";
+    state.provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(state.provider, css.c_str(), -1, nullptr);
+    gtk_style_context_add_provider(context, GTK_STYLE_PROVIDER(state.provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+}
+
+} // namespace detail
+
+/// `GetGadgetFont(#Gadget)`/`SetGadgetFont(#Gadget, FontID())` -
+/// oracle-verified directly: per-gadget, not global (confirmed directly
+/// - a brand new gadget created *after* a `SetGadgetFont` call on a
+/// different one has its own, unaffected default font) and a real,
+/// exact round-trip (`GetGadgetFont` after `SetGadgetFont(id, FontID
+/// (f))` returns the *exact* same handle `FontID(f)` itself does, not a
+/// copy). A gadget that's never had `SetGadgetFont` called still has a
+/// real, non-zero `GetGadgetFont` of its own - oracle-verified directly
+/// to be *stable* across repeated queries (not regenerated fresh each
+/// time) and genuinely *different* per gadget, even for two gadgets
+/// that look visually identical (confirmed with two plain `ButtonGadget`s)
+/// - this project's own implementation matches that shape by lazily
+/// computing one real `PangoFontDescription` (via `gtk_style_context_
+/// get_font`, deprecated since GTK 3.16 but still the only way to read
+/// a widget's own currently-resolved font back at all) on the *first*
+/// `GetGadgetFont` query and caching an owned copy, rather than
+/// recomputing - or just returning a direct, GTK-owned pointer - every
+/// time.
+inline std::int64_t pbGetGadgetFont(std::int64_t gadgetId) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    auto& state = detail::gadgetFontState(it->second);
+    if (state.handle != 0) {
+        return state.handle;
+    }
+    if (state.cachedDefault == nullptr) {
+        GtkStyleContext* context = gtk_widget_get_style_context(it->second);
+        const PangoFontDescription* current = gtk_style_context_get_font(context, GTK_STATE_FLAG_NORMAL);
+        state.cachedDefault = current != nullptr ? pango_font_description_copy(current) : pango_font_description_new();
+    }
+    return reinterpret_cast<std::int64_t>(state.cachedDefault);
+}
+
+inline std::int64_t pbSetGadgetFont(std::int64_t gadgetId, std::int64_t fontHandle) {
+    auto it = detail::gadgetTable().find(gadgetId);
+    if (it == detail::gadgetTable().end()) {
+        return 0;
+    }
+    auto& state = detail::gadgetFontState(it->second);
+    state.handle = fontHandle;
+    detail::applyGadgetFontCss(it->second, state, reinterpret_cast<PangoFontDescription*>(fontHandle));
+    return 0; // Oracle-verified no return value ("Aucune").
+}
+
 /// `GadgetToolTip(#Gadget, Text$)` - a plain `gtk_widget_set_tooltip_text`.
 inline std::int64_t pbGadgetToolTip(std::int64_t gadgetId, const PBString& text) {
     auto it = detail::gadgetTable().find(gadgetId);
@@ -6923,6 +7038,78 @@ inline std::int64_t pbColorRequester(std::int64_t initialColor = -1, std::int64_
     }
     gtk_widget_destroy(dialog);
     return result;
+}
+
+namespace detail {
+inline std::unordered_map<std::int64_t, PangoFontDescription*>& fontTable() {
+    static std::unordered_map<std::int64_t, PangoFontDescription*> table;
+    return table;
+}
+} // namespace detail
+
+/// `LoadFont(#Font, Name$, Size [, Flags])` - the Font library's own
+/// basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`), a real prerequisite
+/// for `GetGadgetFont`/`SetGadgetFont` below (`SetGadgetFont` takes a
+/// real `FontID()` value) rather than scope creep of its own.
+/// `#PB_Font_Bold`(`1`)/`Italic`(`2`) are the only `Flags` bits with a
+/// real effect, mapped onto `PangoFontDescription`'s own weight/style
+/// the same way `FontRequester`'s own initial-font setup already does
+/// (`#PB_Font_StrikeOut`/`Underline`/`HighQuality` are all oracle-
+/// verified to be a plain `0`, inherently no-ops when OR'd in, likely
+/// Windows-only flags with no effect on this platform - the same way
+/// `#PB_ProgressBar_Smooth` already is). `Size` is Pango's own standard
+/// point-size convention (`PANGO_SCALE` per point) - not independently
+/// oracle-verifiable against a specific pixel measurement (no
+/// `GetFontSize`-style accessor exists), the same scope limit this
+/// project's own cosmetic/styling gaps already accept elsewhere. A
+/// nonexistent font family name is *not* a real error at all - oracle-
+/// verified directly (`IsFont` still reports a real, valid font
+/// afterward) - Pango's own graceful fallback-to-a-default-family
+/// behavior already matches this with no special-casing needed.
+/// Oracle-verified return: the same real native `PangoFontDescription*`
+/// handle `FontID` itself returns (confirmed directly: identical value
+/// from both, for the same `#Font`) - simplified the same "real, usable
+/// native handle, never byte-matched against the oracle's own pointer
+/// value" way `WindowID`/`ImageID` already are. Reusing an already-live
+/// `#Font` id replaces the old one, the same convention `OpenWindow`'s
+/// own id-reuse already has.
+inline std::int64_t pbLoadFont(std::int64_t fontId, const PBString& name, std::int64_t size, std::int64_t flags = 0) {
+    detail::ensureGtkInit();
+    auto old = detail::fontTable().find(fontId);
+    if (old != detail::fontTable().end()) {
+        pango_font_description_free(old->second);
+    }
+    PangoFontDescription* desc = pango_font_description_new();
+    pango_font_description_set_family(desc, name.bytes().c_str());
+    pango_font_description_set_size(desc, static_cast<gint>(size) * PANGO_SCALE);
+    if ((flags & 1) != 0) { // #PB_Font_Bold
+        pango_font_description_set_weight(desc, PANGO_WEIGHT_BOLD);
+    }
+    if ((flags & 2) != 0) { // #PB_Font_Italic
+        pango_font_description_set_style(desc, PANGO_STYLE_ITALIC);
+    }
+    detail::fontTable()[fontId] = desc;
+    return reinterpret_cast<std::int64_t>(desc);
+}
+
+inline std::int64_t pbFontID(std::int64_t fontId) {
+    auto it = detail::fontTable().find(fontId);
+    return it != detail::fontTable().end() ? reinterpret_cast<std::int64_t>(it->second) : 0;
+}
+
+/// Oracle-verified: real PB's own `IsFont` also returns a native-
+/// handle-ish nonzero value, not a clean `1` - simplified the same way
+/// `IsWindow`'s/`IsStatusBar`'s own are.
+inline std::int64_t pbIsFont(std::int64_t fontId) { return detail::fontTable().contains(fontId) ? 1 : 0; }
+
+inline std::int64_t pbFreeFont(std::int64_t fontId) {
+    auto it = detail::fontTable().find(fontId);
+    if (it == detail::fontTable().end()) {
+        return 0;
+    }
+    pango_font_description_free(it->second);
+    detail::fontTable().erase(it);
+    return 0; // Oracle-verified no return value ("Aucune").
 }
 
 /// `GtkFontChooserDialog` is the natural GTK3 fit, built around a

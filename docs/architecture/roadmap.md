@@ -32,7 +32,7 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`/`ThreadPriority` - the `Thread` library is now 18/18 - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-one slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library) - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-two slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -5118,4 +5118,59 @@ field numbers. One new golden e2e case (`tests/e2e/gui_statusbar_image_progress`
 line-for-line against the real oracle (aside from the undefined-return-value lines, normalized to
 a clean `0` per this project's established divergence, and the `ImageID = 0` fatal-error case,
 excluded from the golden comparison and covered in the unit test instead) before being pinned.
+
+## M7b Implementation Notes (Font library basics + GetGadgetFont/SetGadgetFont)
+
+**Scope landed**: `LoadFont`/`FontID`/`IsFont`/`FreeFont` (the `Font` library's own basics, now
+4/5 - `RegisterFontFile` is a separate, independent feature, registering a font *file* rather than
+loading an installed one by name, out of scope here) plus `GetGadgetFont`/`SetGadgetFont`. The
+`Font` library wasn't scope creep of its own - `SetGadgetFont` takes a real `FontID()` value, so it
+was a genuine prerequisite, not an optional extra.
+
+**`LoadFont(#Font, Name$, Size [, Flags])`**: oracle-verified directly that its own return value is
+the *exact* same real native handle `FontID` itself returns for the same `#Font` - simplified the
+same "real, usable native handle, never byte-matched against the oracle's own pointer value" way
+`WindowID`/`ImageID` already are. `#PB_Font_Bold`(`1`)/`Italic`(`2`) are the only `Flags` bits with
+a real effect (mapped onto `PangoFontDescription`'s own weight/style, reusing the exact mapping
+`FontRequester`'s own initial-font setup already established) - `#PB_Font_StrikeOut`/`Underline`/
+`HighQuality` are all oracle-verified to be a plain `0` (likely Windows-only flags with no effect
+on this platform, the same way `#PB_ProgressBar_Smooth` already is), inherently no-ops when OR'd
+in regardless. A nonexistent font family name is *not* a real error at all - oracle-verified
+directly (`IsFont` still reports a real, valid font afterward) - Pango's own graceful fallback-to-
+a-default-family behavior already matches this with no special-casing needed.
+
+**`IsFont`**: oracle-verified to also return a native-handle-ish nonzero value, not a clean `1` -
+simplified the same way `IsWindow`'s/`IsStatusBar`'s own already are.
+
+**`GetGadgetFont`/`SetGadgetFont`**: oracle-verified directly to be per-gadget, not global - a
+brand new gadget created *after* a `SetGadgetFont` call on a different one has its own, unaffected
+default font (confirmed with two plain `ButtonGadget`s) - despite real PB's own documented
+signature for `SetGadgetFont` oddly describing it as changing "the font which will be used by
+newly created gadgets" (misleading - it's about the *given* gadget, confirmed not to leak forward
+to gadgets created afterward at all). `SetGadgetFont` then `GetGadgetFont` round-trips the *exact*
+same handle, not a copy. A gadget that's never had `SetGadgetFont` called still has a real, non-
+zero `GetGadgetFont` of its own - oracle-verified directly to be stable across repeated queries
+(not regenerated fresh each time) and genuinely different per gadget, even for two gadgets that
+look visually identical. Implemented by lazily computing one real `PangoFontDescription` (via
+`gtk_style_context_get_font` - deprecated since GTK 3.16, but still the only way to read a widget's
+own currently-resolved font back at all) on the first query and caching an owned copy, matching
+that same stable-but-lazy shape.
+
+**A real CSS-parsing bug found and fixed along the way**: `SetGadgetFont`'s own best-effort visual
+application (the same per-widget `GtkCssProvider` pattern `SetGadgetColor` already uses) initially
+built a `font-size: <N>pt` CSS value - GTK's own CSS parser doesn't accept a `pt` suffix the way
+CSS3's own font-size grammar allows (a real `Gtk-WARNING`: "Not using units is deprecated. Assuming
+'px'" immediately followed by "Junk at end of value for font-size" - the whole rule silently
+dropped either way). Fixed by using a plain integer `px` value instead (side-stepping a possible
+float-formatting quirk too, not just the unit itself). This visual application still only maps
+family/size, not weight/style - a real, narrow scope limit, not independently verified against the
+oracle either way (no screenshot/pixel-diffing tool in this project's own test suite).
+
+**Testing**: two new `runtime_guilib_test.cpp` cases (the Font library's own round-trip/
+nonexistent-family/double-free handling; `GetGadgetFont`/`SetGadgetFont`'s own per-gadget
+stability/distinctness/round-trip). One new golden e2e case (`tests/e2e/gui_gadget_font`) -
+every raw native-handle value (`LoadFont`/`FontID`'s own return, `IsFont`'s own native-handle-ish
+truthy value, `GetGadgetFont`'s own default handles) is checked via a derived boolean/comparison
+rather than printed directly, the same convention `tests/e2e/threads`'s own `ThreadID` checks
+already use - confirmed line-for-line against the real oracle before being pinned.
 

@@ -734,6 +734,19 @@ void Sema::registerGuiLibBuiltins() {
         {"selectedfontsize", TypeSuffix::Integer, {}, 0},
         {"selectedfontstyle", TypeSuffix::Integer, {}, 0},
         {"selectedfontcolor", TypeSuffix::Integer, {}, 0},
+        // The Font library's own basics - a real prerequisite for
+        // GetGadgetFont/SetGadgetFont below (SetGadgetFont takes a real
+        // FontID() value), not scope creep of its own. RegisterFontFile
+        // is a separate, independent feature (registering a font
+        // *file*, not loading an installed one by name) - out of scope
+        // here, still registered as "No" in the coverage table.
+        {"loadfont", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"fontid", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"isfont", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"freefont", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"getgadgetfont", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
+        {"setgadgetfont", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"inputrequester", TypeSuffix::String,
          {TypeSuffix::String, TypeSuffix::String, TypeSuffix::String, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
         {"openfilerequester", TypeSuffix::String,
@@ -891,6 +904,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "disabletoolbarbutton", "gettoolbarbuttonstate", "settoolbarbuttonstate", "toolbarbuttontext",
         "toolbartooltip", "toolbarheight", "toolbarid", "createpopupmenu", "createpopupimagemenu",
         "addsystrayicon", "changesystrayicon", "issystrayicon", "removesystrayicon", "systrayiconmenu",
+        "loadfont", "fontid", "isfont", "freefont", "getgadgetfont", "setgadgetfont",
         "systrayicontooltip", "colorrequester", "fontrequester", "selectedfontname", "selectedfontsize",
         "selectedfontstyle", "selectedfontcolor", "inputrequester", "openfilerequester", "savefilerequester",
         "nextselectedfilename", "selectedfilepattern", "pathrequester",
@@ -1065,10 +1079,18 @@ const std::unordered_map<std::string, std::int64_t>& builtinConstantTable() {
         {"pb_inputrequester_password", 1},
         {"pb_inputrequester_handlecancel", 2},
         {"pb_fontrequester_effects", 1},
+        // #PB_Font_Bold/Italic are the only ones with a real, nonzero
+        // bit value and a real effect here - #PB_Font_StrikeOut/
+        // Underline/HighQuality are all oracle-verified to be `0`
+        // (likely Windows-only flags with no effect on this platform,
+        // the same way #PB_ProgressBar_Smooth already is) - registered
+        // for forward-compile compatibility, inherently no-ops when
+        // OR'd into Flags regardless.
         {"pb_font_bold", 1},
         {"pb_font_italic", 2},
         {"pb_font_strikeout", 0},
         {"pb_font_underline", 0},
+        {"pb_font_highquality", 0},
         {"pb_requester_multiselection", 1},
         // ContainerGadget (M7b's ninth GUI slice, the start of a new
         // gadget-nesting thread) - oracle-verified via a direct

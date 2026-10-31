@@ -1209,6 +1209,74 @@ TEST_CASE("ColorRequester returns -1 on cancel, and round-trips an initial color
     CHECK(pbBlue(result) == 30);
 }
 
+TEST_CASE("LoadFont/FontID/IsFont/FreeFont round-trip a real PangoFontDescription handle",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: LoadFont's own return value is the
+    // exact same real native handle FontID itself returns for the same
+    // #Font - a real, usable native handle, never byte-matched against
+    // the oracle's own pointer value, the same established convention
+    // WindowID/ImageID already use. A nonexistent font family name is
+    // not a real error at all (Pango's own graceful fallback already
+    // matches this with no special-casing needed).
+    CHECK(pbIsFont(500) == 0);
+    std::int64_t handle = pbLoadFont(500, PBString("Sans"), 14);
+    CHECK(handle != 0);
+    CHECK(pbFontID(500) == handle);
+    CHECK(pbIsFont(500) == 1);
+
+    std::int64_t handleBold = pbLoadFont(501, PBString("Sans"), 14, 1); // #PB_Font_Bold
+    CHECK(handleBold != 0);
+    CHECK(handleBold != handle);
+
+    // A nonexistent font family name - not a real error.
+    std::int64_t handleUnknown = pbLoadFont(502, PBString("ThisFontDoesNotExistAtAll12345"), 12);
+    CHECK(handleUnknown != 0);
+    CHECK(pbIsFont(502) == 1);
+
+    CHECK(pbFreeFont(500) == 0); // Oracle-verified no return value ("Aucune").
+    CHECK(pbIsFont(500) == 0);
+    CHECK(pbFontID(500) == 0);
+    CHECK(pbFreeFont(999) == 0); // nonexistent #Font - not replicated as fatal.
+
+    pbFreeFont(501);
+    pbFreeFont(502);
+}
+
+TEST_CASE("GetGadgetFont/SetGadgetFont are per-gadget, not global, and SetGadgetFont round-trips "
+          "the exact given FontID handle",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: a brand new gadget created *after* a
+    // SetGadgetFont call on a different one has its own, unaffected
+    // default font (confirmed with two plain ButtonGadgets); a gadget
+    // that's never had SetGadgetFont called still has a real, non-zero
+    // GetGadgetFont of its own, stable across repeated queries (not
+    // regenerated fresh each time) and genuinely different per gadget.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(954, 10, 10, 320, 320, PBString("Test"));
+    pbButtonGadget(1, 10, 10, 100, 30, PBString("B1"));
+    pbButtonGadget(2, 10, 50, 100, 30, PBString("B2"));
+
+    std::int64_t default1a = pbGetGadgetFont(1);
+    std::int64_t default1b = pbGetGadgetFont(1);
+    std::int64_t default2 = pbGetGadgetFont(2);
+    CHECK(default1a != 0);
+    CHECK(default1a == default1b); // stable across repeated queries
+    CHECK(default1a != default2); // genuinely different per gadget
+
+    std::int64_t fontHandle = pbLoadFont(503, PBString("Sans"), 20);
+    CHECK(pbSetGadgetFont(1, fontHandle) == 0); // Oracle-verified no return value ("Aucune").
+    CHECK(pbGetGadgetFont(1) == fontHandle); // exact round-trip, not a copy
+    CHECK(pbGetGadgetFont(2) == default2); // the other gadget is unaffected
+
+    CHECK(pbGetGadgetFont(999) == 0); // nonexistent gadget
+    CHECK(pbSetGadgetFont(999, fontHandle) == 0); // nonexistent gadget - not replicated as fatal
+
+    pbFreeFont(503);
+    pbCloseWindow(954);
+}
+
 TEST_CASE("FontRequester returns 0 on cancel, and round-trips name/size/style/color on accept",
           "[runtime][guilib]") {
     // "Sans" is a Pango alias guaranteed to resolve on any system (unlike

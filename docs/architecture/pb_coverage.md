@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **271 / 1850** procedures implemented (14%).
+**Summary**: **277 / 1850** procedures implemented (14%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -51,9 +51,9 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [Event](#event) | 4 | 10 | 40% |
 | [File](#file) | 11 | 40 | 27% |
 | [FileSystem](#filesystem) | 3 | 29 | 10% |
-| [Font](#font) | 0 | 5 | 0% |
+| [Font](#font) | 4 | 5 | 80% |
 | [Ftp](#ftp) | 0 | 23 | 0% |
-| [Gadget](#gadget) | 72 | 82 | 87% |
+| [Gadget](#gadget) | 74 | 82 | 90% |
 | [GadgetOpenGL](#gadgetopengl) | 0 | 1 | 0% |
 | [GadgetWeb](#gadgetweb) | 0 | 1 | 0% |
 | [Help](#help) | 0 | 2 | 0% |
@@ -877,14 +877,14 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Font
 
-0/5 implemented.
+4/5 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `FontID` | (#Font) - Return the unique ID which identifies the font in the operating system. |
-| No | `FreeFont` | (#Font) - Free the given Font. |
-| No | `IsFont` | (#Font) - Test if the given '#Font' is an initialized font object. |
-| No | `LoadFont` | (#Font, Name$, Size [,Flags]) - Try to open the specified font. |
+| Yes | `FontID` | (#Font) - Return the unique ID which identifies the font in the operating system. |
+| Yes | `FreeFont` | (#Font) - Free the given Font. |
+| Yes | `IsFont` | (#Font) - Test if the given '#Font' is an initialized font object. |
+| Yes | `LoadFont` | (#Font, Name$, Size [,Flags]) - Try to open the specified font. |
 | No | `RegisterFontFile` | (FileName$) - Register a font file for use by the application. |
 
 ## Ftp
@@ -919,7 +919,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Gadget
 
-72/82 implemented.
+74/82 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -959,7 +959,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `GetGadgetAttribute` | (#Gadget, Attribute) - Return the specified #Gadget attribute value. |
 | Yes | `GetGadgetColor` | (#Gadget, ColorType) - Get the currently set color of the Gadget. |
 | Yes | `GetGadgetData` | (#Gadget) - Return the value previously stored for this Gadget. |
-| No | `GetGadgetFont` | (#Gadget) - Get the FontID associated with the specified gadget. |
+| Yes | `GetGadgetFont` | (#Gadget) - Get the FontID associated with the specified gadget. |
 | Yes | `GetGadgetItemAttribute` | (#Gadget, Item, Attribute [, Column]) - Return the specified #Gadget item attribute value. |
 | No | `GetGadgetItemColor` | (#Gadget, Item, ColorType [, Column]) - Get the currently set color of the Gadget item. |
 | Yes | `GetGadgetItemData` | (#Gadget, Item) - Return the value previously stored with this gadget item. |
@@ -987,7 +987,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `SetGadgetAttribute` | (#Gadget, Attribute, Value) - Change the specified #Gadget attribute. |
 | Yes | `SetGadgetColor` | (#Gadget, ColorType, Color) - Change a color in the Gadget. |
 | Yes | `SetGadgetData` | (#Gadget, Value) - Store a value for the Gadget. |
-| No | `SetGadgetFont` | (#Gadget, FontID()) - Change the font which will be used by newly created gadgets. |
+| Yes | `SetGadgetFont` | (#Gadget, FontID()) - Change the font which will be used by newly created gadgets. |
 | Yes | `SetGadgetItemAttribute` | (#Gadget, Item, Attribute, Value [, Column]) - Change the specified #Gadget item attribute. |
 | No | `SetGadgetItemColor` | (#Gadget, Item, ColorType, Color [, Column]) - Change a color in the Gadget item. |
 | Yes | `SetGadgetItemData` | (#Gadget, Item, Value) - Store a Long value with this Gadget item. |
