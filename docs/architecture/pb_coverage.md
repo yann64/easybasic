@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **297 / 1850** procedures implemented (16%).
+**Summary**: **303 / 1850** procedures implemented (16%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -136,7 +136,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [Vehicle](#vehicle) | 0 | 8 | 0% |
 | [VertexAnimation](#vertexanimation) | 0 | 8 | 0% |
 | [WebView](#webview) | 0 | 5 | 0% |
-| [Window](#window) | 23 | 40 | 57% |
+| [Window](#window) | 29 | 40 | 72% |
 | [World](#world) | 0 | 36 | 0% |
 | [Xml](#xml) | 0 | 57 | 0% |
 
@@ -2713,7 +2713,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Window
 
-23/40 implemented.
+29/40 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -2747,12 +2747,12 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | No | `WindowMouseX` | (#Window) - Return the mouse position relative to the left of the specified window. |
 | No | `WindowMouseY` | (#Window) - Return the mouse position relative to the top of the specified window. |
 | No | `WindowOutput` | (#Window) - Return the OutputID of the specified window to perform 2D rendering operations on it. |
-| No | `WindowResolutionX` | (#Window) - Return the DPI resolution scale factor of the screen the specified window is on, on the 'x' axis (1.0 if no scaling is applied). |
-| No | `WindowResolutionY` | (#Window) - Return the DPI resolution scale factor of the screen the specified window is on, on the 'y' axis (1.0 if no scaling is applied). |
-| No | `WindowScaledX` | (#Window, x) - Scale a value on the 'x' axis according to the DPI of the screen the specified window is on. |
-| No | `WindowScaledY` | (#Window, y) - Scale a value on the 'y' axis according to the DPI of the screen the specified window is on. |
-| No | `WindowUnscaledX` | (#Window, x) - Unscale a value on the 'x' axis according to the DPI of the screen the specified window is on. |
-| No | `WindowUnscaledY` | (#Window, y) - Unscale a value on the 'y' axis according to the DPI of the screen the specified window is on. |
+| Yes | `WindowResolutionX` | (#Window) - Return the DPI resolution scale factor of the screen the specified window is on, on the 'x' axis (1.0 if no scaling is applied). |
+| Yes | `WindowResolutionY` | (#Window) - Return the DPI resolution scale factor of the screen the specified window is on, on the 'y' axis (1.0 if no scaling is applied). |
+| Yes | `WindowScaledX` | (#Window, x) - Scale a value on the 'x' axis according to the DPI of the screen the specified window is on. |
+| Yes | `WindowScaledY` | (#Window, y) - Scale a value on the 'y' axis according to the DPI of the screen the specified window is on. |
+| Yes | `WindowUnscaledX` | (#Window, x) - Unscale a value on the 'x' axis according to the DPI of the screen the specified window is on. |
+| Yes | `WindowUnscaledY` | (#Window, y) - Unscale a value on the 'y' axis according to the DPI of the screen the specified window is on. |
 | No | `WindowVectorOutput` | (#Window [, Unit]) - Return the OutputID of the specified window to perform vector drawing on it. |
 | Yes | `WindowWidth` | (#Window [, Flags]) - Return the width, in pixels, of the specified window. |
 | Yes | `WindowX` | (#Window [, Mode]) - Return the left position, in pixels, of the specified window. |

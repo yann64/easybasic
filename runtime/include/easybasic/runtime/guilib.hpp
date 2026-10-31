@@ -1905,6 +1905,58 @@ inline std::int64_t pbDisableWindow(std::int64_t windowId, std::int64_t state) {
     return 0;
 }
 
+namespace detail {
+/// The real scale factor `WindowResolutionX`/`Y`/`WindowScaledX`/`Y`/
+/// `WindowUnscaledX`/`Y` all share - the given window's own screen DPI
+/// relative to the traditional 96 DPI baseline (`1.0` at 96 DPI,
+/// matching real PB's own documented "1.0 if no scaling is applied").
+/// Queried fresh every call (not cached) the same way `itemColorTargetWidget`
+/// and friends already are - real PB's own docs don't say this value is
+/// fixed for a window's own lifetime, and a real desktop's own DPI
+/// setting could in principle change between calls (a monitor swap,
+/// for instance). Oracle-verified to be exactly `1.0` under this
+/// project's own headless `Xvfb` test environment - not hardcoded to
+/// match that, but the natural, honest consequence of `Xvfb`'s own
+/// default screen resolution already being the standard 96 DPI, so
+/// `WindowScaledX`/`Y`/`WindowUnscaledX`/`Y` naturally come out as a
+/// clean identity here, the same way they do in the real oracle.
+inline double windowResolutionScale(GtkWidget* window) {
+    GdkScreen* screen = gtk_widget_get_screen(window);
+    double dpi = screen != nullptr ? gdk_screen_get_resolution(screen) : 96.0;
+    if (dpi <= 0.0) {
+        dpi = 96.0; // gdk_screen_get_resolution's own "unknown" sentinel is -1.0.
+    }
+    return dpi / 96.0;
+}
+} // namespace detail
+
+inline double pbWindowResolutionX(std::int64_t windowId) {
+    auto it = detail::windowTable().find(windowId);
+    return it != detail::windowTable().end() ? detail::windowResolutionScale(it->second) : 1.0;
+}
+
+inline double pbWindowResolutionY(std::int64_t windowId) { return pbWindowResolutionX(windowId); }
+
+inline std::int64_t pbWindowScaledX(std::int64_t windowId, std::int64_t x) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return x;
+    }
+    return static_cast<std::int64_t>(std::llround(static_cast<double>(x) * detail::windowResolutionScale(it->second)));
+}
+
+inline std::int64_t pbWindowScaledY(std::int64_t windowId, std::int64_t y) { return pbWindowScaledX(windowId, y); }
+
+inline std::int64_t pbWindowUnscaledX(std::int64_t windowId, std::int64_t x) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return x;
+    }
+    return static_cast<std::int64_t>(std::llround(static_cast<double>(x) / detail::windowResolutionScale(it->second)));
+}
+
+inline std::int64_t pbWindowUnscaledY(std::int64_t windowId, std::int64_t y) { return pbWindowUnscaledX(windowId, y); }
+
 /// Non-blocking poll - oracle-verified to return `0` immediately when no
 /// event is pending, pumping only whatever GTK events are *already*
 /// queued (`gtk_events_pending()`/`gtk_main_iteration()`), never blocking

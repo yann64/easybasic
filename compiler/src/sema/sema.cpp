@@ -371,6 +371,12 @@ void Sema::registerGuiLibBuiltins() {
         {"getwindowcolor", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         {"setwindowcolor", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"disablewindow", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"windowresolutionx", TypeSuffix::Double, {TypeSuffix::Integer}, 1},
+        {"windowresolutiony", TypeSuffix::Double, {TypeSuffix::Integer}, 1},
+        {"windowscaledx", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"windowscaledy", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"windowunscaledx", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"windowunscaledy", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"windowevent", TypeSuffix::Integer, {}, 0},
         // WaitWindowEvent's Timeout argument is optional (oracle-verified:
         // `WaitWindowEvent()` with no argument blocks indefinitely).
@@ -908,6 +914,8 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "windowx", "windowy", "windowwidth", "windowheight", "getwindowtitle", "setwindowtitle",
         "getwindowdata", "setwindowdata", "getactivewindow", "setactivewindow",
         "getwindowstate", "setwindowstate", "getwindowcolor", "setwindowcolor", "disablewindow",
+        "windowresolutionx", "windowresolutiony", "windowscaledx", "windowscaledy",
+        "windowunscaledx", "windowunscaledy",
         "windowevent",   "waitwindowevent", "eventwindow",  "eventgadget",    "eventtype",
         "buttongadget",  "textgadget",  "stringgadget",     "checkboxgadget", "framegadget",
         "isgadget",      "freegadget",  "resizegadget",     "hidegadget",     "disablegadget",

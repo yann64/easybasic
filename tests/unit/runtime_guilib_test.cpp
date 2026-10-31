@@ -254,6 +254,38 @@ TEST_CASE("DisableWindow is a plain gtk_widget_set_sensitive, oracle-verified to
     pbCloseWindow(962);
 }
 
+TEST_CASE("WindowResolutionX/Y, WindowScaledX/Y, WindowUnscaledX/Y use the window's real screen "
+          "DPI, naturally an identity at the standard 96 DPI this test environment reports",
+          "[runtime][guilib]") {
+    // Oracle-verified: real PB's own WindowResolutionX/Y return 1.0
+    // here (a Double, not an Integer - confirmed by the decimal places
+    // that survive an explicit assignment to a Float variable), and
+    // WindowScaledX/Y/WindowUnscaledX/Y are a clean identity - not
+    // hardcoded to match that, but the natural, honest consequence of
+    // this test environment's own screen already being at the
+    // standard 96 DPI baseline (see pbWindowResolutionX's own doc
+    // comment).
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(963, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbWindowResolutionX(963) == 1.0);
+    CHECK(pbWindowResolutionY(963) == 1.0);
+    CHECK(pbWindowScaledX(963, 100) == 100);
+    CHECK(pbWindowScaledY(963, 100) == 100);
+    CHECK(pbWindowUnscaledX(963, 100) == 100);
+    CHECK(pbWindowUnscaledY(963, 100) == 100);
+    CHECK(pbWindowScaledX(963, -50) == -50);
+    CHECK(pbWindowUnscaledX(963, -50) == -50);
+
+    // An unknown window id is a harmless identity/default, not a crash.
+    CHECK(pbWindowResolutionX(999999) == 1.0);
+    CHECK(pbWindowScaledX(999999, 100) == 100);
+    CHECK(pbWindowUnscaledX(999999, 100) == 100);
+
+    pbCloseWindow(963);
+}
+
 TEST_CASE("pbWindowEvent returns 0 when no event is pending", "[runtime][guilib]") {
     if (!hasDisplay()) {
         SKIP("no usable display available in this environment");
