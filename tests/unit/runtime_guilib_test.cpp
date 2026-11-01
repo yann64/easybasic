@@ -1509,6 +1509,19 @@ TEST_CASE("LoadFont/FontID/IsFont/FreeFont round-trip a real PangoFontDescriptio
     // WindowID/ImageID already use. A nonexistent font family name is
     // not a real error at all (Pango's own graceful fallback already
     // matches this with no special-casing needed).
+    //
+    // LoadFont calls ensureGtkInit() (its own PangoFontDescription
+    // work still goes through GTK's own one-time init, unlike the
+    // pure-GdkPixbuf CreateImage family above, which doesn't) - the
+    // same real crash gtk_init() itself is documented to cause with no
+    // display available at all (not just an interactive one - GTK's
+    // own hard failure mode, confirmed the hard way via this project's
+    // own nightly Valgrind job, which runs with no display whatsoever,
+    // not even a headless Xvfb) needs the same hasDisplay() guard every
+    // other GUI-touching test in this file already has.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
     CHECK(pbIsFont(500) == 0);
     std::int64_t handle = pbLoadFont(500, PBString("Sans"), 14);
     CHECK(handle != 0);
