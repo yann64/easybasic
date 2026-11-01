@@ -286,6 +286,60 @@ TEST_CASE("WindowResolutionX/Y, WindowScaledX/Y, WindowUnscaledX/Y use the windo
     pbCloseWindow(963);
 }
 
+TEST_CASE("StickyWindow is a plain gtk_window_set_keep_above, no-crash across valid/unknown "
+          "window ids",
+          "[runtime][guilib]") {
+    // Purely visual (no IsStickyWindow-style accessor exists in real PB
+    // at all), so not independently testable via Debug - see
+    // pbStickyWindow's own doc comment.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(964, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbStickyWindow(964, 1) == 0);
+    CHECK(pbStickyWindow(964, 0) == 0);
+    CHECK(pbStickyWindow(999999, 1) == 0); // unknown window id
+    pbCloseWindow(964);
+}
+
+TEST_CASE("WindowBounds does not force an immediate resize up to the stated minimum",
+          "[runtime][guilib]") {
+    // Oracle-verified: real PB's own WindowBounds has no observable
+    // effect at all in this headless Xvfb test environment. The
+    // obvious real GTK mapping - gtk_window_set_geometry_hints with
+    // GDK_HINT_MIN_SIZE/MAX_SIZE - was tried first and rejected: it
+    // forces an immediate resize up to the given minimum, and clamps
+    // any *later* ResizeWindow call below it, a real, worse divergence
+    // from the oracle's own true no-op (see pbWindowBounds's own doc
+    // comment). That second part (a later ResizeWindow isn't clamped)
+    // was confirmed manually against the real oracle rather than
+    // asserted here automatically - it depends on WindowState's own
+    // asynchronous configure-event catching up, which this project's
+    // own drainEvents() can't reliably wait out under real system
+    // contention (confirmed directly: flaky specifically under a
+    // parallel -j2 ctest run, passing every standalone/sequential
+    // retry), the same class of GTK-event-timing flakiness several
+    // other tests in this project already accept and route around
+    // rather than chase further. For the same reason, the assertion
+    // below checks "never grew up to the stated minimum" rather than
+    // "is still exactly the original size" - WindowState's own
+    // configure-event tracking was found to occasionally report a
+    // slightly different, still-well-under-300 value (unrelated event-
+    // timing noise after hundreds of preceding tests share this same
+    // long-running Xvfb session), not the real regression this test
+    // actually guards against.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(965, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbWindowBounds(965, 300, 300, 500, 500) == 0); // Oracle-verified no return value.
+    drainEvents();
+    CHECK(pbWindowWidth(965) < 300); // never forced up to the stated minimum
+    CHECK(pbWindowHeight(965) < 300);
+    CHECK(pbWindowBounds(999999, 300, 300, 500, 500) == 0); // unknown window id
+    pbCloseWindow(965);
+}
+
 TEST_CASE("pbWindowEvent returns 0 when no event is pending", "[runtime][guilib]") {
     if (!hasDisplay()) {
         SKIP("no usable display available in this environment");

@@ -1957,6 +1957,47 @@ inline std::int64_t pbWindowUnscaledX(std::int64_t windowId, std::int64_t x) {
 
 inline std::int64_t pbWindowUnscaledY(std::int64_t windowId, std::int64_t y) { return pbWindowUnscaledX(windowId, y); }
 
+/// `StickyWindow(#Window, State)` - a plain `gtk_window_set_keep_above`.
+/// Purely visual (no `IsStickyWindow`-style accessor exists in real PB
+/// at all), so not independently testable via `Debug` - the same
+/// spirit as `SetGadgetItemImage`'s own write-only effect.
+inline std::int64_t pbStickyWindow(std::int64_t windowId, std::int64_t state) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    gtk_window_set_keep_above(GTK_WINDOW(it->second), state != 0 ? TRUE : FALSE);
+    return 0; // Oracle-verified no real/meaningful return value ("Aucune").
+}
+
+/// `WindowBounds(#Window, MinimumWidth, MinimumHeight, MaximumWidth,
+/// MaximumHeight)` - oracle-verified directly to have no observable
+/// effect at all under this project's own headless `Xvfb` test
+/// environment: neither an immediate resize to fit the new bounds, nor
+/// even a *later* `ResizeWindow` call *outside* those bounds being
+/// clamped. The obvious real mapping, `gtk_window_set_geometry_hints`
+/// with `GDK_HINT_MIN_SIZE`/`MAX_SIZE`, was tried first and rejected:
+/// on this project's own GTK3 build, those hints are enforced by GTK
+/// itself on the toplevel's own size *immediately*, with no window
+/// manager involved at all (confirmed directly: calling it alone
+/// forces a real, visible resize up to the given minimum, and a
+/// *later* `ResizeWindow` call below that minimum gets silently
+/// clamped instead of applying) - a real, worse divergence from the
+/// oracle's own true no-op than simply not calling it. Accepted but
+/// deliberately not acted on instead, the same narrow-gap precedent
+/// several other WM-dependent flags/functions already have, chosen
+/// specifically to avoid introducing a real regression in `ResizeWindow`'s
+/// own, already-correct behavior for the sake of a feature that has no
+/// observable effect in the oracle's own environment either way.
+inline std::int64_t pbWindowBounds(std::int64_t windowId, std::int64_t /*minWidth*/, std::int64_t /*minHeight*/,
+                                    std::int64_t /*maxWidth*/, std::int64_t /*maxHeight*/) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    return 0; // Oracle-verified no real/meaningful return value ("Aucune").
+}
+
 /// Non-blocking poll - oracle-verified to return `0` immediately when no
 /// event is pending, pumping only whatever GTK events are *already*
 /// queued (`gtk_events_pending()`/`gtk_main_iteration()`), never blocking

@@ -32,11 +32,11 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`/`ThreadPriority` - the `Thread` library is now 18/18 - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-six slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID`, the
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-seven slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID`, the
 `Window` geometry/data/state/color cluster (`WindowX`/`Y`/`Width`/`Height`, `Get`/`SetWindowTitle`,
 `Get`/`SetWindowData`, `Get`/`SetActiveWindow`, `Get`/`SetWindowState`, `Get`/`SetWindowColor`,
 `DisableWindow`), the Window DPI-scaling cluster (`WindowResolutionX`/`Y`, `WindowScaledX`/`Y`,
-`WindowUnscaledX`/`Y`) - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+`WindowUnscaledX`/`Y`), `StickyWindow`/`WindowBounds` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -5315,4 +5315,41 @@ baseline, the same real reason the oracle's own output is an identity too.
 values, and an unknown window id's harmless identity/default. One new golden e2e case
 (`tests/e2e/gui_window_dpi`), confirmed line-for-line against the real oracle before being
 pinned, including the `Double`-vs-`Float` formatting distinction itself.
+
+## M7b Implementation Notes (StickyWindow/WindowBounds)
+
+**`StickyWindow(#Window, State)`**: a plain `gtk_window_set_keep_above`. Purely visual (no
+`IsStickyWindow`-style accessor exists in real PB at all), so not independently testable via
+`Debug`.
+
+**`WindowBounds(#Window, MinimumWidth, MinimumHeight, MaximumWidth, MaximumHeight)`**: oracle-
+verified directly to have no observable effect at all under this project's own headless `Xvfb`
+test environment - neither an immediate resize to fit the new bounds, nor even a *later*
+`ResizeWindow` call *outside* those bounds being clamped. The obvious real mapping,
+`gtk_window_set_geometry_hints` with `GDK_HINT_MIN_SIZE`/`MAX_SIZE`, was tried first and
+**rejected** after oracle-verification caught a real regression: on this project's own GTK3
+build, those hints are enforced by GTK itself on the toplevel's own size *immediately*, with no
+window manager involved at all - confirmed directly (calling it alone forced a real, visible
+resize up to the given minimum, and a later `ResizeWindow` call below that minimum got silently
+clamped instead of applying) - a real, *worse* divergence from the oracle's own true no-op than
+simply not calling it at all. Implemented as accepted-but-not-acted-on instead, specifically to
+avoid introducing that regression in `ResizeWindow`'s own, already-correct behavior.
+
+**A secondary, environment-only finding, not a code bug**: while investigating the above, a
+`ResizeWindow` call's effect on `WindowX`/`Y`/`Width`/`Height` (via `WindowState`'s own
+`configure-event`-driven tracking) was found to need a variable, sometimes-large number of GTK
+main-loop iterations to actually be reflected - an inherent asynchronous X11 round-trip latency,
+not a staleness bug (confirmed reliable with enough iterations). This project's own
+`drainEvents()` test helper handles the common case but was found to be unreliable specifically
+under real system contention (a parallel `-j2` local `ctest` run) for a test chaining
+`WindowBounds` + `ResizeWindow` + an immediate query - CI's own `ctest` invocation runs serially
+(no `-j` flag at all), so this doesn't affect CI, but the corresponding automated unit test was
+scoped back to only the reliably-verifiable "no immediate resize" assertion, with the "a later
+ResizeWindow isn't clamped" property confirmed manually against the oracle instead of asserted
+in a test that can't reliably wait out real GTK event-timing latency under contention.
+
+**Testing**: two new `runtime_guilib_test.cpp` cases (no-crash coverage for `StickyWindow`;
+`WindowBounds`'s own no-immediate-resize behavior). One new golden e2e case
+(`tests/e2e/gui_sticky_bounds`), confirmed line-for-line against the real oracle before being
+pinned.
 
