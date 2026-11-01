@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **308 / 1850** procedures implemented (16%).
+**Summary**: **311 / 1850** procedures implemented (16%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -48,7 +48,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [Engine3D](#engine3d) | 0 | 4 | 0% |
 | [Entity](#entity) | 0 | 59 | 0% |
 | [EntityAnimation](#entityanimation) | 0 | 12 | 0% |
-| [Event](#event) | 4 | 10 | 40% |
+| [Event](#event) | 5 | 10 | 50% |
 | [File](#file) | 11 | 40 | 27% |
 | [FileSystem](#filesystem) | 3 | 29 | 10% |
 | [Font](#font) | 4 | 5 | 80% |
@@ -136,7 +136,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [Vehicle](#vehicle) | 0 | 8 | 0% |
 | [VertexAnimation](#vertexanimation) | 0 | 8 | 0% |
 | [WebView](#webview) | 0 | 5 | 0% |
-| [Window](#window) | 34 | 40 | 85% |
+| [Window](#window) | 36 | 40 | 90% |
 | [World](#world) | 0 | 36 | 0% |
 | [Xml](#xml) | 0 | 57 | 0% |
 
@@ -777,7 +777,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Event
 
-4/10 implemented.
+5/10 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -786,7 +786,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | No | `EventData` | () - Return the data associated to the event. |
 | Yes | `EventGadget` | () - Return the gadget number (#Gadget) which triggered the event. |
 | Yes | `EventMenu` | () - Return the menu item (#MenuItem) which triggered the event. |
-| No | `EventTimer` | () - Return the timer identifier which triggered the event. |
+| Yes | `EventTimer` | () - Return the timer identifier which triggered the event. |
 | Yes | `EventType` | () - After a WindowEvent() or WaitWindowEvent() command, use this function to determine which type the event is. |
 | Yes | `EventWindow` | () - Return on which window (#Window) the event occurred. |
 | No | `PostEvent` | (Event [, Window, Object [, Type [, Data]]]) - Post an event to the event queue. |
@@ -2713,12 +2713,12 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Window
 
-34/40 implemented.
+36/40 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
 | No | `AddKeyboardShortcut` | (#Window, Key, Event) - Add a keyboard shortcut to the specified window. |
-| No | `AddWindowTimer` | (#Window, Timer, Timeout) - Add a timer event to the window. |
+| Yes | `AddWindowTimer` | (#Window, Timer, Timeout) - Add a timer event to the window. |
 | Yes | `CloseWindow` | (#Window) - Close the specified window. |
 | Yes | `DisableWindow` | (#Window, State) - Disable or enable all user input to the window. |
 | Yes | `GetActiveWindow` | () - Return the currently active window (the one with the focus). |
@@ -2730,7 +2730,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `IsWindow` | (#Window) - Test if the given window is an initialized window object. |
 | Yes | `OpenWindow` | (#Window, x, y, InnerWidth, InnerHeight, Title$ [, Flags [, ParentID]]) - Open a new window according to the specified parameters. |
 | No | `RemoveKeyboardShortcut` | (#Window, Key) - Remove a keyboard shortcut from the specified window. |
-| No | `RemoveWindowTimer` | (#Window, Timer) - Remove the timer event from the window. |
+| Yes | `RemoveWindowTimer` | (#Window, Timer) - Remove the timer event from the window. |
 | Yes | `ResizeWindow` | (#Window, x, y, Width, Height) - Move and resize the specified window to the given position and dimensions. |
 | Yes | `SetActiveWindow` | (#Window) - Activate the specified window. This means that focus has been put on this window. |
 | Yes | `SetWindowColor` | (#Window, Color) - Set the background color of the window. |

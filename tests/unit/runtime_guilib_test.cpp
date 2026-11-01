@@ -397,6 +397,52 @@ TEST_CASE("pbWindowEvent returns 0 when no event is pending", "[runtime][guilib]
     pbCloseWindow(101);
 }
 
+TEST_CASE("AddWindowTimer fires a real, repeating #PB_Event_Timer that EventTimer() correctly "
+          "distinguishes across several concurrent timers",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: a real, repeating #PB_Event_Timer (15)
+    // - confirmed to fire more than once, not a one-shot - with
+    // EventTimer() correctly distinguishing several independent timers
+    // running concurrently on the same window. AddWindowTimer's own
+    // return value is a real, meaningful 1 on success - not the usual
+    // "Aucune" garbage this project's own established convention
+    // otherwise simplifies away.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(103, 10, 10, 100, 100, PBString("Test"));
+    CHECK(pbAddWindowTimer(103, 1, 20) == 1);
+    CHECK(pbAddWindowTimer(103, 2, 25) == 1);
+
+    int seen1 = 0;
+    int seen2 = 0;
+    // Bounded real-time polling (not an instant drain) - a GLib timeout
+    // needs the main loop actually iterated long enough for the
+    // interval itself to elapse, the same reason drainEvents() alone
+    // (an instant, already-queued-only drain) wouldn't catch this.
+    for (int i = 0; i < 300 && (seen1 < 2 || seen2 < 2); ++i) {
+        if (pbWindowEvent() == 15) { // #PB_Event_Timer
+            CHECK(pbEventWindow() == 103);
+            if (pbEventTimer() == 1) {
+                ++seen1;
+            } else if (pbEventTimer() == 2) {
+                ++seen2;
+            }
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    CHECK(seen1 >= 2);
+    CHECK(seen2 >= 2);
+
+    CHECK(pbRemoveWindowTimer(103, 1) == 0); // Oracle-verified clean 0 on success.
+    CHECK(pbRemoveWindowTimer(103, 2) == 0);
+    CHECK(pbRemoveWindowTimer(103, 999) == 0); // unknown timer id
+    CHECK(pbAddWindowTimer(999999, 1, 20) == 0); // unknown window id
+
+    pbCloseWindow(103);
+}
+
 TEST_CASE("A delete-event (the real close-button signal) queues #PB_Event_CloseWindow, "
           "and does not destroy the window itself",
           "[runtime][guilib]") {

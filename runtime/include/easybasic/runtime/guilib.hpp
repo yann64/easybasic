@@ -48,6 +48,7 @@ struct PBWindowEvent {
     std::int64_t gadgetId = 0;
     std::int64_t eventType = 0;
     std::int64_t menuElementId = 0; ///< M7b's fourth GUI slice: `EventMenu()`'s own value.
+    std::int64_t timerId = 0; ///< `EventTimer()`'s own value - which `AddWindowTimer` fired.
 };
 
 inline std::deque<PBWindowEvent>& eventQueue() {
@@ -685,6 +686,33 @@ inline void onMenuItemToggled(GtkWidget* item, gpointer) {
 /// gadget GTK-side, but `gadgetTable()` itself would otherwise be left
 /// holding dangling pointers, so every gadget actually owned by this window
 /// is scanned for and erased first.
+/// `AddWindowTimer`/`RemoveWindowTimer`'s own per-window, per-timer-id
+/// GLib timeout source ids, so a later `RemoveWindowTimer` (or this
+/// window's own `CloseWindow`) can `g_source_remove` the right one -
+/// oracle-verified directly to be a real, repeating interval timer
+/// (confirmed: the same `Timer` id's own `#PB_Event_Timer` fires
+/// repeatedly, not once), matching `g_timeout_add`'s own default
+/// `G_SOURCE_CONTINUE` semantics with no extra bookkeeping needed.
+inline std::unordered_map<std::int64_t, std::unordered_map<std::int64_t, guint>>& windowTimerSources() {
+    static std::unordered_map<std::int64_t, std::unordered_map<std::int64_t, guint>> table;
+    return table;
+}
+
+struct WindowTimerCallbackData {
+    std::int64_t windowId;
+    std::int64_t timerId;
+};
+
+inline gboolean onWindowTimerTick(gpointer userData) {
+    const auto* data = static_cast<const WindowTimerCallbackData*>(userData);
+    PBWindowEvent ev;
+    ev.type = 15; // #PB_Event_Timer
+    ev.windowId = data->windowId;
+    ev.timerId = data->timerId;
+    eventQueue().push_back(ev);
+    return G_SOURCE_CONTINUE;
+}
+
 inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
     auto* state = static_cast<WindowState*>(g_object_get_data(G_OBJECT(window), windowStateKey()));
     if (state != nullptr && state->colorProvider != nullptr) {
@@ -743,6 +771,20 @@ inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
         } else {
             ++it;
         }
+    }
+    // Not independently oracle-verified (closing a window mid-timer
+    // isn't something a real PB program could even observe the
+    // difference of without crashing the oracle itself the same way
+    // using a closed window's own gadgets does) - a safe, sensible
+    // simplification avoiding dangling `#PB_Event_Timer` noise for a
+    // now-gone window, the same spirit `gadgetTable()`'s own pruning
+    // above already has.
+    auto timerIt = windowTimerSources().find(windowId);
+    if (timerIt != windowTimerSources().end()) {
+        for (auto& [timerId, sourceId] : timerIt->second) {
+            g_source_remove(sourceId);
+        }
+        windowTimerSources().erase(timerIt);
     }
     gtk_widget_destroy(window);
 }
@@ -2134,6 +2176,54 @@ inline std::int64_t pbEventWindow() { return detail::currentEvent().windowId; }
 inline std::int64_t pbEventGadget() { return detail::currentEvent().gadgetId; }
 inline std::int64_t pbEventType() { return detail::currentEvent().eventType; }
 inline std::int64_t pbEventMenu() { return detail::currentEvent().menuElementId; }
+inline std::int64_t pbEventTimer() { return detail::currentEvent().timerId; }
+
+/// `AddWindowTimer(#Window, Timer, Timeout)` - oracle-verified directly:
+/// a real, repeating `#PB_Event_Timer` (confirmed to fire repeatedly,
+/// not once), with `EventTimer()` correctly distinguishing several
+/// independent timers on the same window (confirmed with two different
+/// `Timer` ids and intervals running concurrently). Oracle-verified
+/// return value: a real, meaningful `1` on success - not the usual
+/// "Aucune" garbage this project's own established convention
+/// otherwise simplifies away. Re-adding the same `Timer` id on the
+/// same window succeeds again (oracle-confirmed) - implemented as a
+/// real replace (removing the old `GLib` timeout source first), the
+/// natural reading of "re-registering" rather than silently leaking
+/// the old one.
+inline std::int64_t pbAddWindowTimer(std::int64_t windowId, std::int64_t timerId, std::int64_t timeout) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    auto& perWindow = detail::windowTimerSources()[windowId];
+    auto existing = perWindow.find(timerId);
+    if (existing != perWindow.end()) {
+        g_source_remove(existing->second);
+    }
+    auto* data = new detail::WindowTimerCallbackData{windowId, timerId};
+    guint sourceId = g_timeout_add_full(G_PRIORITY_DEFAULT, static_cast<guint>(timeout), detail::onWindowTimerTick,
+                                        data, [](gpointer p) { delete static_cast<detail::WindowTimerCallbackData*>(p); });
+    perWindow[timerId] = sourceId;
+    return 1;
+}
+
+/// `RemoveWindowTimer(#Window, Timer)` - oracle-verified: a clean `0` on
+/// success; an unknown `Timer` id returns undefined, native-handle-ish
+/// content instead - simplified to the same clean `0` uniformly, the
+/// established "Aucune" convention.
+inline std::int64_t pbRemoveWindowTimer(std::int64_t windowId, std::int64_t timerId) {
+    auto windowIt = detail::windowTimerSources().find(windowId);
+    if (windowIt == detail::windowTimerSources().end()) {
+        return 0;
+    }
+    auto timerIt = windowIt->second.find(timerId);
+    if (timerIt == windowIt->second.end()) {
+        return 0;
+    }
+    g_source_remove(timerIt->second);
+    windowIt->second.erase(timerIt);
+    return 0;
+}
 
 /// M7b's second GUI slice: basic gadgets. Oracle-verified return-value
 /// simplification, same as `pbOpenWindow`'s own (see its notes): real PB's

@@ -32,12 +32,13 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`/`ThreadPriority` - the `Thread` library is now 18/18 - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-eight slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID`, the
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-nine slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID`, the
 `Window` geometry/data/state/color cluster (`WindowX`/`Y`/`Width`/`Height`, `Get`/`SetWindowTitle`,
 `Get`/`SetWindowData`, `Get`/`SetActiveWindow`, `Get`/`SetWindowState`, `Get`/`SetWindowColor`,
 `DisableWindow`), the Window DPI-scaling cluster (`WindowResolutionX`/`Y`, `WindowScaledX`/`Y`,
-`WindowUnscaledX`/`Y`), `StickyWindow`/`WindowBounds`, `WindowMouseX`/`Y`/`SmartWindowRefresh` - see M7b notes); further
-gadget types/`Dialog`/everything past that still open |
+`WindowUnscaledX`/`Y`), `StickyWindow`/`WindowBounds`, `WindowMouseX`/`Y`/`SmartWindowRefresh`, `AddWindowTimer`/
+`RemoveWindowTimer`/`EventTimer` - see M7b notes); further gadget types/`Dialog`/everything past
+that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -5389,4 +5390,40 @@ thing that's genuinely reliable (an unrelated window id, touching no real pointe
 at all), alongside a second new case for `SmartWindowRefresh`'s own no-op shape. One new golden
 e2e case (`tests/e2e/gui_window_mouse`), confirmed line-for-line against the real oracle before
 being pinned.
+
+## M7b Implementation Notes (AddWindowTimer/RemoveWindowTimer/EventTimer)
+
+**`AddWindowTimer(#Window, Timer, Timeout)`**: oracle-verified directly to be a real, *repeating*
+`#PB_Event_Timer` (`15`, already registered as a constant from earlier event-type exploration but
+never implemented until now) - confirmed to fire more than once for the same `Timer` id, not a
+one-shot, and confirmed with *two* independent timers (different ids, different intervals)
+running concurrently on the same window, each correctly distinguished via the new `EventTimer()`
+accessor. Implemented via `g_timeout_add_full` (its own default `G_SOURCE_CONTINUE` return value
+matching the repeating behavior with no extra bookkeeping), tracked per-window/per-timer-id so a
+later `RemoveWindowTimer` - or the window's own `CloseWindow` - can `g_source_remove` the right
+one; a window's own pending timers are cleaned up automatically on close, a safe simplification
+not independently oracle-verified (observing the real difference would need crashing the oracle
+the same way using a closed window's own gadgets already does). Oracle-verified return value: a
+real, meaningful `1` on success - not the usual "Aucune" garbage this project's own established
+convention otherwise simplifies away. Re-adding the same `Timer` id on the same window succeeds
+again (oracle-confirmed) - implemented as a real replace (removing the old `GLib` source first).
+
+**`RemoveWindowTimer(#Window, Timer)`**: a clean `0` on success; an unknown `Timer` id returns
+undefined, native-handle-ish content in the real oracle - simplified to the same clean `0`
+uniformly.
+
+**`EventTimer()`**: a new field on this project's own `PBWindowEvent`/`currentEvent()`, read the
+same way `EventMenu()`'s own `menuElementId` already is - the natural, minimal addition alongside
+the existing `EventWindow()`/`EventGadget()`/`EventType()` family.
+
+**Testing**: one new `runtime_guilib_test.cpp` case, using a *bounded, real-time* polling loop
+(not an instant drain) since a `GLib` timeout genuinely needs the main loop iterated long enough
+for the interval itself to elapse - it asserts a *minimum* fire count for each of two concurrent
+timers (not an exact count tied to wall-clock timing, which would risk the same flakiness class
+`WindowBounds`'s/`WindowMouseX`'s own tests already ran into and backed away from). One new
+golden e2e case (`tests/e2e/gui_window_timer`) follows the same principle at the `.pb` level:
+it loops until a fixed, small number of each timer's own events has actually been *seen* (not
+until some amount of time has passed), so it prints the same thing deterministically regardless
+of how fast or slow the real timers happened to fire along the way - confirmed line-for-line
+against the real oracle, and stable across several repeated runs, before being pinned.
 
