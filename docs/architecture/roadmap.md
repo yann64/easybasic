@@ -32,13 +32,13 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`/`ThreadPriority` - the `Thread` library is now 18/18 - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-nine slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID`, the
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Forty slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID`, the
 `Window` geometry/data/state/color cluster (`WindowX`/`Y`/`Width`/`Height`, `Get`/`SetWindowTitle`,
 `Get`/`SetWindowData`, `Get`/`SetActiveWindow`, `Get`/`SetWindowState`, `Get`/`SetWindowColor`,
 `DisableWindow`), the Window DPI-scaling cluster (`WindowResolutionX`/`Y`, `WindowScaledX`/`Y`,
 `WindowUnscaledX`/`Y`), `StickyWindow`/`WindowBounds`, `WindowMouseX`/`Y`/`SmartWindowRefresh`, `AddWindowTimer`/
-`RemoveWindowTimer`/`EventTimer` - see M7b notes); further gadget types/`Dialog`/everything past
-that still open |
+`RemoveWindowTimer`/`EventTimer`, `AddKeyboardShortcut`/`RemoveKeyboardShortcut` - see M7b notes);
+further gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -5426,4 +5426,42 @@ it loops until a fixed, small number of each timer's own events has actually bee
 until some amount of time has passed), so it prints the same thing deterministically regardless
 of how fast or slow the real timers happened to fire along the way - confirmed line-for-line
 against the real oracle, and stable across several repeated runs, before being pinned.
+
+## M7b Implementation Notes (AddKeyboardShortcut/RemoveKeyboardShortcut)
+
+**A real, honestly-flagged verification gap**: `AddKeyboardShortcut`'s/`RemoveKeyboardShortcut`'s
+own *static* behavior (registration, exact required-argument count, a real, meaningful `1`
+return value on success for both, `RemoveKeyboardShortcut` specifically `0` when `Key` was never
+registered or already removed, a real fatal error on an unknown `#Window`) is oracle-verified
+directly, the same way everything else in this project is. Their *dynamic* behavior - what a
+real key press actually does, and specifically what shape the resulting event takes - could
+**not** be verified at all, even after deliberately trying harder at the user's own request:
+several different real-input delivery methods were tried against the real oracle binary itself
+(plain `xdotool key`, `--window`-targeted synthetic delivery, explicit `windowfocus`/
+`windowactivate`, lowercase vs. uppercase key value, a bare headless `Xvfb`, and a freshly-started
+real window manager, `fluxbox`, paired with it, with the target window's own active/focused state
+directly confirmed via `xdotool getactivewindow` immediately before each attempt) - none of them
+made the real oracle's own shortcut fire at all. This is a genuine limit of this project's own
+sandboxed test environment, not a guess avoided for convenience.
+
+**Implementation choice given that gap**: the real, standard GTK3 mechanism
+(`gtk_accel_group_connect`/`gtk_window_add_accel_group`) - correct on an actual desktop - with the
+fired event resolved the most literal way the function's own documented `Event` parameter
+suggests (becoming `WaitWindowEvent()`'s own direct return value) rather than inventing a new,
+unverified accessor. This specific mapping is **not independently oracle-confirmed** and remains
+a documented, open question rather than a confirmed fact.
+
+**A real finding caught along the way**: `RemoveKeyboardShortcut`'s own return value was initially
+assumed to be the usual "Aucune" clean `0` (by analogy with `RemoveWindowTimer`) without actually
+probing it first - oracle-verification caught this: it's a real, meaningful `1` when `Key` was
+actually registered (and is now removed), `0` otherwise, confirmed with a direct repeated-removal
+probe. Fixed before shipping, a reminder that even a "probably-the-same-as-last-time" assumption
+still needs its own direct probe in this project's own methodology.
+
+**Testing**: one new `runtime_guilib_test.cpp` case, deliberately scoped to the oracle-verified
+static behavior only (registration/removal bookkeeping, modifier combinations, re-registering the
+same `Key`, unknown-window/unknown-`Key` cases) - not firing, which this project's own sandboxed
+environment can't exercise reliably (see the gap above). One new golden e2e case
+(`tests/e2e/gui_keyboard_shortcut`), confirmed line-for-line against the real oracle before being
+pinned.
 

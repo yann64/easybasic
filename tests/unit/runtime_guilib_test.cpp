@@ -443,6 +443,44 @@ TEST_CASE("AddWindowTimer fires a real, repeating #PB_Event_Timer that EventTime
     pbCloseWindow(103);
 }
 
+TEST_CASE("AddKeyboardShortcut/RemoveKeyboardShortcut's own static behavior (registration, "
+          "return values, modifier combinations)",
+          "[runtime][guilib]") {
+    // Oracle-verified directly: AddKeyboardShortcut's own static
+    // behavior - a real, meaningful 1 on success; RemoveKeyboardShortcut
+    // likewise real: 1 when Key was actually registered (and is now
+    // removed), 0 otherwise (never registered, or already removed,
+    // confirmed with a direct repeated-removal probe).
+    //
+    // The *dynamic* behavior - what a real key press actually fires -
+    // is NOT independently oracle-verified at all: this project's own
+    // sandboxed test environment couldn't make the real oracle's own
+    // shortcut fire under any real-input delivery method tried
+    // (plain/synthetic xdotool key delivery, explicit window focus/
+    // activation, a real window manager paired with Xvfb) - see
+    // detail::WindowShortcutState's own doc comment in guilib.hpp for
+    // the full account. This test is scoped to what's actually
+    // verifiable: registration/removal bookkeeping, not firing.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(104, 10, 10, 100, 100, PBString("Test"));
+    CHECK(pbAddKeyboardShortcut(104, 65 /* #PB_Shortcut_A */, 42) == 1);
+    CHECK(pbAddKeyboardShortcut(104, 131072 | 83 /* Control+S */, 43) == 1);
+    // Re-adding the same Key replaces the old binding rather than
+    // erroring or stacking a second one.
+    CHECK(pbAddKeyboardShortcut(104, 65, 99) == 1);
+
+    CHECK(pbRemoveKeyboardShortcut(104, 65) == 1);
+    CHECK(pbRemoveKeyboardShortcut(104, 65) == 0); // already removed
+    CHECK(pbRemoveKeyboardShortcut(104, 999999) == 0); // never registered
+    CHECK(pbRemoveKeyboardShortcut(104, 131072 | 83) == 1);
+
+    CHECK(pbAddKeyboardShortcut(999999, 65, 42) == 0); // unknown window id
+
+    pbCloseWindow(104);
+}
+
 TEST_CASE("A delete-event (the real close-button signal) queues #PB_Event_CloseWindow, "
           "and does not destroy the window itself",
           "[runtime][guilib]") {

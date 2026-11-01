@@ -713,6 +713,89 @@ inline gboolean onWindowTimerTick(gpointer userData) {
     return G_SOURCE_CONTINUE;
 }
 
+/// `AddKeyboardShortcut`/`RemoveKeyboardShortcut`'s own per-window state -
+/// one real `GtkAccelGroup` per window (created lazily on the first
+/// `AddKeyboardShortcut` call), plus each real PB `Key` value's own
+/// resolved `(keyval, modifiers)` pair so a later `RemoveKeyboardShortcut`
+/// can `gtk_accel_group_disconnect_key` the right one.
+///
+/// **A real, honestly-flagged gap**: `AddKeyboardShortcut`'s own
+/// *static* behavior (creation, exact required-argument count, a real,
+/// meaningful `1` return value on success, a real fatal error on an
+/// unknown `#Window`) is oracle-verified directly, the same way every
+/// other function in this project is. Its *dynamic* behavior - what a
+/// real key press actually does, and specifically what shape the
+/// resulting event takes (does `EventType()`/`WaitWindowEvent()`'s own
+/// return value become the given `Event` directly? a new accessor
+/// altogether?) - could **not** be oracle-verified at all: several
+/// different real-input delivery methods were tried against the real
+/// oracle binary itself (plain `xdotool key`, `--window`-targeted
+/// synthetic delivery, explicit `windowfocus`/`windowactivate`,
+/// lowercase vs. uppercase key value, a bare headless `Xvfb`, and a
+/// freshly-started real window manager, `fluxbox`, paired with it) -
+/// none of them made the real oracle's own shortcut fire at all, a
+/// genuine limit of this project's own sandboxed test environment, not
+/// a guess avoided for convenience. The implementation below uses the
+/// real, standard GTK3 mechanism for this (`gtk_accel_group_connect`/
+/// `gtk_window_add_accel_group`) - correct on an actual desktop - and
+/// resolves a fired shortcut's own event the most literal way its own
+/// documented signature suggests (`Event` becoming `WaitWindowEvent()`'s
+/// own direct return value) without inventing a new, unverified
+/// accessor - but this mapping itself is **not independently oracle-
+/// confirmed** and should be treated as a documented, open question
+/// rather than a confirmed fact if it ever matters later.
+struct WindowShortcutState {
+    GtkAccelGroup* group = nullptr;
+    std::unordered_map<std::int64_t, std::pair<guint, GdkModifierType>> byKey;
+};
+
+inline std::unordered_map<std::int64_t, WindowShortcutState>& windowShortcuts() {
+    static std::unordered_map<std::int64_t, WindowShortcutState> table;
+    return table;
+}
+
+/// Splits a real PB `Key` value (a base keyval, oracle-verified
+/// elsewhere to already match the raw X11/GDK keyval directly on this
+/// platform - see `#PB_Shortcut_A`'s own `65` etc., confirmed during
+/// the earlier `ShortcutGadget` work - with `#PB_Shortcut_Control`/
+/// `Shift`/`Alt`'s own bit values OR'd in) into the `(keyval,
+/// GdkModifierType)` pair `gtk_accel_group_connect` itself needs. The
+/// `#PB_Shortcut_Control`/`Shift`/`Alt` bit values themselves (already
+/// registered constants) don't match `GDK_CONTROL_MASK`/`SHIFT_MASK`/
+/// `MOD1_MASK` numerically at all - real PB's own encoding, not GDK's.
+inline void splitShortcutKey(std::int64_t key, guint& keyval, GdkModifierType& mods) {
+    std::int64_t base = key;
+    guint rawMods = 0;
+    if ((base & 131072) != 0) { // #PB_Shortcut_Control
+        rawMods |= GDK_CONTROL_MASK;
+        base &= ~std::int64_t{131072};
+    }
+    if ((base & 65536) != 0) { // #PB_Shortcut_Shift
+        rawMods |= GDK_SHIFT_MASK;
+        base &= ~std::int64_t{65536};
+    }
+    if ((base & 262144) != 0) { // #PB_Shortcut_Alt
+        rawMods |= GDK_MOD1_MASK;
+        base &= ~std::int64_t{262144};
+    }
+    keyval = static_cast<guint>(base);
+    mods = static_cast<GdkModifierType>(rawMods);
+}
+
+struct WindowShortcutCallbackData {
+    std::int64_t windowId;
+    std::int64_t event;
+};
+
+inline gboolean onWindowShortcut(GtkAccelGroup*, GObject*, guint, GdkModifierType, gpointer userData) {
+    const auto* data = static_cast<const WindowShortcutCallbackData*>(userData);
+    PBWindowEvent ev;
+    ev.type = data->event;
+    ev.windowId = data->windowId;
+    eventQueue().push_back(ev);
+    return TRUE;
+}
+
 inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
     auto* state = static_cast<WindowState*>(g_object_get_data(G_OBJECT(window), windowStateKey()));
     if (state != nullptr && state->colorProvider != nullptr) {
@@ -785,6 +868,14 @@ inline void destroyWindow(std::int64_t windowId, GtkWidget* window) {
             g_source_remove(sourceId);
         }
         windowTimerSources().erase(timerIt);
+    }
+    auto shortcutIt = windowShortcuts().find(windowId);
+    if (shortcutIt != windowShortcuts().end()) {
+        // The GtkAccelGroup itself is cleaned up by gtk_widget_destroy
+        // below (it's a plain GObject ref owned by the window via
+        // gtk_window_add_accel_group) - just drop this project's own
+        // bookkeeping of it.
+        windowShortcuts().erase(shortcutIt);
     }
     gtk_widget_destroy(window);
 }
@@ -2223,6 +2314,59 @@ inline std::int64_t pbRemoveWindowTimer(std::int64_t windowId, std::int64_t time
     g_source_remove(timerIt->second);
     windowIt->second.erase(timerIt);
     return 0;
+}
+
+/// `AddKeyboardShortcut(#Window, Key, Event)` - see `detail::
+/// WindowShortcutState`'s own doc comment for the full set of findings
+/// (and the one, honestly-flagged, not-independently-verifiable gap)
+/// this is based on. Oracle-verified return value: a real, meaningful
+/// `1` on success. Re-adding the same `Key` on the same window
+/// replaces the old binding first (the natural reading of
+/// "re-registering", the same precedent `AddWindowTimer`'s own re-add
+/// case already set).
+inline std::int64_t pbAddKeyboardShortcut(std::int64_t windowId, std::int64_t key, std::int64_t event) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    auto& state = detail::windowShortcuts()[windowId];
+    if (state.group == nullptr) {
+        state.group = gtk_accel_group_new();
+        gtk_window_add_accel_group(GTK_WINDOW(it->second), state.group);
+        g_object_unref(state.group); // the window itself now owns the only real reference.
+    }
+    auto existing = state.byKey.find(key);
+    if (existing != state.byKey.end()) {
+        gtk_accel_group_disconnect_key(state.group, existing->second.first, existing->second.second);
+    }
+    guint keyval;
+    GdkModifierType mods;
+    detail::splitShortcutKey(key, keyval, mods);
+    auto* data = new detail::WindowShortcutCallbackData{windowId, event};
+    gtk_accel_group_connect(state.group, keyval, mods, GTK_ACCEL_VISIBLE,
+                             g_cclosure_new(G_CALLBACK(detail::onWindowShortcut), data, [](gpointer p, GClosure*) {
+                                 delete static_cast<detail::WindowShortcutCallbackData*>(p);
+                             }));
+    state.byKey[key] = {keyval, mods};
+    return 1;
+}
+
+/// `RemoveKeyboardShortcut(#Window, Key)` - oracle-verified directly: a
+/// real, meaningful `1` when `Key` was actually registered (and is now
+/// removed), `0` otherwise (never registered, or already removed) -
+/// confirmed with a direct repeated-removal probe.
+inline std::int64_t pbRemoveKeyboardShortcut(std::int64_t windowId, std::int64_t key) {
+    auto it = detail::windowShortcuts().find(windowId);
+    if (it == detail::windowShortcuts().end()) {
+        return 0;
+    }
+    auto keyIt = it->second.byKey.find(key);
+    if (keyIt == it->second.byKey.end()) {
+        return 0;
+    }
+    gtk_accel_group_disconnect_key(it->second.group, keyIt->second.first, keyIt->second.second);
+    it->second.byKey.erase(keyIt);
+    return 1;
 }
 
 /// M7b's second GUI slice: basic gadgets. Oracle-verified return-value

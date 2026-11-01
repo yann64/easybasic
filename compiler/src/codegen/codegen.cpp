@@ -256,6 +256,7 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"menuheight", "pbMenuHeight"},     {"menuid", "pbMenuID"},
         {"eventmenu", "pbEventMenu"}, {"eventtimer", "pbEventTimer"},
         {"addwindowtimer", "pbAddWindowTimer"}, {"removewindowtimer", "pbRemoveWindowTimer"},
+        {"addkeyboardshortcut", "pbAddKeyboardShortcut"}, {"removekeyboardshortcut", "pbRemoveKeyboardShortcut"},
         {"createstatusbar", "pbCreateStatusBar"},   {"addstatusbarfield", "pbAddStatusBarField"},
         {"statusbartext", "pbStatusBarText"},       {"isstatusbar", "pbIsStatusBar"},
         {"statusbarimage", "pbStatusBarImage"},     {"statusbarprogress", "pbStatusBarProgress"},

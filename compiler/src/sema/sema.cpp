@@ -839,6 +839,9 @@ void Sema::registerGuiLibBuiltins() {
         {"addwindowtimer", TypeSuffix::Integer,
          {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
         {"removewindowtimer", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
+        {"addkeyboardshortcut", TypeSuffix::Integer,
+         {TypeSuffix::Integer, TypeSuffix::Integer, TypeSuffix::Integer}, 3},
+        {"removekeyboardshortcut", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"createstatusbar", TypeSuffix::Integer, {TypeSuffix::Integer, TypeSuffix::Integer}, 2},
         {"addstatusbarfield", TypeSuffix::Integer, {TypeSuffix::Integer}, 1},
         // StatusBarImage/StatusBarProgress - oracle-verified. See
@@ -953,6 +956,7 @@ bool Sema::isGuiLibBuiltinName(const std::string& lowerName) {
         "freemenu", "hidemenu", "disablemenuitem", "getmenuitemstate", "setmenuitemstate", "getmenuitemtext",
         "setmenuitemtext", "getmenutitletext", "setmenutitletext", "menuheight", "menuid", "eventmenu",
         "eventtimer", "addwindowtimer", "removewindowtimer",
+        "addkeyboardshortcut", "removekeyboardshortcut",
         "createstatusbar", "addstatusbarfield", "statusbartext", "statusbarimage", "statusbarprogress",
         "isstatusbar", "freestatusbar", "statusbarheight",
         "statusbarid", "createimage", "loadimage", "isimage", "freeimage", "imageid", "imagewidth", "imageheight",

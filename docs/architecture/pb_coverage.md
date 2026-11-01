@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **311 / 1850** procedures implemented (16%).
+**Summary**: **313 / 1850** procedures implemented (16%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -136,7 +136,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [Vehicle](#vehicle) | 0 | 8 | 0% |
 | [VertexAnimation](#vertexanimation) | 0 | 8 | 0% |
 | [WebView](#webview) | 0 | 5 | 0% |
-| [Window](#window) | 36 | 40 | 90% |
+| [Window](#window) | 38 | 40 | 95% |
 | [World](#world) | 0 | 36 | 0% |
 | [Xml](#xml) | 0 | 57 | 0% |
 
@@ -2713,11 +2713,11 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Window
 
-36/40 implemented.
+38/40 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
-| No | `AddKeyboardShortcut` | (#Window, Key, Event) - Add a keyboard shortcut to the specified window. |
+| Yes | `AddKeyboardShortcut` | (#Window, Key, Event) - Add a keyboard shortcut to the specified window. |
 | Yes | `AddWindowTimer` | (#Window, Timer, Timeout) - Add a timer event to the window. |
 | Yes | `CloseWindow` | (#Window) - Close the specified window. |
 | Yes | `DisableWindow` | (#Window, State) - Disable or enable all user input to the window. |
@@ -2729,7 +2729,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `HideWindow` | (#Window, State [, Flags]) - Hide or show the specified window. |
 | Yes | `IsWindow` | (#Window) - Test if the given window is an initialized window object. |
 | Yes | `OpenWindow` | (#Window, x, y, InnerWidth, InnerHeight, Title$ [, Flags [, ParentID]]) - Open a new window according to the specified parameters. |
-| No | `RemoveKeyboardShortcut` | (#Window, Key) - Remove a keyboard shortcut from the specified window. |
+| Yes | `RemoveKeyboardShortcut` | (#Window, Key) - Remove a keyboard shortcut from the specified window. |
 | Yes | `RemoveWindowTimer` | (#Window, Timer) - Remove the timer event from the window. |
 | Yes | `ResizeWindow` | (#Window, x, y, Width, Height) - Move and resize the specified window to the given position and dimensions. |
 | Yes | `SetActiveWindow` | (#Window) - Activate the specified window. This means that focus has been put on this window. |
