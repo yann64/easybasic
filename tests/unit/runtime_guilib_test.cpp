@@ -254,6 +254,53 @@ TEST_CASE("DisableWindow is a plain gtk_widget_set_sensitive, oracle-verified to
     pbCloseWindow(962);
 }
 
+TEST_CASE("WindowMouseX/WindowMouseY return a harmless default for an unknown window id",
+          "[runtime][guilib]") {
+    // Oracle-verified directly (via a real xdotool mousemove against
+    // the real pbcompilerc binary under Xvfb, not asserted here - see
+    // pbWindowMouseX's own doc comment): the pointer position relative
+    // to the window's own top-left corner when it IS over the window
+    // (confirmed: mouse at screen (60,60), window at (10,10), reads
+    // (50,50)), and a genuine `-1` sentinel - not a raw, unclamped
+    // negative offset - when it isn't, confirmed with the pointer far
+    // outside the window too.
+    //
+    // That real-pointer-position behavior isn't asserted here
+    // automatically - two different approaches were tried (relying on
+    // the test binary's own ambient pointer position; driving it
+    // directly via gdk_device_warp) and both were found to be
+    // genuinely unreliable specifically when running after several
+    // hundred other tests share this same long-running Xvfb session
+    // (passing every short, isolated retry, but not the full serial
+    // suite) - the same class of real GTK/X11 event-timing latency
+    // `pbWindowBounds`'s own test already ran into and backed away
+    // from, not something `drainEvents()` can reliably wait out here.
+    // This test is scoped to the one thing that's actually reliable:
+    // an unrelated window id never touches real pointer/display state
+    // at all.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    CHECK(pbWindowMouseX(999999) == -1);
+    CHECK(pbWindowMouseY(999999) == -1);
+}
+
+TEST_CASE("SmartWindowRefresh is accepted but not acted on, oracle-verified to carry no "
+          "meaningful return value",
+          "[runtime][guilib]") {
+    // GTK3 already double-buffers every window by default with no
+    // opt-in equivalent to toggle - see pbSmartWindowRefresh's own doc
+    // comment.
+    if (!hasDisplay()) {
+        SKIP("no usable display available in this environment");
+    }
+    pbOpenWindow(967, 10, 10, 200, 200, PBString("Test"));
+    CHECK(pbSmartWindowRefresh(967, 1) == 0);
+    CHECK(pbSmartWindowRefresh(967, 0) == 0);
+    CHECK(pbSmartWindowRefresh(999999, 1) == 0); // unknown window id
+    pbCloseWindow(967);
+}
+
 TEST_CASE("WindowResolutionX/Y, WindowScaledX/Y, WindowUnscaledX/Y use the window's real screen "
           "DPI, naturally an identity at the standard 96 DPI this test environment reports",
           "[runtime][guilib]") {

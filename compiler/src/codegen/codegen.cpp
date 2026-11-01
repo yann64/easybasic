@@ -183,6 +183,8 @@ std::string guiLibRuntimeName(const std::string& lowerName) {
         {"windowscaledx", "pbWindowScaledX"}, {"windowscaledy", "pbWindowScaledY"},
         {"windowunscaledx", "pbWindowUnscaledX"}, {"windowunscaledy", "pbWindowUnscaledY"},
         {"stickywindow", "pbStickyWindow"}, {"windowbounds", "pbWindowBounds"},
+        {"windowmousex", "pbWindowMouseX"}, {"windowmousey", "pbWindowMouseY"},
+        {"smartwindowrefresh", "pbSmartWindowRefresh"},
         {"waitwindowevent", "pbWaitWindowEvent"}, {"eventwindow", "pbEventWindow"},
         {"eventgadget", "pbEventGadget"}, {"eventtype", "pbEventType"},
         {"buttongadget", "pbButtonGadget"},     {"textgadget", "pbTextGadget"},

@@ -4,7 +4,7 @@ Generated from the real, locally-installed PureBasic compiler (`pbcompilerc -lf`
 
 **Regenerating this table**: `python3 tools/pb_coverage/generate.py` from the repo root (needs `pbcompilerc` on PATH, or pass `--pbcompilerc`/`--purelibraries` explicitly) - rewrites this file directly. Run it after any slice that adds or removes a builtin.
 
-**Summary**: **305 / 1850** procedures implemented (16%).
+**Summary**: **308 / 1850** procedures implemented (16%).
 
 5 names (`Bool`, `Defined`, `OffsetOf`, `SizeOf`, `Subsystem`) are
 compile-time/language-level constructs, not real library procedures - found in no
@@ -136,7 +136,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | [Vehicle](#vehicle) | 0 | 8 | 0% |
 | [VertexAnimation](#vertexanimation) | 0 | 8 | 0% |
 | [WebView](#webview) | 0 | 5 | 0% |
-| [Window](#window) | 31 | 40 | 77% |
+| [Window](#window) | 34 | 40 | 85% |
 | [World](#world) | 0 | 36 | 0% |
 | [Xml](#xml) | 0 | 57 | 0% |
 
@@ -2713,7 +2713,7 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 
 ## Window
 
-31/40 implemented.
+34/40 implemented.
 
 | Status | Procedure | Signature |
 |---|---|---|
@@ -2737,15 +2737,15 @@ library's own definition file at all; listed in their own `Language/Compiler` gr
 | Yes | `SetWindowData` | (#Window, Value) - Store a value for the window. |
 | Yes | `SetWindowState` | (#Window, State) - Set the minimized/maximized state of the window. |
 | Yes | `SetWindowTitle` | (#Window, Title$) - Change the current window title. |
-| No | `SmartWindowRefresh` | (#Window, State) - Activate or deactivate the smart window refresh. |
+| Yes | `SmartWindowRefresh` | (#Window, State) - Activate or deactivate the smart window refresh. |
 | Yes | `StickyWindow` | (#Window, State) - Make the window stay in front of all other windows. |
 | Yes | `WaitWindowEvent` | ([Timeout]) - Wait until an event occurs on any of the opened windows. |
 | Yes | `WindowBounds` | (#Window, MinimumWidth, MinimumHeight, MaximumWidth, MaximumHeight) - Set the window bounds. |
 | Yes | `WindowEvent` | () - Check if an event has occurred on any of the opened windows. |
 | Yes | `WindowHeight` | (#Window [, Flags]) - Return the height, in pixels, of the specified window. |
 | Yes | `WindowID` | (#Window) - Return the unique ID which identifies the window in the operating system. |
-| No | `WindowMouseX` | (#Window) - Return the mouse position relative to the left of the specified window. |
-| No | `WindowMouseY` | (#Window) - Return the mouse position relative to the top of the specified window. |
+| Yes | `WindowMouseX` | (#Window) - Return the mouse position relative to the left of the specified window. |
+| Yes | `WindowMouseY` | (#Window) - Return the mouse position relative to the top of the specified window. |
 | No | `WindowOutput` | (#Window) - Return the OutputID of the specified window to perform 2D rendering operations on it. |
 | Yes | `WindowResolutionX` | (#Window) - Return the DPI resolution scale factor of the screen the specified window is on, on the 'x' axis (1.0 if no scaling is applied). |
 | Yes | `WindowResolutionY` | (#Window) - Return the DPI resolution scale factor of the screen the specified window is on, on the 'y' axis (1.0 if no scaling is applied). |

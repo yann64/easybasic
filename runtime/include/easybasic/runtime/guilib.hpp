@@ -1998,6 +1998,85 @@ inline std::int64_t pbWindowBounds(std::int64_t windowId, std::int64_t /*minWidt
     return 0; // Oracle-verified no real/meaningful return value ("Aucune").
 }
 
+/// `WindowMouseX`/`WindowMouseY(#Window)` - oracle-verified directly: the
+/// real pointer position relative to the window's own top-left corner,
+/// but only when the pointer is actually over that window - confirmed
+/// with a real `xdotool mousemove` both inside and clearly outside the
+/// window's own bounds. `-1` is a genuine sentinel for "not over this
+/// window" (not a raw, unclamped negative offset - confirmed directly:
+/// a pointer far outside still reads exactly `-1`, not some large
+/// negative number). Implemented via the root-relative pointer position
+/// (`gdk_device_get_position`) minus the window's own root-relative
+/// origin (`gdk_window_get_origin`), bounds-checked against the
+/// window's own current size - simpler and equally correct compared to
+/// `gdk_window_get_device_position`'s own topmost-window-under-pointer
+/// semantics, which would need an extra identity check against this
+/// window specifically anyway.
+namespace detail {
+/// Shared by `pbWindowMouseX`/`pbWindowMouseY` - the pointer's own
+/// position relative to `windowId`'s own top-left corner, or
+/// `{-1, -1}` if the pointer isn't over that window at all (an unset
+/// `std::optional` would be equally valid here, but a plain sentinel
+/// pair matches the two callers' own needs with no extra unwrapping).
+inline std::pair<std::int64_t, std::int64_t> windowMousePosition(GtkWidget* widget) {
+    GdkWindow* gdkWindow = gtk_widget_get_window(widget);
+    if (gdkWindow == nullptr) {
+        return {-1, -1};
+    }
+    GdkDisplay* display = gdk_window_get_display(gdkWindow);
+    GdkSeat* seat = gdk_display_get_default_seat(display);
+    GdkDevice* device = gdk_seat_get_pointer(seat);
+    GdkScreen* pointerScreen = nullptr;
+    gint screenX = 0;
+    gint screenY = 0;
+    gdk_device_get_position(device, &pointerScreen, &screenX, &screenY);
+    gint winX = 0;
+    gint winY = 0;
+    gdk_window_get_origin(gdkWindow, &winX, &winY);
+    gint relX = screenX - winX;
+    gint relY = screenY - winY;
+    if (relX < 0 || relY < 0 || relX >= gdk_window_get_width(gdkWindow) || relY >= gdk_window_get_height(gdkWindow)) {
+        return {-1, -1};
+    }
+    return {relX, relY};
+}
+} // namespace detail
+
+inline std::int64_t pbWindowMouseX(std::int64_t windowId) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return -1;
+    }
+    return detail::windowMousePosition(it->second).first;
+}
+
+inline std::int64_t pbWindowMouseY(std::int64_t windowId) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return -1;
+    }
+    return detail::windowMousePosition(it->second).second;
+}
+
+/// `SmartWindowRefresh(#Window, State)` - oracle-verified directly to
+/// have no reliable/meaningful return value (an inconsistent small
+/// number across repeated calls, not a clean previous-state/success
+/// flag of any shape that held up) - simplified to a clean `0`, the
+/// established "Aucune" convention. Real PB's own docs describe this as
+/// a double-buffering optimization hint for reducing flicker during
+/// heavy repainting - GTK3 already double-buffers every window by
+/// default with no opt-in equivalent to toggle, so there's no real GTK
+/// mechanism to map this onto at all (accepted but not acted on,
+/// consistent with other platform-specific optimization hints already
+/// treated this way elsewhere in this project).
+inline std::int64_t pbSmartWindowRefresh(std::int64_t windowId, std::int64_t /*state*/) {
+    auto it = detail::windowTable().find(windowId);
+    if (it == detail::windowTable().end()) {
+        return 0;
+    }
+    return 0;
+}
+
 /// Non-blocking poll - oracle-verified to return `0` immediately when no
 /// event is pending, pumping only whatever GTK events are *already*
 /// queued (`gtk_events_pending()`/`gtk_main_iteration()`), never blocking

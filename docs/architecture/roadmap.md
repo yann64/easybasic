@@ -32,11 +32,12 @@ is cleanly separable, and would need its own separate, much larger subsystem eff
 | **M5** | `CompilerIf`/`CompilerSelect` + `#PB_*` constants, `DataSection`, non-recursive `Macro` | Done - `CompilerIf`/`CompilerSelect` + `#PB_*` constants (M5a), `DataSection`/`Data`/`Read`/`Restore` (M5b), non-recursive `Macro` (M5c) |
 | **M6** | Cross-platform CI (Windows/Haiku via qemu), clang-tidy/cppcheck gates, ASan/UBSan, nightly Valgrind | Done - linux-gcc/linux-clang/ASan+UBSan/clang-tidy+cppcheck/windows-mingw/haiku all green on real GitHub Actions CI (the first time this project's CI, written since M0, ever actually ran - see its own notes), plus a nightly Valgrind job verified via manual dispatch |
 | **M7a** | Threads (`CreateThread`/`WaitThread`/`IsThread`/`KillThread`, `Mutex`, `Semaphore`) | Done, including the deferred `KillThread`/`PauseThread`/`ResumeThread`/`ThreadID`/`ThreadPriority` - the `Thread` library is now 18/18 - see M7a notes |
-| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-seven slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID`, the
+| **M7b** | GUI core on GTK3 (`Window`/`Event`/`Gadget`/`Requester`, phased - see notes) | Thirty-eight slices done (Window + event core, basic gadgets, `MessageRequester`, `Menu`/`StatusBar`, Image library + `CreateImageMenu`, `ToolBar`, `SysTrayIcon`, the `Requester` family, `ContainerGadget`, `PanelGadget`, `SplitterGadget`, `ScrollAreaGadget`, `ListViewGadget`/`ComboBoxGadget`, `ListIconGadget`/`TreeGadget`, `OptionGadget`/`ProgressBarGadget`, `SpinGadget`/`TrackBarGadget`/`ScrollBarGadget`, `ImageGadget`/`ButtonImageGadget`, `CalendarGadget`/`HyperLinkGadget`, `EditorGadget`, `DateGadget`, `IPAddressGadget`, `CanvasGadget` core, the 2D Drawing library (`Box`/`Circle`/`Plot` + `Line`/`LineXY`/`DrawText`/`TextWidth`/`TextHeight` + `Ellipse`/`RoundBox`/`FillArea` + `DrawingMode`), `ShortcutGadget` (creation/constants only), `ExplorerListGadget`/`ExplorerComboGadget`/`ExplorerTreeGadget`, the Gadget geometry/data/introspection cluster (`GadgetX`/`Y`/`Width`/`Height`/`ID`/`Type`, `Set`/`GetGadgetData`, `Get`/`SetActiveGadget`), the Gadget color cluster (`Set`/`GetGadgetColor`, `GadgetToolTip`, `DisableGadgetRedraw`), `StatusBarImage`/`StatusBarProgress` (closing out the `StatusBar` library), the Font library's own basics (`LoadFont`/`FontID`/`IsFont`/`FreeFont`) plus `GetGadgetFont`/`SetGadgetFont`, `GetGadgetItemColor`/`SetGadgetItemColor`/`SetGadgetItemImage`, `UseGadgetList`/`GadgetItemID`, the
 `Window` geometry/data/state/color cluster (`WindowX`/`Y`/`Width`/`Height`, `Get`/`SetWindowTitle`,
 `Get`/`SetWindowData`, `Get`/`SetActiveWindow`, `Get`/`SetWindowState`, `Get`/`SetWindowColor`,
 `DisableWindow`), the Window DPI-scaling cluster (`WindowResolutionX`/`Y`, `WindowScaledX`/`Y`,
-`WindowUnscaledX`/`Y`), `StickyWindow`/`WindowBounds` - see M7b notes); further gadget types/`Dialog`/everything past that still open |
+`WindowUnscaledX`/`Y`), `StickyWindow`/`WindowBounds`, `WindowMouseX`/`Y`/`SmartWindowRefresh` - see M7b notes); further
+gadget types/`Dialog`/everything past that still open |
 | **M7c** | `Interface`/`EndInterface` (needs `?Label` address-of-DataSection-label first) | Done - see M7c notes |
 | **M7d** | `Module`/`DeclareModule`/`EndModule` | Done - four slices (Procedures/Globals, then Structures/Enumerations/constants/arrays/Lists/Maps/DataSection, then Interface, then qualified `Macro` - see M7d notes) |
 
@@ -5352,4 +5353,40 @@ in a test that can't reliably wait out real GTK event-timing latency under conte
 `WindowBounds`'s own no-immediate-resize behavior). One new golden e2e case
 (`tests/e2e/gui_sticky_bounds`), confirmed line-for-line against the real oracle before being
 pinned.
+
+## M7b Implementation Notes (WindowMouseX/Y, SmartWindowRefresh)
+
+**`WindowMouseX`/`WindowMouseY(#Window)`**: oracle-verified directly (via a real `xdotool
+mousemove` against the real oracle under `Xvfb`): the pointer position relative to the window's
+own top-left corner, but only when the pointer is actually over that window - confirmed with the
+pointer both inside (screen `(60,60)`, window at `(10,10)`, reads `(50,50)`) and clearly outside
+the window's own bounds. `-1` is a genuine sentinel for "not over this window" (not a raw,
+unclamped negative offset - confirmed directly: a pointer far outside still reads exactly `-1`,
+not some large negative number). Implemented via the root-relative pointer position
+(`gdk_device_get_position`) minus the window's own root-relative origin
+(`gdk_window_get_origin`), bounds-checked against the window's own current size.
+
+**`SmartWindowRefresh(#Window, State)`**: real PB's own docs describe this as a double-buffering
+optimization hint for reducing flicker during heavy repainting - GTK3 already double-buffers
+every window by default with no opt-in equivalent to toggle, so there's no real GTK mechanism to
+map this onto at all. Accepted but not acted on, the same way several other platform-specific
+optimization hints already are elsewhere in this project. Its own return value carries no
+reliable signal either (an inconsistent small number across repeated calls) - simplified to a
+clean `0`, the established "Aucune" convention.
+
+**Testing**: deliberately scoped to what doesn't need real synthetic input. This project's own
+`gui_canvas_events` interactive e2e case already found raw mouse-motion events to be inherently
+timing-dependent even for a discrete event *count*, let alone a continuous *position*, so no new
+interactive e2e case was added for the pointer-over-window case - two different ways of asserting
+it automatically were tried instead (relying on this test binary's own ambient pointer position;
+driving it directly via `gdk_device_warp`) and **both** were found to be genuinely unreliable
+specifically when running after several hundred other tests share this same long-running `Xvfb`
+session - passing every short, isolated retry, but not the full serial suite (confirmed directly,
+twice) - the same class of real GTK/X11 event-timing latency `pbWindowBounds`'s own test already
+ran into. The positive, pointer-over-window case was instead confirmed manually against the
+oracle and documented above; the automated `runtime_guilib_test.cpp` case is scoped to the one
+thing that's genuinely reliable (an unrelated window id, touching no real pointer/display state
+at all), alongside a second new case for `SmartWindowRefresh`'s own no-op shape. One new golden
+e2e case (`tests/e2e/gui_window_mouse`), confirmed line-for-line against the real oracle before
+being pinned.
 
