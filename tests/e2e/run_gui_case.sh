@@ -64,7 +64,15 @@ fi
 # has nothing to connect to here anyway - see tests/lsan-suppressions.txt's
 # matching entry for the LeakSanitizer false positive this otherwise causes
 # under an ASan/UBSan build.
-if ! ( cd "$WORKDIR" && GDK_BACKEND=x11 NO_AT_BRIDGE=1 ./case_bin ) > "$WORKDIR/actual.stdout" 2>"$WORKDIR/actual.stderr"; then
+# LC_ALL=C pins the decimal separator a Float/Double Debug prints with -
+# both real PB's own Debug command and this project's own are locale-
+# sensitive (glibc's printf-family honors LC_NUMERIC), confirmed directly
+# the hard way: a golden file recorded on a machine with a non-"C" locale
+# (e.g. fr_FR's own comma decimal separator) fails on any other machine's
+# own default "C" locale (a plain dot) otherwise - this makes every
+# golden case's own expected.stdout locale-independent instead of tied to
+# whichever machine happened to record it.
+if ! ( cd "$WORKDIR" && GDK_BACKEND=x11 NO_AT_BRIDGE=1 LC_ALL=C ./case_bin ) > "$WORKDIR/actual.stdout" 2>"$WORKDIR/actual.stderr"; then
     if grep -qi "cannot open display\|no protocol specified\|cannot connect to" "$WORKDIR/actual.stderr"; then
         echo "SKIP: $CASE_DIR - no usable display available"
         exit $SKIP_CODE

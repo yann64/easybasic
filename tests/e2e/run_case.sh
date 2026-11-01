@@ -29,7 +29,12 @@ fi
 # cleaned up by the trap above - a real portability gap this project's own
 # first-ever Windows CI run (M6) caught the hard way, via tests that
 # instead hardcoded absolute `/tmp/...` paths (not a real path on Windows).
-if ! ( cd "$WORKDIR" && ./case_bin ) > "$WORKDIR/actual.stdout" 2>"$WORKDIR/actual.stderr"; then
+# LC_ALL=C pins the decimal separator a Float/Double Debug prints with -
+# see run_gui_case.sh's own matching comment for why (both real PB's own
+# Debug command and this project's own are locale-sensitive, confirmed
+# the hard way via a golden file that only passed on the machine that
+# recorded it).
+if ! ( cd "$WORKDIR" && LC_ALL=C ./case_bin ) > "$WORKDIR/actual.stdout" 2>"$WORKDIR/actual.stderr"; then
     echo "FAIL: $CASE_DIR - compiled binary exited non-zero"
     cat "$WORKDIR/actual.stderr"
     exit 1
